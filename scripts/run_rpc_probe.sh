@@ -2,7 +2,8 @@
 # Cụm `rpc-probe`. Nạp .env (nếu có) vào biến môi trường của TIẾN TRÌNH CON
 # này rồi chạy `cargo run --bin rpc_probe --release` — KHÔNG in nội dung
 # .env ra màn hình, KHÔNG sửa .env. Dùng trên VPS Linux (NJ) hoặc máy dev
-# Linux/macOS. Máy Windows dùng scripts/run_rpc_probe.ps1.
+# WSL/Linux/macOS — dev đã chuyển hẳn sang WSL, không còn bản Windows
+# PowerShell riêng (đã xoá ở cụm `docs-cleanup-mode2`).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

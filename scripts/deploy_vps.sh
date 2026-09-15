@@ -12,8 +12,9 @@
 #   --probe   sau khi copy, chay scripts/run_rpc_probe.sh TREN VPS
 #             (can VPS da co san .env voi BSC_HTTP/BSC_WS that)
 #   --build   sau khi copy, chay `cargo build --release` TREN VPS
-#   --run     sau build, chay bot NGAM (nohup) TREN VPS (dry_run theo
-#             config.toml da copy - script nay khong tu bat live/armed)
+#   --run     sau build, chay bot NGAM TREN VPS qua `systemd-run --collect`
+#             (fallback nohup neu VPS khong co systemd-run), dry_run theo
+#             config.toml da copy - script nay khong tu bat live/armed
 set -euo pipefail
 
 HOST=""

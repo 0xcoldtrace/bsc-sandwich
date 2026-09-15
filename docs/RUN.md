@@ -8,11 +8,12 @@ GoPlus Security trước khi Chủ tự vet tay.
 Script dùng chung: `scripts/paper_run.sh` (phiên "wsl-env-rules-paperrun",
 2026-09-15, cập nhật ở cụm `strategy-lock-mode2`) — chạy được cả trên WSL
 (máy dev) lẫn VPS, không có bước SSH nào bên trong (SSH chỉ nằm ở
-`scripts/deploy_vps.sh`/`.ps1`, dùng để ĐƯA source lên VPS trước khi chạy,
-không liên quan script paper run). `scripts/vps_paper_run.sh` cũ giờ chỉ là
-alias forward sang `paper_run.sh`, giữ lại để không phá tham chiếu cũ trong
-BAOCAO. File này đổi tên từ `docs/VPS_RUN.md` ở cụm `strategy-lock-mode2`
-(chạy được trên CẢ WSL lẫn VPS, tên cũ gây hiểu nhầm chỉ dành cho VPS).
+`scripts/deploy_vps.sh`, dùng để ĐƯA source lên VPS trước khi chạy, không
+liên quan script paper run). `scripts/vps_paper_run.sh` (alias cũ forward
+sang `paper_run.sh`) ĐÃ XOÁ ở cụm `docs-cleanup-mode2` — dùng thẳng
+`scripts/paper_run.sh` cho cả WSL lẫn VPS. File này đổi tên từ
+`docs/VPS_RUN.md` ở cụm `strategy-lock-mode2` (chạy được trên CẢ WSL lẫn
+VPS, tên cũ gây hiểu nhầm chỉ dành cho VPS).
 
 ## Lọc thô `pairs.txt` bằng GoPlus (`scripts/vet_goplus.sh`)
 
@@ -106,3 +107,102 @@ Script sẽ:
   vet, quyết định `Simulated` dùng công thức đóng V2 + gas thật). Muốn quan
   sát lại đường EVM per-tx (so sánh/đối chiếu), đổi tạm `sim_engine="evm"`
   trong `config.toml` (hot-reload, không cần build lại).
+
+---
+
+## Vận hành trên VPS
+
+Checklist đầy đủ để đưa bot lên 1 VPS chạy paper (hoặc chờ live sau này).
+Bot trên VPS **vẫn `dry_run=true`** như trên WSL — không có bước nào ở đây
+tự bật live.
+
+### 1. Chuẩn bị SSH key riêng cho VPS
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_vps -C "bsc-sandwich-vps"
+ssh-copy-id -i ~/.ssh/id_vps.pub root@<ip_vps>   # hoặc dán tay vao ~/.ssh/authorized_keys tren VPS
+```
+
+Sau khi xác nhận đăng nhập bằng key được, **tắt đăng nhập bằng password**
+trên VPS (sửa `PasswordAuthentication no` trong `/etc/ssh/sshd_config` rồi
+`systemctl restart sshd`). Không bao giờ lưu password VPS vào bất kỳ file
+nào trong repo (kể cả file gitignored).
+
+### 2. Bật tường lửa, chỉ mở port 22
+
+```bash
+# Tren VPS:
+ufw allow 22/tcp
+ufw enable
+apt-get install -y fail2ban   # tuy chon, chong brute-force SSH
+```
+
+Không mở port `8787` (dashboard) ra Internet — xem tunnel ở bước 6.
+
+### 3. Cài `rustup`/`build-essential` trên VPS
+
+`scripts/deploy_vps.sh` tự cài nếu thiếu khi copy source lần đầu — không
+cần làm tay trừ khi script báo lỗi.
+
+### 4. Copy source + build + chạy nền
+
+```bash
+scripts/deploy_vps.sh --host <ip_vps> --user root --identity ~/.ssh/id_vps \
+  --build --run
+```
+
+- Đóng gói source (loại `.git/target/state/logs/artifacts/.env`) qua
+  tar+SSH pipe, copy sang `/root/bsc-sandwich` (đổi bằng `--path`).
+- `--build`: `cargo build --release` trên VPS.
+- `--run`: chạy bot nền qua `systemd-run --unit=bsc-sandwich-paper --collect`
+  (fallback `nohup` + cảnh báo nếu VPS không có `systemd-run`) — vẫn
+  `dry_run=true` theo `config.toml` vừa copy, KHÔNG tự bật live/armed.
+- `--probe`: chạy `scripts/run_rpc_probe.sh` trên VPS (cần `.env` đã điền
+  RPC thật trên VPS trước).
+
+### 5. Tự điền `.env` TRÊN VPS
+
+**Không copy `.env` máy dev qua mạng** — `scripts/deploy_vps.sh` loại trừ
+`.env` khỏi gói copy có chủ đích. SSH vào VPS rồi tự tạo:
+
+```bash
+cd /root/bsc-sandwich
+cp .env.example .env
+nano .env   # dien BSC_HTTP/BSC_WS that truc tiep tren VPS
+```
+
+### 6. Xem dashboard qua SSH tunnel (không mở port ra Internet)
+
+```bash
+ssh -N -L 8787:127.0.0.1:8787 -p <port> root@<ip_vps>
+# roi mo http://127.0.0.1:8787 tren may cua ban
+```
+
+### 7. Xác nhận VPS cùng commit với WSL
+
+```bash
+# Tren VPS:
+git log -1 --format=%H
+sha256sum target/release/bsc_sandwich
+```
+
+So 2 giá trị này với `git log -1 --format=%H` và `sha256sum` chạy trên WSL
+(dev) — **khác nhau = MISSING**, chưa được coi là "đã deploy đúng bản" theo
+`CLAUDE.md` (Dev = WSL, Production = VPS, phải cùng commit). Ghi cả 2 cặp
+giá trị vào BAOCAO khi báo cáo đã deploy.
+
+### 8. Logrotate cho `logs/bot.jsonl`
+
+`logs/bot.jsonl` không tự xoay vòng — nếu chạy VPS dài ngày, thêm 1 file
+`/etc/logrotate.d/bsc-sandwich` trỏ vào `/root/bsc-sandwich/logs/bot.jsonl`
+(hoặc dùng `systemd` journal nếu chạy qua `systemd-run`/unit thật) để tránh
+đầy đĩa.
+
+### 9. Dừng bot trên VPS
+
+```bash
+# Tren VPS, neu chay qua systemd-run --unit=bsc-sandwich-paper:
+systemctl stop bsc-sandwich-paper
+# Hoac dung state/halt.lock (dung ca 2 cach deu duoc, xem README.md muc 8):
+touch /root/bsc-sandwich/state/halt.lock
+```

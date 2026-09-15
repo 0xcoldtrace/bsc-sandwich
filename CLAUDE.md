@@ -296,7 +296,12 @@ Web làm cùng phiên với `0.3` (logger/state) hoặc ngay sau Gói A — **kh
 
 ## Cây file — phiên đầu ĐƯỢC TẠO nếu thiếu
 
-`CLAUDE.md Cargo.toml config.toml vps.json .env.example .gitignore .gitattributes README.md DEX_REGISTRY.md docs/STATE.md docs/TASKS.md docs/DOC_MAP.md docs/RUN.md baocao/ README victims.txt victims.example.txt pairs.txt src/ web/ scripts/ key/ (gitignored)`
+`CLAUDE.md Cargo.toml config.toml vps.json .env.example .gitignore .gitattributes README.md DEX_REGISTRY.md docs/STATE.md docs/TASKS.md docs/DOC_MAP.md docs/RUN.md baocao/ README victims.txt pairs.txt src/ web/ scripts/ key/ (gitignored)`
+
+`victims.example.txt` ĐÃ XOÁ (cụm `docs-cleanup-mode2`, 2026-09-15) — mode 1
+(wallet-mode) tắt mặc định, `victims.txt` giữ lại 1 dòng comment ghi rõ mode
+1 đang tắt (định dạng cũ vẫn ghi trong comment đó, không cần file ví dụ
+riêng).
 
 `vps.json`: `chain_id=56`, RPC placeholder. Boot `eth_chainId==0x38`.
 

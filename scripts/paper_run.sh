@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Cụm `evm-validate-fixed-then-wire` (D3) — chạy PAPER 30 phút (mặc định) với
-# cấu hình ngưỡng-0 + universal + USDT + động cơ EVM, rồi in đủ số liệu funnel/
-# skip/tax/validate/sim.evm. Script DÙNG CHUNG cho WSL (máy dev) và VPS (máy
-# chạy thật) — không có bước SSH/deploy nào ở đây, chỉ chạy TẠI CHỖ trong thư
-# mục repo đã có `.env` thật. Muốn đưa source lên VPS trước, dùng
-# `scripts/deploy_vps.sh` (Linux/macOS) hoặc `scripts/deploy_vps.ps1`
-# (Windows) — 2 script đó CÓ SSH, script này thì KHÔNG.
+# Cụm `strategy-lock-mode2` — chạy PAPER 30 phút (mặc định) với cấu hình
+# ngưỡng-0 (chỉ hạ min_profit/min_reserve/... về 0 để dễ quan sát), GIỮ
+# NGUYÊN sim_engine/pair_scan_universal/scan_quote_usdt từ config.toml thật
+# (mode 2 only, sim_engine="v2"), rồi in đủ số liệu funnel/skip/tax/validate.
+# Script DÙNG CHUNG cho WSL (máy dev) và VPS (máy chạy thật) — không có bước
+# SSH/deploy nào ở đây, chỉ chạy TẠI CHỖ trong thư mục repo đã có `.env`
+# thật. Muốn đưa source lên VPS trước, dùng `scripts/deploy_vps.sh` (có SSH,
+# script này thì KHÔNG — không có bản `.ps1`, chạy trên WSL/Linux/VPS).
 #
 # Script KHÔNG bật live/armed, KHÔNG gửi tx, KHÔNG in secret.
 #

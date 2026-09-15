@@ -1,5 +1,58 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `docs-cleanup-mode2`, 2026-09-15)
+
+1. Chiến lược: **MODE 2 ONLY** (pair-mode, `pairs.txt` do Chủ vet tay) — mode
+   1 (`victims.txt`, wallet) và mode 3 (universal) TẮT bằng cờ, KHÔNG xoá
+   code. Chốt ở `strategy-lock-mode2` (BAOCAO36, 2026-09-15).
+2. Đường nóng (mọi tx qua `pairs.txt`): `sim_engine="v2"` — công thức đóng
+   V2 (phí 0.25%) + gas (F-03: hiện lấy từ TRẦN cấu hình, chưa phải gas
+   thật đo được — xem cụm `real-economics-mode2` bên dưới). KHÔNG mở fork
+   EVM mỗi tx.
+3. `revm`/`sim_evm.rs` giữ đúng 3 việc: (a) vet NỀN định kỳ `pairs.txt`
+   (`pairs_vet_task`, mỗi `pairs_vet_interval_sec`), (b) đo lại token ngay
+   trước khi ký ở live (`7.x`, CHƯA làm), (c) validator `validate.victim`.
+4. Cụm đã XONG gần nhất: `exec-path-traps` (12 bẫy thực thi trước signer,
+   BAOCAO35) rồi `strategy-lock-mode2` (BAOCAO36).
+5. Cụm ĐANG LÀM: `docs-cleanup-mode2` (phiên này, BAOCAO37) — dọn tài liệu
+   vận hành theo chiến lược mode 2, KHÔNG đổi logic `src/`.
+6. Cụm KẾ TIẾP (**CHƯA BẮT ĐẦU**): `real-economics-mode2` — sửa F-03 (gas
+   thật qua `eth_gasPrice` × gas đo, thay trần cấu hình), validator đối
+   chiếu V2 math vs thật, tinh chỉnh `pairs_vet_task`. Bản hiện tại **CHƯA
+   CÓ** `/api/econ`, field `gas_price_max_gwei`, hay dòng tổng kinh tế dạng
+   "candidate=... net_pos=..." — tất cả thuộc cụm này, đừng viết tài liệu
+   như thể đã có.
+7. `fork-actor-perf` (cụm 3 cũ): HẠ ƯU TIÊN xuống SAU cụm 6 `strategy-exec`
+   — đường nóng mode 2 không còn nghẽn fork EVM mỗi tx.
+8. `7.3` (gửi tx thật/`sendRaw`): **VẪN CHƯA LÀM** — không có hàm ký/gửi tx
+   nào trong repo (xác nhận lại nhiều lần qua grep + test chuyên dụng).
+9. Test baseline đầu phiên `docs-cleanup-mode2`: `cargo test --release`
+   (WSL) = **295 passed** (280 lib + 15 main), 0 failed, 11 ignored — xem
+   `baocao/BAOCAO37.md` ô 5 cho log đầy đủ + sha256 binary.
+10. Git HEAD đầu phiên `docs-cleanup-mode2`:
+    `17a273b72380d9396ada4ef534ea1dcb9bf7b39b` (commit BAOCAO36).
+11. Venue đã pin: V2+V3+V4/Infinity (`DEX_REGISTRY.md`, `eth_getCode>0`
+    chain 56, 5 router pin trong `venues::PANCAKE_ROUTERS`); "bản mới hơn"
+    DISABLED (chưa deploy trên BSC).
+12. `pairs.txt`: nguồn candidate DUY NHẤT đang bật, `pairs_require_vetted=true`
+    — dòng thiếu `vetted YYYY-MM-DD` hợp lệ = CHƯA VET, không sim.
+13. Web dashboard: `/api/*` theo CLAUDE.md mục "Web" — KHÔNG có `/api/econ`
+    (thuộc `real-economics-mode2`, mục 6 ở trên).
+14. **Sự cố phiên `docs-cleanup-mode2` (ghi minh bạch, không giấu)**: một
+    agent nghiên cứu được giao việc ĐỌC-ONLY đã vượt phạm vi, và tại một
+    thời điểm giữa phiên `pairs.txt`/`README.md` bị thấy ở trạng thái revert
+    về đúng bản `git HEAD` cũ (mất nội dung vet tay CHƯA COMMIT của Chủ).
+    Sau khi kiểm tra lại đầy đủ (đọc toàn bộ file + so `git` blob hash), CẢ
+    HAI file đã được xác nhận NGUYÊN VẸN vào cuối phiên — không mất dữ liệu
+    thật sự (nguyên nhân trạng thái revert transient chưa xác định chắc
+    chắn). Vẫn khuyến nghị Chủ tự đối chiếu `pairs.txt` 1 lần cho chắc — xem
+    `baocao/BAOCAO37.md` ô "CÒN NỢ".
+15. Đọc thêm: `docs/TASKS.md` (cụm/nợ chi tiết), `docs/DOC_MAP.md` (bản đồ
+    file), `README.md` (hướng dẫn vận hành cho Chủ), `docs/RUN.md` (vận
+    hành WSL/VPS chi tiết).
+
+---
+
 ## RPC crate
 
 **Chốt: `alloy`** (không dùng `ethers-rs`, không dùng viem/ethers.js/Python).
@@ -180,6 +233,13 @@ dùng RPC công khai giống quy ước `pool.rs`): `0.01 WBNB -> 7.230011422939
 USDT` ở fee tier `100` — dán raw ở BAOCAO04 ô5.
 
 ## Tax stub — giới hạn kỹ thuật đã xác nhận, không phải giả định (phiên `3.3`)
+
+**[LỖI THỜI — thay bởi mục `foundation-fix-then-real-sim` (đo tax/honeypot
+thật qua `sim_evm.rs`/revm) và `strategy-lock-mode2` (`pairs_vet_task` dùng
+kết quả đó để vet nền `pairs.txt` mỗi `pairs_vet_interval_sec`)]** — hàm
+`measure_roundtrip_via_router` mô tả dưới đây vẫn còn trong code nhưng
+KHÔNG còn là cách đo tax của sản phẩm; hợp đồng "probe" nêu là "ngoài phạm
+vi" ở đây đã được thay bằng cách khác (revm fork thật), không phải chưa làm.
 
 `src/tax.rs::measure_roundtrip_via_router` gọi 2 `eth_call` THẬT
 (`getAmountsOut` mua rồi bán) nhưng đây là số đo AMM-math thuần (phí +
@@ -1798,6 +1858,11 @@ liệu thật không-WBNB + logic thuần (không phải RPC WBNB thật).
 
 ## `universal-pair-scan` — quét MỌI pool WBNB thay vì chỉ pool khai trong `pairs.txt` (phiên `universal-pair-scan`, 2026-09-15)
 
+**[LỖI THỜI — thay bởi `strategy-lock-mode2`]** Chủ đã CHỐT chiến lược mode 2
+only (2026-09-15): mode 3 (universal, `pair_scan_universal`) đứng ngoài
+chiến lược hiện tại, chỉ bật lại nếu Chủ ra lệnh đổi. Cờ/code dưới đây vẫn
+còn nguyên trong repo (`false` mặc định, không xoá) — không phải "chưa làm".
+
 Lệnh chủ: thêm chế độ để `decide_paper_v2` coi MỌI pool token/WBNB là candidate
 (không chỉ pool đã liệt kê `pairs.txt`), NHƯNG phải AN TOÀN theo mặc định —
 field mới `Config::pair_scan_universal: bool` (bắt buộc, thiếu = fail load,
@@ -2104,6 +2169,13 @@ cáo này xác nhận không có identifier riêng nào lọt vào `src/`, `docs
 `baocao/`.
 
 ## `explicit-mode-flags` — 2 cờ tường minh bật/tắt wallet/pair-mode (phiên này, 2026-09-15)
+
+**[LỖI THỜI (một phần) — thay bởi `strategy-lock-mode2`]** Giá trị ship
+`wallet_scan_enabled=true BẮT BUỘC` mô tả dưới đây đã đổi thành `false` ở
+`strategy-lock-mode2` (Chủ chốt mode 2 only, mode 1/wallet-mode tắt mặc
+định) — lý do "cấm tuyệt đối" nêu ở đây (sợ tắt bot đang chạy) không còn áp
+dụng vì đó là quyết định chiến lược có chủ đích, không phải vô tình. Cơ chế
+`pair_scan_enabled`/gate thứ tự wallet>pair>universal>not_in_list vẫn đúng.
 
 Lệnh chủ: trước phiên này `decide_paper_v2` chỉ có 3 nhánh candidate
 (wallet/pair/universal) NGẦM bật theo dữ liệu file (`victims.txt`/`pairs.txt`
@@ -2837,6 +2909,14 @@ MINH đường dây hoạt động đúng (không phải bug filter — `no_pool
 
 ## `foundation-fix-then-real-sim` — cụm A (sửa nền) + cụm B (sim EVM thật qua revm) (BAOCAO31, 2026-09-15)
 
+**[LỖI THỜI (hướng cụm C/D) — thay bởi `strategy-lock-mode2`]** Cụm A (sửa
+nền) và B1/B2 (cơ chế `sim_evm.rs` qua revm) vẫn ĐÚNG và vẫn được dùng —
+xem "Chiến lược đã chốt" trong CLAUDE.md, `sim_evm.rs` giờ phục vụ vet
+nền/pre-sign/validator. Hướng "cụm C: nối EVM thật vào ĐƯỜNG NÓNG mỗi tx"
+nói tới trong phần dưới đây (và tiếp diễn ở `evm-validate-wire-tax`) ĐÃ BỊ
+THAY THẾ — đường nóng hiện dùng công thức đóng V2 + gas thật
+(`sim_engine="v2"`), không mở fork EVM mỗi tx.
+
 Lệnh Grok: 4 cụm A→B→C→D làm TUẦN TỰ, không nhảy cụm, dừng lại nếu B4 (gate
 bắt buộc) chưa đạt. Phiên này ĐÓNG TRỌN cụm A, đóng B1+B2 (kèm bằng chứng RPC
 thật), B4 KHÔNG đạt theo đúng nghĩa hẹp lệnh yêu cầu (3 sandwich thật từ
@@ -3082,6 +3162,14 @@ chain, không phải tx đơn lẻ. Phiên này:
   BscScan, hoặc cấp phương án khác để tìm 3 sandwich thật).
 
 ## `evm-validate-wire-tax` cụm B4' — validate TỰ ĐỘNG (không cần BscScan), phiên `evm-validate-wire-tax` (BAOCAO32)
+
+**[LỖI THỜI (hướng cụm B3/C/D) — thay bởi `strategy-lock-mode2`]** Các phép
+đo B4'.1-.4 dưới đây (đối chứng `sim_evm` vs `sim_v2`, validator, ternary
+search EVM) vẫn ĐÚNG kỹ thuật và các hàm liên quan (`probe_erc20_balance_slot`
+v.v.) vẫn được dùng lại cho vet nền/validator ở `strategy-lock-mode2`. Việc
+"sang B3" (nối `sim_evm` vào đường nóng mỗi tx) đã KHÔNG xảy ra theo hướng
+này — Chủ chốt chiến lược khác (V2 math + gas thật trên đường nóng, xem
+CLAUDE.md mục "Chiến lược đã chốt"), không phải "còn đang chờ".
 
 Lệnh Grok thay B4 (chặn ở BscScan) bằng 4 phương pháp tự động dùng RPC công
 khai sống: B4'.1 (mở rộng test đối chứng cũ ra MỌI candidate đo được thay vì
