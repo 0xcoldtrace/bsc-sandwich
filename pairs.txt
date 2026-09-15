@@ -119,4 +119,16 @@
 # 0x0DF0587216a4a1bB7d5082fdc491d93d2dD4B413  Cheems     tung co tax, owner active
 # 0x32B407ee915432Be6D3F168bc1EfF2a6F8b2034C  HODL       reflection token, tax
 # (17 dong FAIL con lai trong bang vet_goplus.sh cua Code: Chu doi chieu
-#  state/pairs_goplus.tsv va xoa them neu thuoc nhom B o tren)
+#  state/pairs_goplus.tsv va xoa them neu thuoc nhom B o tren)0xeCCBb861c0dda7eFd964010085488B69317e4444 # 龙虾 | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=28262 ge_min=11927 vol_bnb=11390 reserve=2436bnb contract=Token
+0x2A846AAaf896EF393cCb76398c1d96eA97374444 # BORT | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=27068 ge_min=9689 vol_bnb=12219 reserve=309bnb contract=Token
+0xe210C0583C1071714EDed2d8bEEab05Ab5bB7777,0x55d398326f99059fF775485246999027B3197955 # BinanceTown | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=12203 ge_min=6076 vol_bnb=32367 reserve=116667usdt contract=Token
+0x01FBEd06A70EB1b4A0B43Dbc6a94f99944CD7777,0x55d398326f99059fF775485246999027B3197955 # BNC | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=9654 ge_min=4905 vol_bnb=23685 reserve=98202usdt contract=Token
+0xB391e9bEF634ADf52A0972fBD0943935e6097777,0x55d398326f99059fF775485246999027B3197955 # Sue | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=8348 ge_min=4175 vol_bnb=20210 reserve=30766usdt contract=Token
+0xA3cfB853339b77F385B994799B015cB04b208Fe6,0x55d398326f99059fF775485246999027B3197955 # POP | vetted 2026-09-16 | tax 0/0 | owner active | swaps24h=7448 ge_min=2210 vol_bnb=1646 reserve=163509usdt contract=ZypherNetworkToken
+0xEDeE16Bf89361506F3dA715AaE29B22f71992777 # OI | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=2030 ge_min=982 vol_bnb=231 reserve=183bnb contract=OiToken
+0x7d03759E5B41E36899833cb2E008455d69A24444 # priceless | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=8120 ge_min=719 vol_bnb=240 reserve=74bnb contract=Token
+0x198dBA421A7dB566A90DA5de7901AbE3443B4444 # 富贵 | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=1726 ge_min=498 vol_bnb=358 reserve=97bnb contract=Token
+0x3dB1B406a4d50A841948765685ed42ed1f174444 # BRAD | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=4000 ge_min=404 vol_bnb=147 reserve=27bnb contract=Token
+0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82,0x55d398326f99059fF775485246999027B3197955 # Cake | vetted 2026-09-16 | tax 0/0 | owner active | swaps24h=1052 ge_min=397 vol_bnb=144 reserve=464348usdt contract=CakeToken
+0xF3c35A84EF311C847CE4da33C3C31c57770B3760,0x55d398326f99059fF775485246999027B3197955 # POFD | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=2024 ge_min=380 vol_bnb=211 reserve=140704usdt contract=POFD
+0xB82ce467e525F17ffb2B4C8786B6ebe06B66a5A2,0x55d398326f99059fF775485246999027B3197955 # AIX | vetted 2026-09-16 | tax 0/0 | owner none | swaps24h=2142 ge_min=314 vol_bnb=89 reserve=182675usdt contract=AIX
