@@ -59,7 +59,9 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | `exec-path-traps` (chặn 12 bẫy thực thi trước signer `7.3`) | 35 | 3694908 | XONG 12/12 + mục 13 (sửa `paper_run.sh`) |
 | `strategy-lock-mode2` (Chủ chốt mode 2 only) | 36 | 5675f81 | XONG |
 | `docs-cleanup-mode2` (dọn tài liệu vận hành cho mode 2) | 37 | bfd992b | XONG |
-| `real-economics-mode2` cụm B (fix bug tax-gate BAOCAO37, F-03 gas thật, `/api/econ`, F-27 validator, nonce_future test) | 38 | *(phiên này, xem BAOCAO38 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (gas thật cho `sim_engine="evm"`, V4 sim, decoder-coverage...) |
+| `real-economics-mode2` cụm B (fix bug tax-gate BAOCAO37, F-03 gas thật, `/api/econ`, F-27 validator, nonce_future test) | 38 | *(xem BAOCAO38 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (gas thật cho `sim_engine="evm"`, V4 sim, decoder-coverage...) |
+| `hotpath-fix-then-decoder-ur` Phần A (A1-A4: pairs.txt quote USDT, tax gate USDT MODE 2 ONLY, tách `rpc_error`/`no_pool`, `known_pair`+`ReserveCache`) | 39 | *(xem BAOCAO39 ô 3)* | XONG — verify paper run 5 phút thật (`/api/pairs` 89/0, `honeypot_or_tax=0`) |
+| `hotpath-fix-then-decoder-ur` Phần B = `decoder-coverage` (cụm 4: UR đa command, `SmartRouter.multicall`, biến thể không-deadline, `exactOutput*`, fix bug pre-existing `exactInput` 2-lớp offset ABI) | 39 | *(xem BAOCAO39 ô 3)* | MỘT PHẦN — xem "decoder-coverage" (`docs/STATE.md`) mục CÒN NỢ (multihop, `*_SWAP_EXACT_OUT` làm command chính trong UR, recipient sentinel) |
 
 ## Hoãn, lý do (không phải "chưa làm" — có chủ đích, cần lệnh Chủ mới đổi)
 
@@ -128,9 +130,17 @@ chép, mà là giới hạn lịch sử git thật của repo).
   `PoolKey` thật (từ `v4-pool-resolve`) nhưng chưa có hàm nào gọi
   `CLQuoter`/`BinQuoter` để sim giá — việc sim V4 vẫn ngoài phạm vi mọi cụm
   đã làm, là nợ riêng nếu Chủ muốn có sim V4 đầy đủ.
-- **`decoder-coverage`** (cụm 4, CHƯA LÀM) — F-09 multicall, SmartRouter
-  không deadline, UR đa lệnh, sentinel `CONTRACT_BALANCE`, `payerIsUser`.
-  Mục tiêu `venue_v3 > 0`, `decode_fail < 2%`.
+- **`decoder-coverage`** (cụm 4, `hotpath-fix-then-decoder-ur` Phần B,
+  BAOCAO39) — F-09 multicall, SmartRouter không deadline, UR đa lệnh,
+  sentinel `CONTRACT_BALANCE`, `payerIsUser` — ĐÃ LÀM. Phát hiện định lượng
+  quan trọng: ~81% mẫu `execute()` "decode_fail" cũ là NFT marketplace
+  (`SEAPORT_V1_5`), KHÔNG PHẢI swap — mục tiêu `decode_fail < 2%` gốc dựa
+  trên giả định sai (đa số decode_fail vẫn ĐÚNG là decode_fail sau fix, vì
+  không phải swap) — số `decode_fail` thật/`venue_v3` sau fix xem paper run
+  60 phút BAOCAO39. Còn nợ: multihop trong 1 `execute()`/qua nhiều
+  `multicall`, `*_SWAP_EXACT_OUT` làm command chính UR, recipient sentinel
+  `MSG_SENDER`/`ADDRESS_THIS` → `tx.from` (xem `docs/STATE.md` mục
+  "decoder-coverage").
 - **`test-hygiene`** (cụm 5, CHƯA LÀM) — F-17 `real_rpc_*` không pass rỗng,
   F-22/F-23/F-25 dead code & doc, F-21 redact subdomain.
 - **`strategy-exec`** (cụm 6, CHƯA LÀM) — F-01 bundle nguyên tử

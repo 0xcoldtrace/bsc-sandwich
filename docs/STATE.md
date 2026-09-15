@@ -12,8 +12,10 @@
 3. `revm`/`sim_evm.rs` giữ đúng 3 việc: (a) vet NỀN định kỳ `pairs.txt`
    (`pairs_vet_task`, mỗi `pairs_vet_interval_sec`), (b) đo lại token ngay
    trước khi ký ở live (`7.x`, CHƯA làm), (c) validator `validate.victim`.
-4. Cụm đã XONG gần nhất: `docs-cleanup-mode2` (BAOCAO37) rồi
-   `real-economics-mode2` cụm B (BAOCAO38, phiên này).
+4. Cụm đã XONG gần nhất: `docs-cleanup-mode2` (BAOCAO37),
+   `real-economics-mode2` cụm B (BAOCAO38), rồi `hotpath-fix-then-decoder-ur`
+   Phần A+B (BAOCAO39, phiên này — xem mục 16/17 + mục "decoder-coverage"
+   bên dưới).
 5. (mục này gộp vào mục 4 — `docs-cleanup-mode2` đã XONG, không còn
    "đang làm").
 6. Cụm `real-economics-mode2` (BAOCAO38, phiên này) — **MỘT PHẦN, ĐÃ XONG**:
@@ -60,8 +62,177 @@
 15. Đọc thêm: `docs/TASKS.md` (cụm/nợ chi tiết), `docs/DOC_MAP.md` (bản đồ
     file), `README.md` (hướng dẫn vận hành cho Chủ), `docs/RUN.md` (vận
     hành WSL/VPS chi tiết).
+16. Cụm `hotpath-fix-then-decoder-ur` Phần A (BAOCAO39, phiên này) — 4 fix
+    nóng phát hiện từ paper_run 5 phút thật trên `pairs.txt` 89 token: A1
+    `pairs.txt` chấp nhận quote USDT (`PairBook`), A2 gate tax nhánh USDT áp
+    đúng luật MODE 2 ONLY (`is_tax_ok`/`knows_pool`/`is_vet_failed`, giống
+    nhánh "pair" WBNB), A3 tách `rpc_error` khỏi `no_pool`, A4 giảm RPC
+    (`PairBook::known_pair` + `transport::ReserveCache`). Verify 5 phút thật:
+    `/api/pairs` 89/0, `honeypot_or_tax=0` cả 2 quote xuyên suốt, `no_pool`/
+    `rpc_error` tách riêng có số, p50 latency ~0.015ms (từ ~30.000ms).
+17. Cụm `hotpath-fix-then-decoder-ur` Phần B (BAOCAO39, phiên này) —
+    `decoder-coverage`: UR `execute()` đa command + `SmartRouter.multicall` +
+    biến thể không-deadline + `exactOutput*`. Xem mục "decoder-coverage"
+    ngay dưới đây cho chi tiết kỹ thuật đầy đủ.
 
 ---
+
+## decoder-coverage (cụm `hotpath-fix-then-decoder-ur` Phần B, BAOCAO39, 2026-09-15)
+
+Lệnh Grok: mở rộng `src/decoder.rs` để decode được UR đa command +
+`SmartRouter.multicall` — trước phiên này, `decode_universal_router` CHỈ
+nhận `commands.len()==1`, khiến MỌI tx `execute()` nhiều command
+`decode_fail` (BAOCAO38 đo `decode_fail_by_router` UR Infinity chiếm 90%).
+
+### B1 — lấy mẫu THẬT trước khi viết code
+
+`logs/bot.jsonl` KHÔNG log calldata thô (`input`) — chỉ có `hash`/`to`/
+`selector` (đủ để không bịa router/selector, nhưng không đủ để dựng lại
+command/path). Lấy 45 hash `decode_fail` thật (30 UR Infinity + 10
+SmartRouter + 5 UR v3-cũ, chọn ngẫu nhiên qua `sort -u` theo hash — không
+phải 45 dòng cuối) rồi gọi THẬT `eth_getTransactionByHash` (RPC công khai
+đầu tiên trong `BSC_HTTP`, đúng tiền lệ BAOCAO02/29) để lấy `input` đầy đủ —
+lưu tại `tests/fixtures/ur_calldata.jsonl` (`hash,to,value,input`).
+
+**Phát hiện quan trọng nhất (định lượng lại giả định "90% decode_fail là
+swap bị bỏ sót")**: decode thật 45 mẫu cho thấy **~81% (36/45)** calldata
+`execute()` "decode_fail" cũ KHÔNG PHẢI swap — là lệnh NFT marketplace
+(command `SEAPORT_V1_5=0x10`, riêng UR Infinity 27/30 là NFT). Đây là hành
+vi ĐÚNG của Universal Router (router "tổng quát" hỗ trợ cả swap lẫn NFT
+marketplace theo đúng thiết kế Uniswap gốc mà PancakeSwap fork) — KHÔNG
+phải bug, các calldata này vẫn PHẢI `decode_fail` sau khi sửa (không phải
+swap thì không có gì để decode). Bảng thống kê đầy đủ (selector, chuỗi
+command, có PERMIT2/WRAP_ETH không, venue, số hop) — rút gọn theo router:
+
+| Router | selector | n/45 | Ý nghĩa (xác nhận qua `keccak256` thật) |
+|---|---|---|---|
+| UR Infinity | `0x24856bc3` | 27 | `execute(bytes,bytes[])` — 27/27 mẫu là `SEAPORT_V1_5` (NFT) |
+| UR Infinity | `0x3593564c` | 3 | `execute(bytes,bytes[],uint256)` — 1 `WRAP_ETH,V3_OUT,UNWRAP_WETH`, 1 `SEAPORT`, 1 `PERMIT2_TRANSFER_FROM,SEAPORT,SWEEPx4` |
+| UR v3-cũ | `0x3593564c` | 5 | 3× `WRAP_ETH,V2_SWAP_EXACT_IN[,TRANSFER]`, 1× `WRAP_ETH,V3_SWAP_EXACT_IN`, 1× `V2_SWAP_EXACT_OUT` (exact-out, ngoài mô hình) |
+| SmartRouter | `0x04e45aaf` | 3 | `exactInputSingle(address,address,uint24,address,uint256,uint256,uint160)` — biến thể KHÔNG deadline |
+| SmartRouter | `0x5ae401dc` | 2 | `multicall(uint256,bytes[])` |
+| SmartRouter | `0x09b81346` | 3 | `exactOutput((bytes,address,uint256,uint256))` — KHÔNG deadline, exact-OUT |
+| SmartRouter | `0xac9650d8` | 1 | `multicall(bytes[])` |
+| SmartRouter | `0x5023b4df` | 1 | `exactOutputSingle((address,address,uint24,address,uint256,uint256,uint160))` — KHÔNG deadline |
+
+Trong 8 mẫu THẬT `WRAP_ETH→V2_SWAP_EXACT_IN`: **0/8 dùng sentinel
+`CONTRACT_BALANCE`** — `amountIn` của swap luôn = số BNB CỤ THỂ (khớp
+`tx.value`). Nhánh xử lý sentinel vẫn giữ (đúng lệnh, phòng vệ) nhưng CHƯA
+có bằng chứng thật kích hoạt được nó phiên này — ghi rõ, không nhận vơ.
+
+### B2 — UR đa command (`decode_universal_router`)
+
+Viết lại hoàn toàn: duyệt TOÀN BỘ `commands`/`inputs` (không còn giới hạn
+`len()==1`), tìm command SWAP đầu tiên (`V2_SWAP_EXACT_IN`=0x08 hoặc
+`V3_SWAP_EXACT_IN`=0x00) — **quyết định thiết kế cốt lõi**: KHÔNG cần biết
+trước "đây là mua hay bán" chỉ vì thấy `UNWRAP_WETH`/`SWEEP` đứng sau —
+`pipeline.rs::decode_and_classify`/`decode_and_classify_quote` đã tự phân
+loại đúng hướng qua `path.token_a` của CHÍNH command swap đó, decoder không
+cần (và không nên) đoán thêm dựa vào ngữ cảnh command khác. Điều này làm
+code đơn giản hơn nhiều so với dự tính ban đầu (không cần "state machine"
+phức tạp theo dõi WRAP_ETH/UNWRAP_WETH).
+
+- `PERMIT2_PERMIT` đứng TRƯỚC swap → đọc `payerIsUser` (word idx4 của
+  `V2SwapExactInParams`/`V3SwapExactInParams`, field TĨNH nằm sau field
+  `bytes path` dynamic — ABI luôn giữ field tĩnh ĐÚNG vị trí head bất kể
+  path dài bao nhiêu) — `false` → `decode_fail` (an toàn, không giả định
+  attacker biết nguồn vốn victim). Verify bằng mẫu THẬT (payerIsUser=true)
+  + fixture tay (payerIsUser=false).
+- `WRAP_ETH` đứng TRƯỚC swap + `amountIn==CONTRACT_BALANCE` (2^255) →
+  `amount_in` = `tx.value`. Không có `WRAP_ETH` trước mà vẫn gặp sentinel →
+  `decode_fail` (không biết lấy số thật từ đâu, không đoán).
+- `execute(bytes,bytes[],uint256)` (tham số deadline thứ 3) — TRƯỚC ĐÂY bị
+  bỏ qua hoàn toàn (`DecodedSwap.deadline` luôn `None` dù selector có tham
+  số này) — giờ đọc thật, gán vào kết quả.
+- Không tìm thấy command SWAP nào (SEAPORT/NFT khác/command lạ) →
+  `decode_fail`, ĐÚNG (không phải bug, xem phát hiện B1).
+- >1 command SWAP trong CÙNG 1 `execute()` (hiếm, không thấy trong mẫu
+  thật) → lấy hop ĐẦU TIÊN (đơn giản hoá có chủ đích, ghi rõ CÒN NỢ multihop
+  đầy đủ trong `execute()` đơn — khác nợ "multihop qua nhiều lời gọi", xem B3).
+
+### B3 — `SmartRouter.multicall`
+
+`multicall(bytes[])`/`multicall(uint256,bytes[])`: bóc từng sub-call qua
+LẠI ĐÚNG bảng dispatch selector dùng chung với top-level
+(`try_decode_token_swap_selector`) — tìm ĐÚNG 1 sub-call là swap; sub-call
+khác (`refundETH()`/`unwrapWETH9(...)`/`sweepToken(...)`, không nằm trong
+bảng dispatch) bị bỏ qua, KHÔNG coi là lỗi. >1 sub-call swap (multihop qua
+nhiều lời gọi multicall riêng biệt) → `decode_fail`, không đoán hop nào
+"thật" — quyết định có chủ đích, khớp tinh thần "không đoán multihop" nhất
+quán với `TwoTokenPath::from_packed_v3_path_with_fee` (V3 packed path >1
+hop cũng `not_wbnb_pair`). `deadline` của `multicall(uint256,bytes[])` được
+gán vào sub-call NẾU sub-call đó không tự có deadline riêng (biến thể
+`*NoDeadline`).
+
+Thêm 4 selector mới (verify bằng `keccak256` thật, KHÔNG chép từ trí nhớ,
+xem test `well_known_selectors_match`-style trong `decoder.rs`):
+`exactInputSingle(address,address,uint24,address,uint256,uint256,uint160)`
+= `0x04e45aaf`, `exactOutputSingle(...)` (bản có/không deadline) =
+`0xdb3e2198`/`0x5023b4df`, `exactOutput((bytes,address,uint256,uint256[,uint256]))`
+(có/không deadline) = `0xf28c0498`/`0x09b81346`, `multicall(bytes[])` =
+`0xac9650d8`, `multicall(uint256,bytes[])` = `0x5ae401dc`. Biến thể
+`multicall(bytes32,bytes[])` (previousBlockhash guard) CHƯA quan sát được
+trong mẫu thật — KHÔNG thêm (không đoán).
+
+### Phát hiện phụ + FIX BUG pre-existing quan trọng — `exactInput` 2 lớp offset ABI
+
+Khi cài `exactOutput((bytes,address,uint256,uint256))` (field `bytes path`
+đứng ĐẦU, dynamic), đối chiếu calldata THẬT (`0x09b81346`, xem B1) phát
+hiện: hàm nhận ĐÚNG 1 tham số struct chứa field dynamic ở đầu → ABI mã hoá
+**2 LỚP offset thật** (offset NGOÀI trỏ tới điểm bắt đầu struct, rồi field
+`bytes` đầu tiên bên TRONG struct lại có offset RIÊNG tính từ điểm bắt đầu
+đó) — KHÁC hẳn kiểu "1 lớp" mà `SEL_EXACT_INPUT` (đã có từ phiên `3.3`,
+cùng dạng struct `(bytes,address,uint256,uint256,uint256)`) đang dùng.
+Word-by-word đối chiếu calldata thật (`word0=0x20`, `word1=0x80` — offset
+TRONG tính từ `word1`, `word5=0x2b`=43 đúng độ dài path 1 hop) khớp CHÍNH
+XÁC layout 2 lớp, loại trừ hẳn khả năng "1 lớp đúng". Điều này nghĩa là
+`SEL_EXACT_INPUT` cũ đã decode SAI field (`recipient`/`deadline`/`amount_in`
+lệch vị trí, path length đọc nhầm giá trị offset trong) cho MỌI calldata
+`exactInput` thật kể từ phiên `3.3` — không phải lỗi mới của phiên này,
+nhưng được phát hiện VÀ SỬA trong cụm này (thêm helper
+`dynamic_bytes_leading_field_of_sole_tuple_param`/`tuple_field_byteoffset`,
+dùng chung cho cả `exactInput` (sửa) và `exactOutput` (mới), test fixture
+`build_exact_input` cũng phải sửa theo layout đúng — 2 test cũ
+`decode_v3_exact_input_single_hop_wbnb_pair`/`decode_v3_exact_input_multihop_is_not_wbnb_pair`
+FAIL ngay sau khi sửa hàm decode (đúng — chứng minh fixture cũ SAI cùng
+kiểu với code cũ), sửa fixture xong cả 2 pass lại. **Ảnh hưởng thực tế**:
+mọi tx `exactInput` thật trước đây (venue V3, đã bị `VenueUnpinned` skip
+nên KHÔNG ảnh hưởng sim/tiền — chỉ ảnh hưởng độ chính xác phân loại lý do
+skip, có thể đã lẫn vào `not_wbnb_pair`/`decode_fail` thay vì đúng
+`venue_unpinned`) — không phải lỗi tài chính, là lỗi phân loại thống kê.
+
+### `venue_matches_router` (B4)
+
+Thêm 4 tên selector mới (`exactInputSingleNoDeadline`,
+`exactOutputSingle(NoDeadline)`, `exactOutput(NoDeadline)`) vào nhóm
+`classic_v3` (chỉ hợp lệ khi router là V3 SwapRouter hoặc SmartRouter) — test
+2 chiều xác nhận mismatch đúng khi gửi nhầm tới V2 Router/Universal Router.
+
+### CÒN NỢ (ghi rõ, không bịa đã xong)
+
+- Multihop THẬT trong 1 `execute()` (2+ command SWAP nối tiếp cùng dòng
+  vốn) hoặc qua nhiều lời gọi `multicall` riêng biệt — cả 2 đều `decode_fail`
+  có chủ đích, chưa có model.
+- `V2_SWAP_EXACT_OUT`/`V3_SWAP_EXACT_OUT` làm command CHÍNH trong UR (khác
+  `exactOutputSingle`/`exactOutput` của SmartRouter, đã hỗ trợ) — chưa thêm,
+  quan sát 1 mẫu thật (`V2_SWAP_EXACT_OUT` đơn lẻ) vẫn `decode_fail`.
+- Sentinel `CONTRACT_BALANCE` cho `V3_SWAP_EXACT_IN`/nhánh khác ngoài
+  `WRAP_ETH`→`V2_SWAP_EXACT_IN` — code xử lý chung (bất kỳ command swap nào
+  gặp sentinel + có `WRAP_ETH` trước đều được xử lý), nhưng chỉ verify được
+  bằng fixture tay (chưa có mẫu thật kích hoạt nhánh V3 hoặc PERMIT2 kèm
+  sentinel).
+- Recipient sentinel `MSG_SENDER`(`...0001`)/`ADDRESS_THIS`(`...0002`) → chưa
+  map thành `tx.from` (cần thêm tham số `from` xuyên suốt `decode_swap_calldata`,
+  rủi ro sửa ~15+ call site cho 1 field KHÔNG được dùng ở bất kỳ quyết định
+  sandwich nào hiện tại — `DecodedSwap.to` chỉ dùng để log). Ghi rõ, cần lệnh
+  riêng nếu Chủ muốn field này chính xác cho mục đích khác (vd hiển thị).
+- Nợ BAOCAO38 phần còn lại: nonce gate (F-13) CHƯA wire vào đường nóng
+  `sim_engine="v2"` — CHỈ 2/3 mục nhỏ khác của nợ BAOCAO38 được làm ở cụm
+  này (`gas_units_boot_task` chờ `pair.reload` xong qua `Notify` thay vì
+  đoán 60s cố định; log `amount_in` nhánh USDT đọc từ calldata) — nonce gate
+  đầy đủ (prefetch cache theo `from` lúc `tx.seen`, đếm `nonce_unknown`)
+  CHƯA làm, cần cụm riêng (rủi ro/khối lượng vượt phạm vi "2 fix nhỏ" của
+  lệnh này).
 
 ## RPC crate
 
@@ -161,15 +332,13 @@ index pool có sẵn (việc đó cần thêm cụm riêng, ghi vào TASKS nếu
 
 - Không có executor gửi tx — `7.x`. Không có hàm `send_raw_transaction` nào
   tồn tại trong repo ở phiên này.
-- `src/decoder.rs` Universal Router: chỉ decode đúng 1 command/1 input
-  (`V2_SWAP_EXACT_IN`/`V3_SWAP_EXACT_IN`) trong 1 tx `execute()`. Tx multicall
-  nhiều command gộp -> `decode_fail` (không đoán thứ tự tác động WBNB).
-  SmartRouter dùng lại đúng selector `exactInputSingle`/`exactInput` (giống
-  V3 SwapRouter, cùng chữ ký hàm) nên đã decode được; biến thể V2-style 4
-  tham số riêng của SmartRouter (không có `deadline`, khác V2 Router cổ
-  điển 5 tham số) CHƯA pin chữ ký chính xác phiên này — chưa có trong
-  decoder, calldata dạng đó sẽ rơi vào `decode_fail` cho tới khi pin đúng
-  nguồn (không đoán chữ ký).
+- **[LỖI THỜI — thay bởi cụm `decoder-coverage` (`hotpath-fix-then-decoder-ur`
+  B2/B3/B4), xem mục cùng tên bên dưới]** `src/decoder.rs` Universal Router:
+  trước đó chỉ decode đúng 1 command/1 input trong 1 tx `execute()`, tx
+  multicall nhiều command gộp -> `decode_fail`; biến thể V2-style 4 tham số
+  của SmartRouter (không `deadline`) chưa pin. Cụm `decoder-coverage` đã pin
+  đúng chữ ký (`0x04e45aaf`) + hỗ trợ UR đa command + `SmartRouter.multicall`
+  — giữ nguyên văn đoạn này cho lịch sử.
 - `src/main.rs::connect_rpc` đã nối `BSC_HTTP`/`BSC_WS` thật (env, chủ điền
   qua `.env`) qua `alloy-provider`, fallback placeholder `vps.json` khi
   thiếu — verify thật bằng RPC công khai (xem BAOCAO03), không phải nối cứng

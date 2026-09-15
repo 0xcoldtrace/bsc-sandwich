@@ -132,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         gas_oracle: transport::GasOracle::new(),
         gas_units: RwLock::new(initial_gas_units),
         reserve_cache: RwLock::new(transport::ReserveCache::new()),
+        pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
     });
 
     {
@@ -223,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
             // lan reload - gate vet nam trong PairBook::reload chinh no.
             let require_vetted = pair_reload_state.config.read().await.pairs_require_vetted;
             let mut book = pair_reload_state.pairbook.write().await;
-            let _ = book
+            let did_reload = book
                 .reload_if_due(
                     &pairs_path,
                     &resolver,
@@ -233,6 +234,15 @@ async fn main() -> anyhow::Result<()> {
                     require_vetted,
                 )
                 .await;
+            drop(book);
+            // Cum B5 - bao hieu lan reload THAT DAU TIEN (co provider, thuc
+            // su chay PairBook::reload) da xong - gas_units_boot_task cho tin
+            // hieu nay thay vi doan thoi gian co dinh. `notify_one` luu 1
+            // "permit" neu chua ai dang cho (dung ca 2 thu tu: reload xong
+            // truoc hay gas_units_boot_task cho truoc deu dung).
+            if did_reload {
+                pair_reload_state.pairs_first_reload_done.notify_one();
+            }
         }
     });
 
@@ -954,7 +964,14 @@ async fn pairs_vet_task(app_state: AppState) {
 /// thì thử lại; hết số lần thử vẫn giữ fallback config, log rõ, KHÔNG panic,
 /// KHÔNG chặn boot (task nền độc lập, `main()` không `.await` task này).
 async fn gas_units_boot_task(app_state: AppState) {
-    const MAX_ATTEMPTS: u32 = 12; // 12 * 5s = 60s cho pairs.txt/provider san sang
+    // Cum `hotpath-fix-then-decoder-ur` (B5, no BAOCAO38) - cho pair.reload
+    // LAN DAU xong THAT SU (event-driven qua Notify, khong doan thoi luong co
+    // dinh) truoc khi bat dau vong lap do gas - BAOCAO38 ghi nhan giveup som
+    // hon reload chi 700ms du co 60s ngan sach (reload ~90 dong pairs.txt qua
+    // RPC thuc te co the mat >60s). Tran 120s la LUOI AN TOAN (phong khi
+    // provider khong bao gio ket noi duoc) - khong chan boot vo han.
+    let _ = tokio::time::timeout(Duration::from_secs(120), app_state.pairs_first_reload_done.notified()).await;
+    const MAX_ATTEMPTS: u32 = 12; // 12 * 5s = 60s THEM sau khi reload lan dau xong (vong lap goc)
     let probe_in = alloy::primitives::U256::from(50_000_000_000_000_000u128); // 0.05 BNB
     for attempt in 1..=MAX_ATTEMPTS {
         let provider_opt = app_state.provider.read().await.clone();
@@ -1349,11 +1366,14 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
             Ok((token, pipeline::QuoteAsset::Usdt)) => {
                 token_hint = Some(token); // biet token THAT du buoc sau co skip vi ly do gi
                 meta.quote = Some("usdt".to_string());
-                // amount_in USDT nam trong calldata (khong phai tx.value nhu
-                // nhanh WBNB) - CHUA wire rieng o day (scan_quote_usdt=false
-                // ship, khong phai duong nong), xoa gia tri WBNB mac dinh sai
-                // ngu canh de khong bia so.
-                meta.amount_in = None;
+                // Cum B5 (no BAOCAO38) - amount_in USDT nam trong calldata
+                // (khong phai tx.value nhu nhanh WBNB) - decode lai (thuan,
+                // re, calldata da qua duoc precheck_quote_only nen chac chan
+                // Ok) CHI de lay dung amount_in that cho log, khong dung ket
+                // qua nay cho quyet dinh (decide_paper_quote tu decode rieng).
+                meta.amount_in = bsc_sandwich::decoder::decode_swap_calldata(&raw.input, raw.value)
+                    .ok()
+                    .map(|d| d.amount_in.to_string());
                 let provider_guard = app_state.provider.read().await;
                 let usdt_outcome = match provider_guard.as_ref() {
                     None => PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool),
@@ -1826,6 +1846,7 @@ mod tests {
             gas_oracle: transport::GasOracle::new(),
             gas_units: RwLock::new((160_000, 140_000)),
             reserve_cache: RwLock::new(transport::ReserveCache::new()),
+        pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
         });
 
         let task_state = app_state.clone();

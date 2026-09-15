@@ -115,6 +115,12 @@ pub struct AppStateInner {
     /// CÙNG 1 pool trong CÙNG 1 block (nhiều candidate cùng pool nóng rất phổ
     /// biến, xem `transport::ReserveCache`).
     pub reserve_cache: RwLock<crate::transport::ReserveCache>,
+    /// Cụm `hotpath-fix-then-decoder-ur` (B5) — báo hiệu `pairbook` reload
+    /// LẦN ĐẦU (có provider, thực sự chạy `PairBook::reload`) đã xong —
+    /// `gas_units_boot_task` chờ tín hiệu này (thay vì đoán 1 khoảng thời
+    /// gian cố định) trước khi bắt đầu đo gas thật, tránh race đã ghi nhận ở
+    /// BAOCAO38 (giveup sớm hơn reload thật chỉ 700ms dù có 60s ngân sách).
+    pub pairs_first_reload_done: Arc<tokio::sync::Notify>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
