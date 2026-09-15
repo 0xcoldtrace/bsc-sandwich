@@ -109,16 +109,53 @@
 0xA524B11473b7Ce7EB1dc883A585e64471A734444 # JobIess | vetted 2026-09-16 | tax 0/0 | owner renounced | reserve_wbnb~=39 BNB, four.meme
 0x640C04CA09c5C5140E62FEf42c59E3aFdBbd4444 # 我的刀盾 | vetted 2026-09-16 | tax 0/0 | owner renounced | reserve_wbnb~=39 BNB, four.meme
 0x2789033DFE80593f69d689f65892a75aFA491111 # WM | vetted 2026-09-16 | tax 0/0 | owner renounced | reserve_wbnb~=33 BNB
-0xeCCBb861c0dda7eFd964010085488B69317e4444 # 龙虾 | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=28262 ge_min=11927 vol_bnb=11390 reserve=2436bnb contract=Token
-0x2A846AAaf896EF393cCb76398c1d96eA97374444 # BORT | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=27068 ge_min=9689 vol_bnb=12219 reserve=309bnb contract=Token
-0xe210C0583C1071714EDed2d8bEEab05Ab5bB7777,0x55d398326f99059fF775485246999027B3197955 # BinanceTown | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=12203 ge_min=6076 vol_bnb=32367 reserve=116667usdt contract=Token
-0x01FBEd06A70EB1b4A0B43Dbc6a94f99944CD7777,0x55d398326f99059fF775485246999027B3197955 # BNC | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=9654 ge_min=4905 vol_bnb=23685 reserve=98202usdt contract=Token
-0xB391e9bEF634ADf52A0972fBD0943935e6097777,0x55d398326f99059fF775485246999027B3197955 # Sue | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=8348 ge_min=4175 vol_bnb=20210 reserve=30766usdt contract=Token
-0xA3cfB853339b77F385B994799B015cB04b208Fe6,0x55d398326f99059fF775485246999027B3197955 # POP | vetted 2026-09-16 | tax 0/0 | owner active | swaps24h=7448 ge_min=2210 vol_bnb=1646 reserve=163509usdt contract=ZypherNetworkToken
-0xEDeE16Bf89361506F3dA715AaE29B22f71992777 # OI | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=2030 ge_min=982 vol_bnb=231 reserve=183bnb contract=OiToken
-0x7d03759E5B41E36899833cb2E008455d69A24444 # priceless | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=8120 ge_min=719 vol_bnb=240 reserve=74bnb contract=Token
-0x198dBA421A7dB566A90DA5de7901AbE3443B4444 # 富贵 | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=1726 ge_min=498 vol_bnb=358 reserve=97bnb contract=Token
-0x3dB1B406a4d50A841948765685ed42ed1f174444 # BRAD | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=4000 ge_min=404 vol_bnb=147 reserve=27bnb contract=Token
-0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82,0x55d398326f99059fF775485246999027B3197955 # Cake | vetted 2026-09-16 | tax 0/0 | owner active | swaps24h=1052 ge_min=397 vol_bnb=144 reserve=464348usdt contract=CakeToken
-0xF3c35A84EF311C847CE4da33C3C31c57770B3760,0x55d398326f99059fF775485246999027B3197955 # POFD | vetted 2026-09-16 | tax 0/0 | owner renounced | swaps24h=2024 ge_min=380 vol_bnb=211 reserve=140704usdt contract=POFD
-0xB82ce467e525F17ffb2B4C8786B6ebe06B66a5A2,0x55d398326f99059fF775485246999027B3197955 # AIX | vetted 2026-09-16 | tax 0/0 | owner none | swaps24h=2142 ge_min=314 vol_bnb=89 reserve=182675usdt contract=AIX
+0x2A846AAaf896EF393cCb76398c1d96eA97374444 # BORT | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=29705 ge_min=10562 vol_bnb=13352.86 reserve=283.77bnb verified=yes proxy=0
+0xeCCBb861c0dda7eFd964010085488B69317e4444 # 龙虾 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=25295 ge_min=10441 vol_bnb=9765.40 reserve=2502.72bnb verified=yes proxy=0
+0xe210C0583C1071714EDed2d8bEEab05Ab5bB7777,0x55d398326f99059fF775485246999027B3197955 # BinanceTown | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=12240 ge_min=6204 vol_bnb=32781.74 reserve=100114.85usdt verified=yes proxy=0
+0x01FBEd06A70EB1b4A0B43Dbc6a94f99944CD7777,0x55d398326f99059fF775485246999027B3197955 # BNC | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=10711 ge_min=5415 vol_bnb=26244.18 reserve=117839.09usdt verified=yes proxy=0
+0xA3cfB853339b77F385B994799B015cB04b208Fe6,0x55d398326f99059fF775485246999027B3197955 # POP | vetted 2026-09-16 |  | tax 0/0 | owner active | swaps24h=7293 ge_min=2134 vol_bnb=1688.04 reserve=162111.63usdt verified=yes proxy=0
+0xEDeE16Bf89361506F3dA715AaE29B22f71992777 # OI | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=2153 ge_min=1041 vol_bnb=235.08 reserve=182.88bnb verified=yes proxy=0
+0x7d03759E5B41E36899833cb2E008455d69A24444 # priceless | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=7371 ge_min=719 vol_bnb=228.95 reserve=76.68bnb verified=yes proxy=0
+0x198dBA421A7dB566A90DA5de7901AbE3443B4444 # 富贵 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1627 ge_min=488 vol_bnb=339.64 reserve=96.62bnb verified=yes proxy=0
+0x3dB1B406a4d50A841948765685ed42ed1f174444 # BRAD | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=4557 ge_min=376 vol_bnb=137.46 reserve=26.34bnb verified=yes proxy=0
+0xF3c35A84EF311C847CE4da33C3C31c57770B3760,0x55d398326f99059fF775485246999027B3197955 # POFD | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1979 ge_min=369 vol_bnb=209.79 reserve=140012.17usdt verified=yes proxy=0
+0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82,0x55d398326f99059fF775485246999027B3197955 # Cake | vetted 2026-09-16 |  | tax 0/0 | owner active | swaps24h=880 ge_min=331 vol_bnb=87.66 reserve=464688.61usdt verified=yes proxy=0
+0xB82ce467e525F17ffb2B4C8786B6ebe06B66a5A2,0x55d398326f99059fF775485246999027B3197955 # AIX | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=2135 ge_min=312 vol_bnb=88.37 reserve=183007.46usdt verified=yes proxy=0
+0x990C71fDFA761bCF500AC8753f775FF7Fb1b4444 # 9 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=807 ge_min=305 vol_bnb=228.94 reserve=193.18bnb verified=yes proxy=0
+0x2170Ed0880ac9A755fd29B2688956BD959F933F8,0x55d398326f99059fF775485246999027B3197955 # ETH | vetted 2026-09-16 |  | tax 0/0 | owner active | swaps24h=3615 ge_min=243 vol_bnb=96.57 reserve=417703.62usdt verified=yes proxy=0
+0x3e17ee3B1895dD1A7CF993A89769C5e029584444 # Freedom of Money | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=789 ge_min=220 vol_bnb=174.79 reserve=262.86bnb verified=yes proxy=0
+0xC9882dEF23bc42D53895b8361D0b1EDC7570Bc6A # FIST | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=2483 ge_min=207 vol_bnb=103.85 reserve=116.20bnb verified=yes proxy=0
+0xC9882dEF23bc42D53895b8361D0b1EDC7570Bc6A,0x55d398326f99059fF775485246999027B3197955 # FIST | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1764 ge_min=204 vol_bnb=152.99 reserve=238497.01usdt verified=yes proxy=0
+0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c,0x55d398326f99059fF775485246999027B3197955 # BTCB | vetted 2026-09-16 |  | tax 0/0 | owner active | swaps24h=3235 ge_min=191 vol_bnb=186.39 reserve=361032.33usdt verified=yes proxy=0
+0xF1c599E9A5FBDEA408a7409C0176a2fE42C64444 # Hachiko | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1788 ge_min=185 vol_bnb=64.10 reserve=98.20bnb verified=yes proxy=0
+0xE4FAE3Faa8300810C835970b9187c268f55D998F # CATE | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=845 ge_min=184 vol_bnb=166.95 reserve=171.93bnb verified=yes proxy=0
+0x924fa68a0FC644485b8df8AbfA0A41C2e7744444 # 币安人生 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=3514 ge_min=179 vol_bnb=305.59 reserve=5313.50bnb verified=yes proxy=0
+0x7A848a5A8169aa6a2f603D056A749f924F504444 # CZ | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1936 ge_min=173 vol_bnb=81.86 reserve=226.57bnb verified=yes proxy=0
+0xc269d59a0D608EA0bd672F2F4616C372d8554444 # ClipX | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1856 ge_min=131 vol_bnb=135.24 reserve=95.85bnb verified=yes proxy=0
+0xc748673057861a797275CD8A068AbB95A902e8de # BabyDoge | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=1735 ge_min=130 vol_bnb=158.40 reserve=6022.85bnb verified=yes proxy=0
+0xeb2B7d5691878627eff20492cA7c9a71228d931D # CREPE | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=2052 ge_min=106 vol_bnb=88.77 reserve=476.36bnb verified=yes proxy=0
+0xcf25d38c0ADCA458aEa8BD57687A2b33A2d84444,0x55d398326f99059fF775485246999027B3197955 # Virus2027 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=309 ge_min=104 vol_bnb=21.76 reserve=208385.35usdt verified=yes proxy=0
+0x62D0A8458eD7719FDAF978fe5929C6D342B0bFcE # BEAM | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=462 ge_min=101 vol_bnb=29.34 reserve=181.15bnb verified=yes proxy=0
+0x4b8285aB433D8f69CB48d5Ad62b415ed1a221e4f # MCRT | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=360 ge_min=97 vol_bnb=34.11 reserve=91.94bnb verified=yes proxy=0
+0x53e3Ba715F8050D84d1BeE69DeC8152EEaD1C375,0x55d398326f99059fF775485246999027B3197955 # XMT | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=1186 ge_min=88 vol_bnb=39.81 reserve=702104.20usdt verified=yes proxy=0
+0xc79fDA51894DCe271065E06DF3F68ec19481aea5,0x55d398326f99059fF775485246999027B3197955 # CBM | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=200 ge_min=77 vol_bnb=483.43 reserve=1880910.81usdt verified=yes proxy=0
+0x1868D0c4D8cAbF094D76F5293cF2B2662e8CEE43,0x55d398326f99059fF775485246999027B3197955 # NFTC | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=2642 ge_min=77 vol_bnb=70.51 reserve=73609.12usdt verified=yes proxy=0
+0xD723f2aEA80d1620864ac059F34f168fa223B2f1,0x55d398326f99059fF775485246999027B3197955 # KXG | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=176 ge_min=73 vol_bnb=35.36 reserve=138308.34usdt verified=yes proxy=0
+0x616d821f756d537809b8a920A1A8Aa28738f4444 # BAXK | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=229 ge_min=73 vol_bnb=24.11 reserve=23.37bnb verified=yes proxy=0
+0x301d651A47E2193EDa6890C07D99917a29702aE6,0x55d398326f99059fF775485246999027B3197955 # RGE | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=281 ge_min=67 vol_bnb=36.31 reserve=60612.97usdt verified=yes proxy=0
+0x141A753ebE663B653C7675D54D54c2e795162dee # AIZU | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=193 ge_min=64 vol_bnb=15.15 reserve=90.84bnb verified=yes proxy=0
+0xf3525965a4aD3ca0AC13f4D2F237113691194444 # 熊猫头 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=185 ge_min=63 vol_bnb=52.37 reserve=77.84bnb verified=yes proxy=0
+0x4444DEF5cF226BF50AA4b45e5748b676945BC509 # 世界和平 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=218 ge_min=62 vol_bnb=48.24 reserve=31.55bnb verified=yes proxy=0
+0x717D335bc2243d9eF3d24231872e5100a452B416 # FLIES | vetted 2026-09-16 |  | tax 0/0 | owner active | swaps24h=114 ge_min=59 vol_bnb=29.22 reserve=26.74bnb verified=yes proxy=2
+0x985c6C2A7B35a3Cd8ce0BC576B614c7c254Ef782,0x55d398326f99059fF775485246999027B3197955 # SDM | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=239 ge_min=57 vol_bnb=28.03 reserve=52681.34usdt verified=yes proxy=0
+0x99F5054F1d9799F901dF533FBFE5D9B3f25B4444 # 战壕入门包 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=181 ge_min=53 vol_bnb=28.83 reserve=23.59bnb verified=yes proxy=0
+0x82ED0c6B54DaeBc098495F6AAdf32f66Eb084444 # 猫姐 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=144 ge_min=50 vol_bnb=52.96 reserve=106.63bnb verified=yes proxy=0
+0xb0AD9c2313B9719EA0ccd43d7E7E1FD07e7cBd90,0x55d398326f99059fF775485246999027B3197955 # DBT | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=193 ge_min=49 vol_bnb=14.31 reserve=38345.33usdt verified=yes proxy=0
+0x5A6117EE2EA174D5875e3c1880ecd7bc8dA651B6 # KLIP | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=763 ge_min=47 vol_bnb=18.24 reserve=127.38bnb verified=yes proxy=0
+0x9212cF1f9f4A9c69Bb010146Ba5b0725169D4444 # bibi | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=220 ge_min=46 vol_bnb=29.05 reserve=107.85bnb verified=yes proxy=0
+0x0b6d8934fC8838B1027b510364A2087317bD4444 # bibi | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=205 ge_min=41 vol_bnb=44.96 reserve=90.32bnb verified=yes proxy=0
+0x28ba6Ef35f27f1eD3873cc788698d2DDb28D2a82 # SLT | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=106 ge_min=41 vol_bnb=6.95 reserve=1131.27bnb verified=yes proxy=0
+0x5C097b1043E2Ea5b247f56D4e1a01d1DA31E9fEc,0x55d398326f99059fF775485246999027B3197955 # DNDV3 | vetted 2026-09-16 |  | tax 0/0 | owner none | swaps24h=94 ge_min=40 vol_bnb=53.12 reserve=337121.81usdt verified=yes proxy=0
+0x63d9B8830255ba8ceAf3958E6F2906E52b424444 # 噜噜 | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=123 ge_min=39 vol_bnb=17.67 reserve=30.08bnb verified=yes proxy=0
+0x74Ac77D7CA54c38EB5ea2e638a80A5182558d3a2 # SURGE | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=68 ge_min=38 vol_bnb=39.21 reserve=76.78bnb verified=yes proxy=0
+0xd28E716fa02543962b3129f9E4D919C65F434444 # Libra | vetted 2026-09-16 |  | tax 0/0 | owner renounced | swaps24h=611 ge_min=37 vol_bnb=32.51 reserve=842.99bnb verified=yes proxy=0
