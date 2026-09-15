@@ -8,7 +8,7 @@
    tế, không nối live) + 1 tin nhắn bổ sung giữa phiên (mục 13, sửa 4 lỗi đo
    trong `scripts/paper_run.sh`).
 
-3. FILE ĐỔI:
+3. FILE ĐỔI: (commit `3694908a1e76c303e787b4be0d1d912952f220a6`, luật #1)
    - `src/decoder.rs` — F-20 (`slice_checked` dùng `checked_add`, 4 chỗ cộng
      offset không checked cũ); F-16 (`venue_matches_router` mới); fuzz test.
    - `src/config.rs` — F-05 (`Config::gate_check` nguồn duy nhất,
@@ -237,4 +237,10 @@
       (chỉ ghi placeholder MISSING, không tự bịa lại nội dung 2 phiên đó vì
       không đọc trực tiếp 2 file `.md` đó phiên này).
 
-Commit: `[[DIEN SAU KHI COMMIT]]`
+Commit: `3694908a1e76c303e787b4be0d1d912952f220a6` (2026-09-15 14:39:00 +0700).
+`git status --short` rỗng sau commit. Rebuild `cargo build --release` NGAY
+SAU commit (source giống hệt, không sửa gì thêm) cho `sha256sum
+target/release/bsc_sandwich` = `72e9bcf882f99796d84da078d2958cccbfb7e71d1b3254b3c9ab8e4c4f960873`
+— TRÙNG KHỚP chính xác với hash đã dùng xuyên suốt mọi lần chạy ở ô 5 (build
+deterministic, cùng source) — xác nhận toàn bộ số liệu THẬT ở ô 5 (smoke
+test 1 phút + DoD 30 phút) tương ứng ĐÚNG với code của commit này.
