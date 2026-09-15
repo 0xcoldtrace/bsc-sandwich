@@ -310,6 +310,42 @@ fn decode_reserves_return(data: &[u8]) -> Option<(U256, U256)> {
     Some((reserve0, reserve1))
 }
 
+// ============================================================================
+// Cụm `econ-truth-latency-vps` (mục 3) — Sync event (topic0
+// `keccak256("Sync(uint112,uint112)")`) để cập nhật `ReserveCache` NGAY khi
+// pool đổi state, KHÔNG cần `eth_call getReserves` trên đường nóng mỗi tx.
+// ============================================================================
+
+const SYNC_EVENT_SIG: &str = "Sync(uint112,uint112)";
+
+/// Topic0 của event `Sync(uint112,uint112)` (`UniswapV2Pair.sol`, PancakeSwap
+/// V2 fork y hệt layout) — suy từ `keccak256` chữ ký thật, KHÔNG hardcode hex
+/// nhớ tay (cùng quy ước `sim_evm::swap_topic0`/`pool::CL_INITIALIZE_TOPIC0`).
+pub fn sync_topic0() -> B256 {
+    keccak256(SYNC_EVENT_SIG.as_bytes())
+}
+
+/// `data` (KHÔNG indexed) của log `Sync` = ĐÚNG 2 word 32-byte
+/// (`reserve0`,`reserve1`) — cùng layout 2 word đầu của `getReserves()` trả
+/// về (bỏ `blockTimestampLast`), dùng lại `decode_reserves_return`.
+pub fn decode_sync_log_reserves(data: &[u8]) -> Option<(U256, U256)> {
+    decode_reserves_return(data)
+}
+
+/// Sắp `(reserve0, reserve1)` THÔ (từ log `Sync`) về đúng chiều
+/// `(reserve_quote, reserve_token)` — cần biết TRƯỚC `token0` của pool này
+/// (1 lần duy nhất/pool, qua `eth_call token0()` — KHÔNG lặp lại mỗi event,
+/// xem `main.rs::subscribe_sync_events`). Cùng logic sắp chiều với
+/// `get_reserves_vs_quote` (đã verify RPC thật), tách ra đây để dùng được mà
+/// KHÔNG cần `Provider` (test thuần, và dùng trực tiếp trong event handler).
+pub fn order_reserves_by_quote(token0: Address, quote: Address, reserve0: U256, reserve1: U256) -> (U256, U256) {
+    if token0 == quote {
+        (reserve0, reserve1)
+    } else {
+        (reserve1, reserve0)
+    }
+}
+
 /// `PoolId = keccak256(PoolKey)` — theo `PoolId.sol::PoolIdLibrary.toId`
 /// (nguồn `github.com/pancakeswap/infinity-core`, `src/types/PoolId.sol`,
 /// đọc trực tiếp phiên `v4-pool-resolve`): `keccak256` trên đúng 192 byte
@@ -545,6 +581,39 @@ mod tests {
     #[test]
     fn decode_reserves_return_too_short_is_none() {
         assert_eq!(decode_reserves_return(&[0u8; 40]), None);
+    }
+
+    // ===== Cụm `econ-truth-latency-vps` (mục 3) — Sync event =====
+
+    #[test]
+    fn sync_topic0_matches_known_keccak() {
+        // keccak256("Sync(uint112,uint112)") — giá trị chuẩn PancakeSwap
+        // V2/UniswapV2 (quan sát thật trên nhiều block explorer).
+        assert_eq!(format!("{:#x}", sync_topic0()), "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
+    }
+
+    #[test]
+    fn decode_sync_log_reserves_reads_two_words() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&U256::from(500u64).to_be_bytes::<32>());
+        data.extend_from_slice(&U256::from(999u64).to_be_bytes::<32>());
+        assert_eq!(decode_sync_log_reserves(&data), Some((U256::from(500u64), U256::from(999u64))));
+    }
+
+    #[test]
+    fn decode_sync_log_reserves_too_short_is_none() {
+        assert_eq!(decode_sync_log_reserves(&[0u8; 10]), None);
+    }
+
+    #[test]
+    fn order_reserves_by_quote_token0_is_quote_keeps_order() {
+        let quote = wbnb();
+        let token = addr("0x2222222222222222222222222222222222222222");
+        let (rq, rt) = order_reserves_by_quote(quote, quote, U256::from(10u64), U256::from(20u64));
+        assert_eq!((rq, rt), (U256::from(10u64), U256::from(20u64)));
+        // token0 = token (khac quote) -> phai dao nguoc.
+        let (rq2, rt2) = order_reserves_by_quote(token, quote, U256::from(10u64), U256::from(20u64));
+        assert_eq!((rq2, rt2), (U256::from(20u64), U256::from(10u64)));
     }
 
     #[test]

@@ -1189,7 +1189,7 @@ pub fn log_outcome(logger: &BotLogger, from: Address, token_hint: Option<Address
                     "token": token_hint.map(|t| format!("{:#x}", t)),
                     "front_in_wei": q.front_in.to_string(),
                     "back_out_wei": q.back_out.to_string(),
-                    "profit_wei": q.profit_wei,
+                    "profit_wei": q.profit_wei.to_string(),
                 }),
             );
         }
@@ -1310,7 +1310,25 @@ pub fn log_outcome_v2(
                     "token": token_hint.map(|t| format!("{:#x}", t)),
                     "front_in_wei": q.front_in.to_string(),
                     "back_out_wei": q.back_out.to_string(),
-                    "profit_wei": q.profit_wei,
+                    // Cum `econ-truth-latency-vps` (muc 1) - FIX BUG THAT
+                    // NGHIEM TRONG (nguyen nhan goc lech funnel.simulated vs
+                    // so dong sim.result that, BAOCAO39: 27 vs 14, tai hien
+                    // 4 vs 1/2 phien nay): `serde_json::json!` macro goi
+                    // `serde_json::to_value(...).unwrap()` NOI BO cho moi
+                    // truong khong phai literal - voi i128 VUOT i64::MAX
+                    // (~9.22e18, tuc CHI >9.22 token don vi wei, RAT PHO
+                    // BIEN voi profit USDT/token khac BNB) serde_json (khong
+                    // bat feature "arbitrary_precision") tra Err("number out
+                    // of range"), `.unwrap()` NOI BO panic - task
+                    // `tokio::spawn(handle_paper_tx(...))` CHET AM THAM (khong
+                    // ai `.await` JoinHandle nen khong log duoc loi task),
+                    // `record_funnel_terminal` (chay TRUOC serde_json::json!
+                    // bi loi) DA tang bo dem "simulated" nhung dong sim.result
+                    // KHONG BAO GIO duoc ghi. Sua: chuyen CA 3 truong profit
+                    // (i128) sang String (cung khuon front_in_wei/back_out_wei
+                    // da lam dung tu truoc) - test bang chung:
+                    // `log_outcome_v2_simulated_with_profit_over_i64_max_does_not_panic`.
+                    "profit_wei": q.profit_wei.to_string(),
                     "source": source,
                     "hash": meta.hash,
                     "to": meta.to,
@@ -1323,8 +1341,8 @@ pub fn log_outcome_v2(
                     "reserve_quote": meta.reserve_quote,
                     "gas_cost_wei": meta.gas_cost_wei,
                     "gas_price_gwei": meta.gas_price_gwei,
-                    "profit_gross_wei": profit_gross_wei,
-                    "profit_net_wei": q.profit_wei,
+                    "profit_gross_wei": profit_gross_wei.to_string(),
+                    "profit_net_wei": q.profit_wei.to_string(),
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
                     "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
                 }),
@@ -1660,6 +1678,49 @@ mod tests {
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0]["event"], "tx.skip");
         assert_eq!(tail[0]["reason"], "honeypot_or_tax");
+    }
+
+    /// ĐẠT CẦN DÁN (cụm `econ-truth-latency-vps`, mục 1) — FIX BUG NGHIÊM
+    /// TRỌNG: `profit_wei` (i128) VƯỢT `i64::MAX` (rất phổ biến với quote
+    /// USDT — bất kỳ lãi nào > ~9.22 token đơn vị wei) từng làm
+    /// `serde_json::json!` PANIC nội bộ ("number out of range") ngay bên
+    /// trong `logger.log(...)` — task `handle_paper_tx` chết ÂM THẦM (không
+    /// ai `.await` `JoinHandle` của `tokio::spawn`), khiến
+    /// `record_funnel_terminal` (chạy TRƯỚC, đã tăng bộ đếm `simulated`)
+    /// không bao giờ đi kèm 1 dòng `sim.result` tương ứng — ĐÂY LÀ NGUYÊN
+    /// NHÂN GỐC của lệch `funnel.simulated` vs số dòng `sim.result` thật
+    /// (BAOCAO39: 27 vs 14). Test này dựng `profit_wei` = 17_579_175_023_944_993_805
+    /// (giá trị THẬT quan sát trong `logs/bot.jsonl`, cụm B4''.3/BAOCAO39,
+    /// vượt xa `i64::MAX`=9_223_372_036_854_775_807) — TRƯỚC fix, dòng này
+    /// PANIC (test tự thất bại vì panic không được bắt); SAU fix (3 trường
+    /// profit chuyển sang `String`), phải ghi ĐÚNG 1 dòng `sim.result` không
+    /// panic, và parse lại được giá trị gốc.
+    #[test]
+    fn log_outcome_v2_simulated_with_profit_over_i64_max_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let big_profit: i128 = 17_579_175_023_944_993_805; // that, > i64::MAX
+        assert!(big_profit > i64::MAX as i128, "gia tri test phai thuc su vuot i64::MAX");
+        let quote = SandwichQuote {
+            front_in: U256::from(1u64),
+            front_out: U256::from(1u64),
+            victim_out: U256::from(1u64),
+            back_out: U256::from(2u64),
+            profit_wei: big_profit,
+        };
+        let mut meta = TxLogMeta::default();
+        meta.hash = "0xdeadbeef".to_string();
+        meta.gas_cost_wei = Some("100".to_string());
+        log_outcome_v2(&logger, from, None, "pair", &meta, &PipelineOutcome::Simulated(quote));
+
+        let tail = logger.tail(10);
+        assert_eq!(tail.len(), 1, "phai ghi DUNG 1 dong, khong panic/mat tich");
+        assert_eq!(tail[0]["event"], "sim.result");
+        assert_eq!(tail[0]["profit_wei"], big_profit.to_string(), "profit_wei phai la String, parse lai dung gia tri goc");
+        assert_eq!(tail[0]["profit_net_wei"], big_profit.to_string());
+        let gross: i128 = tail[0]["profit_gross_wei"].as_str().unwrap().parse().unwrap();
+        assert_eq!(gross, big_profit + 100);
     }
 
     /// `min_reserve_wbnb` (Config) đọc thẳng vào `decide_paper` — pool

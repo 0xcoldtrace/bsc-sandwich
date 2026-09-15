@@ -46,6 +46,31 @@ async fn main() -> anyhow::Result<()> {
     let state_files = Arc::new(StateFiles::new("state")?);
     let logger = Arc::new(BotLogger::new("logs/bot.jsonl")?);
 
+    // Cum `econ-truth-latency-vps` (muc 1) - hook panic GIU LAI VINH VIEN
+    // (khong phai chan doan tam thoi): panic ben trong 1 task da
+    // `tokio::spawn` (vd `handle_paper_tx`) KHONG lam sap tien trinh chinh,
+    // chi lam CHET AM THAM rieng task do (JoinHandle bi bo qua, khong ai
+    // `.await` de biet loi) - truoc cum nay, dieu do xay ra that (nguyen
+    // nhan goc lech funnel.simulated vs sim.result, BAOCAO39: 27 vs 14, xem
+    // pipeline::log_outcome_v2 - da fix) ma KHONG CO CACH NAO thay duoc tu
+    // log binh thuong. Hook nay bien moi panic tuong lai (bat ky nguyen nhan
+    // gi) thanh 1 dong `debug.panic` THAY VI bien mat im lang - re, khong
+    // anh huong hanh vi binh thuong (chi chay khi that su panic).
+    {
+        let panic_logger = logger.clone();
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            panic_logger.log(
+                "debug.panic",
+                serde_json::json!({
+                    "message": info.to_string(),
+                    "location": info.location().map(|l| l.to_string()),
+                }),
+            );
+            default_hook(info);
+        }));
+    }
+
     let mut book = VictimBook::new();
     let victims_path = PathBuf::from(&cfg.victims_path);
     if let Err(e) = book.load_from_file(&victims_path) {
@@ -145,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
         sim_provider: RwLock::new(None),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
+        compete_stats: bsc_sandwich::web::CompeteStats::new(),
     });
 
     {
@@ -401,11 +427,110 @@ async fn connect_rpc(app_state: AppState, http_pool: Arc<transport::RpcPool>, pe
 
     tokio::spawn(subscribe_ws_heads(app_state.clone(), ws_urls.clone()));
 
+    // Cum `econ-truth-latency-vps` (muc 3) - subscribe Sync event cho cac
+    // pool trong PairBook, cap nhat ReserveCache TRUOC khi candidate nao cham
+    // toi (giam do tre so voi cho eth_call getReserves tren duong nong).
+    tokio::spawn(subscribe_sync_events(app_state.clone(), ws_urls.clone()));
+
     // Cum 5.2+5.3 - fallback chain WSS (nhieu URL, lag/rot thi thu WSS KE
     // trong danh sach truoc) -> txpool_content (qua http_pool, failover URL
     // HTTP ke khi loi) -> chi con inject_only. Khong halt bot o bat ky nhanh
     // nao (CLAUDE.md).
     tokio::spawn(subscribe_pending_txs(app_state, ws_urls, http_pool, pending_poll_interval));
+}
+
+/// Cụm `econ-truth-latency-vps` (mục 3) — subscribe log `Sync(uint112,uint112)`
+/// (topic0 `pool::sync_topic0()`) qua WSS cho ĐÚNG các pool đang có trong
+/// `PairBook` — mỗi log nhận được cập nhật THẲNG `ReserveCache` tại block đó,
+/// KHÔNG cần `eth_call getReserves` trên đường nóng (`handle_paper_tx` vẫn
+/// giữ fallback `eth_call` khi cache miss/thiếu >2 block, xem
+/// `resolve_reserves_cached`/`ReserveCache` — không đổi phần đó).
+///
+/// `token0` của mỗi pool chỉ cần biết 1 LẦN (không đổi theo thời gian, bất
+/// biến on-chain) — cache riêng trong task này (`token0_cache`, không chia
+/// `AppStateInner` vì chỉ dùng ở đây), tránh gọi `eth_call token0()` lặp lại
+/// mỗi Sync event (chỉ 1 lần/pool trong suốt vòng đời task).
+///
+/// Danh sách pool theo dõi CHỈ cập nhật khi RESUBSCRIBE (mỗi
+/// `RESYNC_INTERVAL`, mặc định 10 phút) — `pairs.txt` hiếm khi đổi giữa
+/// phiên chạy (Chủ vet tay), đánh đổi chấp nhận được so với việc phải huỷ/
+/// tạo lại subscription mỗi lần `pair.reload` để đổi bộ lọc theo thời gian
+/// thực (phức tạp hơn nhiều, ngoài phạm vi cụm này).
+async fn subscribe_sync_events(app_state: AppState, ws_urls: Vec<String>) {
+    use alloy::rpc::types::eth::Filter;
+
+    const RESYNC_INTERVAL: Duration = Duration::from_secs(600);
+    const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+    let sync_topic = bsc_sandwich::pool::sync_topic0();
+    let mut token0_cache: HashMap<Address, Address> = HashMap::new();
+
+    loop {
+        let pool_addrs_and_quote: Vec<(Address, Address)> =
+            { app_state.pairbook.read().await.entries().map(|e| (e.pair_addr, e.quote)).collect() };
+        if pool_addrs_and_quote.is_empty() {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+        let quote_by_pair: HashMap<Address, Address> = pool_addrs_and_quote.iter().copied().collect();
+        let addrs: Vec<Address> = pool_addrs_and_quote.iter().map(|(p, _)| *p).collect();
+
+        let mut connected = false;
+        for url in &ws_urls {
+            let redacted = transport::redact_rpc_url(url);
+            let provider = match transport::connect_and_verify(url).await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let filter = Filter::new().address(addrs.clone()).event_signature(sync_topic);
+            let mut sub = match provider.subscribe_logs(&filter).await {
+                Ok(s) => s,
+                Err(e) => {
+                    app_state.logger.log(
+                        "rpc.pending_unavailable",
+                        serde_json::json!({ "transport": "sync_logs", "url": redacted, "reason": e.to_string() }),
+                    );
+                    continue;
+                }
+            };
+            connected = true;
+            app_state.logger.log(
+                "sync.subscribed",
+                serde_json::json!({ "url": redacted, "pools": addrs.len() }),
+            );
+            let deadline = Instant::now() + RESYNC_INTERVAL;
+            'recv: loop {
+                if Instant::now() >= deadline {
+                    break 'recv; // dinh ky resubscribe de nhan pool MOI (neu pairs.txt doi)
+                }
+                match tokio::time::timeout(RECV_TIMEOUT, sub.recv()).await {
+                    Ok(Ok(log)) => {
+                        let pair_addr = log.address();
+                        let Some(&quote) = quote_by_pair.get(&pair_addr) else { continue };
+                        let Some(block) = log.block_number else { continue };
+                        let Some((r0, r1)) = bsc_sandwich::pool::decode_sync_log_reserves(log.data().data.as_ref()) else { continue };
+                        let token0 = match token0_cache.get(&pair_addr) {
+                            Some(t) => *t,
+                            None => match bsc_sandwich::pool::get_raw_reserves_and_token0(&provider, pair_addr).await {
+                                Ok((t0, _, _)) => {
+                                    token0_cache.insert(pair_addr, t0);
+                                    t0
+                                }
+                                Err(_) => continue, // khong biet token0 -> khong the sap dung chieu, bo qua event nay
+                            },
+                        };
+                        let (reserve_quote, reserve_token) = bsc_sandwich::pool::order_reserves_by_quote(token0, quote, r0, r1);
+                        app_state.reserve_cache.write().await.insert(pair_addr, block, PoolReserves { reserve_wbnb: reserve_quote, reserve_token });
+                    }
+                    Ok(Err(_)) => break 'recv, // subscription roi - thu URL ke/resubscribe
+                    Err(_) => continue,        // timeout doc, chi de kiem tra deadline
+                }
+            }
+            break; // roi vong for URL, quay lai vong loop ngoai (doc lai PairBook, resubscribe)
+        }
+        if !connected {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    }
 }
 
 /// Cụm `5.3` — thử lần lượt từng URL trong `ws_urls` (log `rpc.failover` cho
@@ -1642,6 +1767,120 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
         let mut counts = app_state.skip_counts.write().await;
         *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
     }
+    // Cum `econ-truth-latency-vps` (muc 3) - do decision_vs_mined_block CHI
+    // cho candidate Simulated (hiem sau cac gate re, xem BAOCAO39: 14/60
+    // phut) - khong ton RPC them tren duong nong (task nen rieng, khong
+    // .await trong ham nay).
+    if matches!(outcome, PipelineOutcome::Simulated(_)) {
+        spawn_post_simulated_tracker(app_state.clone(), raw.hash, meta.pair.clone(), current_block);
+    }
+}
+
+/// Cụm `econ-truth-latency-vps` (mục 3) — đo `decision_vs_mined_block` =
+/// `decision_block` (block bot ĐANG thấy lúc quyết định `Simulated`) −
+/// `mined_block` (block victim THẬT SỰ được đào) — âm nghĩa là bot quyết định
+/// SỚM HƠN (kịp), dương nghĩa là quyết định TRỄ hơn lúc victim đã lên block
+/// (không kịp front-run được nữa dù sim ra lãi). Chờ tối đa ~12s (8 lần x
+/// 1.5s, cùng khuôn `spawn_victim_validator`) rồi bỏ cuộc — KHÔNG chặn/`await`
+/// trong `handle_paper_tx` (task nền độc lập).
+/// Cụm `econ-truth-latency-vps` (mục 2+3) — task nền chạy SAU MỖI candidate
+/// `Simulated` (hiếm, không tốn RPC đường nóng): (a) đo `decision_vs_mined_block`
+/// (mục 3 — độ trễ quyết định so với lúc victim lên block thật), (b)
+/// `compete.check` (mục 2 — soi tx NGAY TRƯỚC/SAU victim trong CÙNG block có
+/// chạm ĐÚNG pool `pair` không, dấu hiệu có bot khác giao dịch quanh thời
+/// điểm đó). Gộp 2 việc vào 1 task để dùng CHUNG 1 lượt chờ + fetch block/
+/// receipt (không lặp lại `get_transaction_receipt` cho cùng 1 hash 2 lần).
+///
+/// **Giới hạn ghi rõ (không phải "quét toàn bộ cạnh tranh")**: chỉ kiểm tra
+/// ĐÚNG 1 vị trí liền kề trước và 1 vị trí liền kề sau victim trong block —
+/// một sandwich thật với tx khác chen giữa (hiếm nhưng có thể) sẽ KHÔNG bị
+/// phát hiện bởi kiểm tra này. Không tính `competitor_profit_bnb` từ Swap log
+/// (yêu cầu decode thêm token0/token1 + amountOut của CHÍNH tx nghi ngờ đó —
+/// ngoài phạm vi thời gian cụm này, ghi CÒN NỢ) — chỉ so `gas_price` của
+/// candidate nghi ngờ với victim, đủ để trả lời câu hỏi cốt lõi "có ai khác
+/// cũng đang giao dịch NGAY quanh victim, trả gas cao hơn hay không".
+fn spawn_post_simulated_tracker(app_state: AppState, hash: alloy::primitives::B256, pair: Option<String>, decision_block: u64) {
+    tokio::spawn(async move {
+        let provider = match app_state.provider.read().await.as_ref() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        let mut receipt = None;
+        for _ in 0..8u32 {
+            if let Ok(Some(r)) = provider.get_transaction_receipt(hash).await {
+                if r.block_number.is_some() {
+                    receipt = Some(r);
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+        let Some(receipt) = receipt else { return };
+        let Some(mined_block) = receipt.block_number else { return };
+
+        let delta: i64 = decision_block as i64 - mined_block as i64;
+        app_state.logger.log(
+            "latency.decision_vs_mined",
+            serde_json::json!({
+                "hash": format!("{hash:#x}"),
+                "pair": pair,
+                "decision_block": decision_block,
+                "mined_block": mined_block,
+                "decision_vs_mined_block": delta,
+            }),
+        );
+
+        // Cum 2 - compete.check: can biet vi tri (tx_index) + danh sach tx
+        // CUNG block, va gas_price cua chinh victim (de so sanh).
+        let Some(pair_addr) = pair.as_deref().and_then(|p| Address::from_str(p).ok()) else { return };
+        let block = match provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Number(mined_block)).full().await {
+            Ok(Some(b)) => b,
+            _ => return,
+        };
+        let txs: Vec<_> = block.transactions.txns().collect();
+        let tx_index = match txs.iter().position(|t| <_ as alloy::network::TransactionResponse>::tx_hash(*t) == hash) {
+            Some(i) => i,
+            None => return,
+        };
+        let victim_gas_price: u128 = <_ as alloy::consensus::Transaction>::gas_price(txs[tx_index])
+            .unwrap_or_else(|| <_ as alloy::consensus::Transaction>::max_fee_per_gas(txs[tx_index]));
+
+        let mut competitor_addr: Option<String> = None;
+        let mut competitor_gas_gwei: Option<f64> = None;
+        let mut checked_positions = Vec::new();
+        for (label, idx) in [("before", tx_index.checked_sub(1)), ("after", Some(tx_index + 1))] {
+            let Some(idx) = idx else { continue };
+            let Some(cand) = txs.get(idx) else { continue };
+            let cand_hash = <_ as alloy::network::TransactionResponse>::tx_hash(*cand);
+            let cand_from = <_ as alloy::network::TransactionResponse>::from(*cand);
+            let cand_gas_price: u128 = <_ as alloy::consensus::Transaction>::gas_price(*cand)
+                .unwrap_or_else(|| <_ as alloy::consensus::Transaction>::max_fee_per_gas(*cand));
+            let touches_pair = match provider.get_transaction_receipt(cand_hash).await {
+                Ok(Some(r)) => r.logs().iter().any(|l| l.address() == pair_addr),
+                _ => false,
+            };
+            checked_positions.push(serde_json::json!({
+                "label": label, "hash": format!("{cand_hash:#x}"), "from": format!("{cand_from:#x}"),
+                "gas_price_gwei": cand_gas_price as f64 / 1e9, "touches_pair": touches_pair,
+            }));
+            if touches_pair && competitor_addr.is_none() {
+                competitor_addr = Some(format!("{cand_from:#x}"));
+                competitor_gas_gwei = Some(cand_gas_price as f64 / 1e9);
+            }
+        }
+        let row = serde_json::json!({
+            "hash": format!("{hash:#x}"),
+            "pair": pair,
+            "block": mined_block,
+            "tx_index": tx_index,
+            "victim_gas_price_gwei": victim_gas_price as f64 / 1e9,
+            "competitor": competitor_addr,
+            "competitor_gas_price_gwei": competitor_gas_gwei,
+            "checked_positions": checked_positions,
+        });
+        app_state.logger.log("compete.result", row.clone());
+        app_state.compete_stats.record(row, competitor_addr.as_deref(), competitor_gas_gwei);
+    });
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (C3 + B3.2) — mở fork EVM tại block hiện
@@ -2009,6 +2248,7 @@ mod tests {
         pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
         sim_provider: RwLock::new(None),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
+        compete_stats: bsc_sandwich::web::CompeteStats::new(),
         });
 
         let task_state = app_state.clone();

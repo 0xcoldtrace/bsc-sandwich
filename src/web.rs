@@ -132,6 +132,8 @@ pub struct AppStateInner {
     /// nguồn tx (WS/txpool/inject), đóng khoảng hở khi WS fallback sang
     /// txpool giữa chừng (xem `transport::SeenHashSet`).
     pub seen_hashes: RwLock<crate::transport::SeenHashSet>,
+    /// Cụm `econ-truth-latency-vps` (mục 2) — thống kê `compete.check`.
+    pub compete_stats: CompeteStats,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -241,6 +243,10 @@ impl ValidateStats {
 
 async fn validate_list(State(state): State<AppState>) -> Json<Value> {
     Json(state.validate_log.read().await.snapshot())
+}
+
+async fn compete(State(state): State<AppState>) -> Json<Value> {
+    Json(state.compete_stats.snapshot())
 }
 
 /// Cụm A6 — `AtomicU64` (không `RwLock<HashMap>`) vì đây là hot path tăng
@@ -423,6 +429,68 @@ impl FunnelCounters {
     }
 }
 
+/// Cụm `econ-truth-latency-vps` (mục 2) — thống kê `compete.check` (task nền
+/// `main.rs::spawn_post_simulated_tracker`): với MỖI candidate `Simulated`,
+/// chờ victim lên block rồi soi tx NGAY TRƯỚC/SAU trong CÙNG block xem có
+/// chạm cùng pool không (dấu hiệu có bot khác cũng đang giao dịch pool đó
+/// quanh thời điểm victim, khả năng cạnh tranh) — kiểm tra Ở MỨC 1 vị trí kề
+/// (không quét toàn block), ghi rõ giới hạn này (không phải "không có bot
+/// cạnh tranh nào khác trong block", chỉ là "không thấy ở vị trí LIỀN KỀ").
+#[derive(Debug, Default)]
+pub struct CompeteStats {
+    checked: AtomicU64,
+    possible_competitor: AtomicU64,
+    /// Địa chỉ bot nghi cạnh tranh + số lần thấy (giữ tối đa 20 địa chỉ khác
+    /// nhau gần nhất, đủ cho "top bot" hiển thị dashboard).
+    top_bots: std::sync::Mutex<HashMap<String, u64>>,
+    /// `gwei` của bot cạnh tranh mỗi lần thấy — dùng tính median hiển thị.
+    competitor_gas_gwei_samples: std::sync::Mutex<Vec<f64>>,
+    rows: std::sync::Mutex<std::collections::VecDeque<Value>>,
+}
+
+impl CompeteStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&self, row: Value, competitor_addr: Option<&str>, competitor_gas_gwei: Option<f64>) {
+        self.checked.fetch_add(1, Ordering::Relaxed);
+        if let Some(addr) = competitor_addr {
+            self.possible_competitor.fetch_add(1, Ordering::Relaxed);
+            let mut bots = self.top_bots.lock().unwrap();
+            *bots.entry(addr.to_string()).or_insert(0) += 1;
+            if let Some(g) = competitor_gas_gwei {
+                self.competitor_gas_gwei_samples.lock().unwrap().push(g);
+            }
+        }
+        let mut rows = self.rows.lock().unwrap();
+        rows.push_back(row);
+        while rows.len() > 50 {
+            rows.pop_front();
+        }
+    }
+
+    pub fn snapshot(&self) -> Value {
+        let checked = self.checked.load(Ordering::Relaxed);
+        let possible = self.possible_competitor.load(Ordering::Relaxed);
+        let bots = self.top_bots.lock().unwrap();
+        let mut top: Vec<(String, u64)> = bots.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        top.sort_by(|a, b| b.1.cmp(&a.1));
+        top.truncate(10);
+        let mut samples = self.competitor_gas_gwei_samples.lock().unwrap().clone();
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let avg_gas = if samples.is_empty() { None } else { Some(samples.iter().sum::<f64>() / samples.len() as f64) };
+        json!({
+            "checked": checked,
+            "possible_competitor": possible,
+            "possible_competitor_pct": if checked > 0 { possible as f64 / checked as f64 * 100.0 } else { 0.0 },
+            "top_bots": top.into_iter().map(|(a, c)| json!({"address": a, "count": c})).collect::<Vec<_>>(),
+            "avg_competitor_gas_gwei": avg_gas,
+            "rows": self.rows.lock().unwrap().iter().cloned().collect::<Vec<_>>(),
+        })
+    }
+}
+
 pub type AppState = Arc<AppStateInner>;
 
 pub fn build_router(state: AppState) -> Router {
@@ -437,6 +505,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/funnel", get(funnel))
         .route("/api/econ", get(econ))
         .route("/api/validate", get(validate_list))
+        .route("/api/compete", get(compete))
         .route("/api/tax", get(tax_cache_list).post(tax_inject))
         .route("/api/control", post(control))
         .with_state(state)
@@ -672,6 +741,16 @@ fn router_display_name(to: &str) -> &'static str {
     "other"
 }
 
+/// Cụm `econ-truth-latency-vps` (mục 1) — `profit_wei`/`profit_gross_wei`/
+/// `profit_net_wei` giờ ghi dạng `String` (fix bug `serde_json::json!` panic
+/// với `i128` vượt `i64::MAX`, xem `pipeline::log_outcome_v2`) — đọc lại qua
+/// `as_str().parse()`. Fallback `as_i64()` giữ khả năng đọc được dòng log CŨ
+/// (trước fix, chỉ tồn tại cho profit NHỎ hơn `i64::MAX` — dòng lớn hơn
+/// trước đây chưa từng được ghi thành công nên không cần lo tương thích).
+fn parse_profit_wei(v: &Value) -> Option<i128> {
+    v.as_str().and_then(|s| s.parse::<i128>().ok()).or_else(|| v.as_i64().map(|n| n as i128))
+}
+
 fn parse_wei_str_to_bnb(s: &str) -> Option<f64> {
     s.parse::<f64>().ok().map(|w| w / 1e18)
 }
@@ -834,7 +913,7 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
             let acc = by_pool.entry(pair.clone()).or_default();
             acc.count += 1;
             if event == "sim.result" {
-                if let (Some(net_wei), Some(rate)) = (row["profit_net_wei"].as_i64(), quote_to_bnb_rate) {
+                if let (Some(net_wei), Some(rate)) = (parse_profit_wei(&row["profit_net_wei"]), quote_to_bnb_rate) {
                     if net_wei > 0 {
                         acc.net_pos += 1;
                         acc.sum_net_bnb += (net_wei as f64) * rate / 1e18;
@@ -858,8 +937,8 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                     acc.gas_cost_bnb_samples.push(gas_bnb);
                 }
                 if event == "sim.result" {
-                    let gross = row["profit_gross_wei"].as_i64();
-                    let net = row["profit_net_wei"].as_i64();
+                    let gross = parse_profit_wei(&row["profit_gross_wei"]);
+                    let net = parse_profit_wei(&row["profit_net_wei"]);
                     if gross.map(|g| g > 0).unwrap_or(false) {
                         acc.gross_pos += 1;
                     }
@@ -1229,6 +1308,25 @@ mod tests {
         assert!((bucket_02_1["sum_net_pos_bnb"].as_f64().unwrap() - 0.008).abs() < 1e-6);
         assert_eq!(econ["top_pools"][0]["pair"], "0xpair3");
         assert!((econ["top_pools"][0]["sum_net_bnb"].as_f64().unwrap() - 0.008).abs() < 1e-6);
+    }
+
+    /// ĐẠT CẦN DÁN (cụm `econ-truth-latency-vps`, mục 1) — `profit_net_wei`/
+    /// `profit_gross_wei` dạng String VƯỢT `i64::MAX` (định dạng THẬT sau
+    /// fix bug panic `serde_json::json!`, xem `pipeline::log_outcome_v2`)
+    /// vẫn phải bucket ĐÚNG, không rơi mất qua `as_i64()` (sẽ trả `None` cho
+    /// giá trị này nếu code cũ chưa đổi sang `parse_profit_wei`).
+    #[test]
+    fn compute_econ_profit_over_i64_max_as_string_still_buckets_correctly() {
+        let big_profit = "17579175023944993805"; // that, > i64::MAX, dang String
+        let rows = vec![json!({
+            "event": "sim.result", "pair": "0xpairbig", "quote": "wbnb",
+            "amount_in": wei(1.0), "amount_in_bnb_equiv": wei(1.0),
+            "profit_gross_wei": big_profit, "profit_net_wei": big_profit,
+        })];
+        let econ = compute_econ_from_rows(&rows, None);
+        let bucket = econ["buckets_bnb"].as_array().unwrap().iter().find(|b| b["bucket"] == ">=1").unwrap();
+        assert_eq!(bucket["net_pos"], 1, "profit lon (String, vuot i64::MAX) phai duoc dem, khong roi mat");
+        assert!((bucket["sum_net_pos_bnb"].as_f64().unwrap() - 17.579175023944993805).abs() < 1e-6);
     }
 
     #[test]
