@@ -102,14 +102,29 @@ nóng V2 vẫn chưa dùng để kết luận kinh tế chính xác cho tới kh
 
 V3 / V4 / Infinity / bản mới: `eth_call` quoter/router/pool-manager đã pin. Không đoán tick/hooks.
 
-`profit = backWBNB - frontWBNB - gasFront - gasBack`  
-(pool quote WBNB). **Lưu ý (audit F-03):** `gasFront+gasBack` hiện lấy từ trần `front_max_gas_bnb_wei + back_max_gas_bnb_wei` (0.006 BNB) — cao hơn thực tế 10–100 lần; **cụm 2** thay bằng `eth_gasPrice` × gas đo trong revm. Cho tới đó, số `unprofitable` KHÔNG dùng để kết luận kinh tế.
+`profit = backWBNB - frontWBNB - gasFront - gasBack`
+(pool quote WBNB). **Cụm `real-economics-mode2` (đã sửa F-03) — đường nóng
+`sim_engine="v2"`:** `gasFront+gasBack` giờ là `gas_cost_wei` ĐO THẬT
+(`eth_gasPrice` qua `GasOracle` × `max(giá đó, gas_price của chính victim)` ×
+gas unit đo 1 lần lúc boot bằng revm trên 1 pair đã vet — xem
+`docs/STATE.md` mục "real-economics-mode2 cụm B"), KHÔNG còn lấy thẳng từ
+trần cấu hình. `front_max_gas_bnb_wei + back_max_gas_bnb_wei` giờ CHỈ là
+TRẦN so với `gas_cost_wei` đó — vượt trần, hoặc `eth_gasPrice` đo được vượt
+`gas_price_max_gwei`, → skip `gas_cap` (không tính sim). Số `unprofitable`/
+`profit` trên đường nóng v2 giờ DÙNG ĐƯỢC để kết luận kinh tế. **CÒN NỢ**:
+đường `sim_engine="evm"` (không phải hot path — chỉ dùng cho vet nền/
+pre-sign/validator) VẪN dùng trần cấu hình trực tiếp, chưa nối gas thật.
 
 Thứ tự quyết định khi `sim_engine="evm"` (cụm 1+2): EVM quyết định `Simulated`/`unprofitable`/`victim_would_revert`; công thức đóng chỉ ước lượng `front_in`. `tx.build` CHỈ sau khi EVM trả `Simulated`, và CHỈ khi có địa chỉ ví thật (`to != 0x0`) — chưa có signer thì `build_refused`.
-Pool quote USDT: profit_usdt = backUSDT - frontUSDT (THUẦN USDT, không
-trừ gas vào số này — không quy đổi, không price oracle). Gas vẫn chặn
-riêng bằng field BNB có sẵn (gas_reserve_bnb_wei/front_max_gas_bnb_wei/
-back_max_gas_bnb_wei) — gate độc lập, y hệt cơ chế hiện tại.
+Pool quote USDT: profit_usdt = backUSDT - frontUSDT - gas_usdt (gas_usdt =
+`gas_cost_wei` (BNB) quy đổi sang USDT qua reserve THẬT của pool WBNB/USDT
+tại block hiện tại — KHÔNG price oracle, KHÔNG dùng pool token/USDT đang
+xét). **Cụm `real-economics-mode2` (mục 1.d) đã BỎ luật cũ "profit_usdt
+không trừ gas"** — gas giờ trừ THẲNG vào profit USDT, cùng cơ chế WBNB. Trần
+gas (`gas_cap`) LUÔN so bằng đơn vị BNB (gas trả bằng BNB bất kể quote asset
+nào của pool) — gate độc lập với việc quy đổi profit, y hệt cơ chế cũ về
+mặt cấu trúc (2 field `gas_reserve_bnb_wei`/`front_max_gas_bnb_wei`/
+`back_max_gas_bnb_wei` vẫn là field BNB có sẵn).
 
 `frontIn <= max_front_bnb`. `U256` only.
 
@@ -123,7 +138,10 @@ KHÔNG thêm cột cho wallet-mode ở cụm này.
 
 Nhiều pool WBNB: sim version `scan_*=true` đã pin, chọn **1 profit max**.
 
-Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error`
+Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error | gas_cap`
+(`gas_cap` thêm ở cụm `real-economics-mode2` — F-03: `gas_cost_wei` đo thật
+vượt trần `front_max_gas_bnb_wei+back_max_gas_bnb_wei`, HOẶC `eth_gasPrice`
+đo được vượt `gas_price_max_gwei`.)
 (`nonce_stale`/`nonce_future` thêm ở cụm 1. `deadline` phải có code path sinh ra thật, không chỉ khai báo.)
 
 ---
@@ -186,6 +204,10 @@ Pin = `DEX_REGISTRY.md` + source_url + ngày + `eth_getCode > 0` trong BAOCAO.
    rỗng rồi báo FAIL/SKIP im lặng. Thiếu RPC thật để chạy → ghi `MISSING`
    rõ ràng ở BAOCAO, không tự suy diễn kết quả.
 
+4. **Subagent chỉ được ĐỌC.** Claude Code không giao cho subagent/fork bất
+   kỳ việc ghi/xoá/git nào. Subagent chỉ để đọc và tóm tắt; mọi thay đổi
+   file do phiên chính làm và ghi vào BAOCAO.
+
 ---
 
 ## BAOCAO — một phiên một file mới
@@ -211,7 +233,15 @@ Grok ĐẠT khi có ô 5. Code không viết ĐẠT.
 
 ## Config — thiếu field = fail load
 
-`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted`
+`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted gas_units_front gas_units_back gas_price_max_gwei`
+
+Cụm `real-economics-mode2` thêm 3 field: `gas_units_front`/`gas_units_back`
+(số gas UNIT fallback cho front-buy/back-sell khi chưa đo được thật bằng
+revm lúc boot trên 1 pair đã vet, ship `160000`/`140000`) và
+`gas_price_max_gwei` (trần `eth_gasPrice` gwei nguyên, ship `10` — vượt thì
+`gas_cap`). `front_max_gas_bnb_wei`/`back_max_gas_bnb_wei` ĐỔI Ý NGHĨA: chỉ
+còn là TRẦN so với gas thật đo được (không còn dùng thẳng làm chi phí gas
+trừ vào profit).
 
 Đã bỏ (cụm 1): `executor_slippage_bps` → còn trong file = fail load với thông báo "đã đổi tên thành front_slippage_bps/back_slippage_bps". `tax_cache_blocks` giữ để không fail load nhưng KHÔNG dùng (TTL theo `tax_cache_ttl_sec`).
 
@@ -413,3 +443,4 @@ CỤM CÙNG PHIÊN, KHÔNG NỢ VỤN. MỖI CỤM 1 COMMIT. SỐ LIỆU PHẢI 
 VICTIMS.TXT `0x...,0.01`. TOKEN/WBNB HOẶC TOKEN/USDT. PANCAKE V2+V3+V4+MỚI NHẤT (PIN). UR PATH WBNB OK.
 DRY-RUN. KHÔNG BỊA. KHÔNG TỰ LIVE.
 MODE 2 ONLY. PAIRS VET TAY. HOT PATH V2 MATH + GAS THẬT. REVM = VET/PRE-SIGN/VALIDATOR.
+

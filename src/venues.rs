@@ -184,6 +184,8 @@ pub const SKIP_REASONS: &[&str] = &[
     // Cum `exec-path-traps` (F-13)
     "nonce_stale",
     "nonce_future",
+    // Cum `real-economics-mode2` (F-03)
+    "gas_cap",
 ];
 
 #[cfg(test)]

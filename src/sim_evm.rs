@@ -970,6 +970,99 @@ fn measure_tax_on_fork(
     Ok(EvmTaxMeasurement { buy_bps, sell_bps, honeypot: quote_out.is_zero() })
 }
 
+// ============================================================================
+// Cụm `real-economics-mode2` (F-03) — đo gas UNIT thật (không phải wei) của
+// 1 chân front-buy/back-sell bằng revm, dùng để cache `gas_units_front`/
+// `gas_units_back` lúc boot (fallback config nếu đo lỗi).
+// ============================================================================
+
+/// Đo gas unit THẬT của `swapExactETHForTokensSupportingFeeOnTransferTokens`
+/// (front) rồi `swapExactTokensForETHSupportingFeeOnTransferTokens` (back)
+/// trên 1 `token` đã vet (nên chọn token zero-tax/đã xác nhận sạch để phép đo
+/// không lẫn thêm logic lạ, dù gas unit đo được không đổi nhiều theo tax —
+/// đường transfer ERC20 chuẩn tốn gas gần như cố định). `probe_in` nên đủ
+/// nhỏ để không tốn thời gian nhưng đủ khác 0 để router thực thi trọn vẹn
+/// (không revert vì INSUFFICIENT_OUTPUT).
+pub async fn measure_gas_units(
+    provider: DynProvider,
+    fork_block: u64,
+    token: Address,
+    probe_in: U256,
+) -> Result<(u64, u64), SimEvmError> {
+    let (mut db, ts) = open_fork(provider, fork_block).await?;
+    db.insert_account_info(attacker_address(), AccountInfo::from_balance(U256::from(FUND_BNB_WEI)));
+    let mut evm = build_evm(db, fork_block, ts);
+    let attacker = attacker_address();
+
+    let front_calldata = IPancakeV2RouterFeeOnTransfer::swapExactETHForTokensSupportingFeeOnTransferTokensCall {
+        amountOutMin: U256::ZERO,
+        path: vec![wbnb(), token],
+        to: attacker,
+        deadline: U256::from(DEADLINE_MAX),
+    }
+    .abi_encode();
+    let front_tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(router()))
+        .value(probe_in)
+        .gas_limit(3_000_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(front_calldata))
+        .build_fill();
+    let front_result = evm.transact_commit(front_tx).map_err(|e| SimEvmError::Exec(format!("front-buy do gas: {e:?}")))?;
+    if !front_result.is_success() {
+        return Err(SimEvmError::Revert(format!("front-buy revert luc do gas unit: {front_result:?}")));
+    }
+    let front_gas_units = front_result.tx_gas_used();
+
+    let token_received = read_balance(&mut evm, token, attacker)?;
+    if token_received.is_zero() {
+        return Err(SimEvmError::Exec("front-buy khong nhan duoc token nao, khong do duoc back-sell".to_string()));
+    }
+
+    let approve_calldata = IERC20Min::approveCall { spender: router(), amount: U256::MAX }.abi_encode();
+    let approve_tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(token))
+        .gas_limit(200_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(approve_calldata))
+        .build_fill();
+    let approve_result = evm.transact_commit(approve_tx).map_err(|e| SimEvmError::Exec(format!("approve do gas: {e:?}")))?;
+    if !approve_result.is_success() {
+        return Err(SimEvmError::Revert(format!("approve revert luc do gas unit: {approve_result:?}")));
+    }
+
+    let back_calldata = IPancakeV2RouterFeeOnTransfer::swapExactTokensForETHSupportingFeeOnTransferTokensCall {
+        amountIn: token_received,
+        amountOutMin: U256::ZERO,
+        path: vec![token, wbnb()],
+        to: attacker,
+        deadline: U256::from(DEADLINE_MAX),
+    }
+    .abi_encode();
+    let back_tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(router()))
+        .gas_limit(3_000_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(back_calldata))
+        .build_fill();
+    let back_result = evm.transact_commit(back_tx).map_err(|e| SimEvmError::Exec(format!("back-sell do gas: {e:?}")))?;
+    if !back_result.is_success() {
+        return Err(SimEvmError::Revert(format!("back-sell revert luc do gas unit: {back_result:?}")));
+    }
+    let back_gas_units = back_result.tx_gas_used();
+
+    Ok((front_gas_units, back_gas_units))
+}
+
 /// C1 — bản độc lập (tự fork) cho test/đường gọi không có `BlockForkCache`.
 pub async fn measure_tax_evm(
     provider: DynProvider,
@@ -1488,6 +1581,34 @@ mod tests {
     /// sim_v2 và sim_evm) + reserve pool cho MỌI candidate, kể cả candidate
     /// cho `profit=-1` — số liệu đủ để soi tại sao nhiều token khác nhau
     /// cùng ra `-1` (xem docs/STATE.md mục B4'.2 để có phân tích công thức).
+    /// Cụm `real-economics-mode2` (F-03) — ĐẠT CẦN DÁN: đo gas unit THẬT
+    /// (`measure_gas_units`) trên CAKE (zero-tax allowlisted, chắc chắn có
+    /// pool WBNB sâu) tại block hiện tại thật trên mainnet — in ra 2 số gas
+    /// unit thật để dán vào BAOCAO (không bịa, không chỉ assert `>0` mù mờ).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn real_rpc_measure_gas_units_on_cake() {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use std::str::FromStr as _;
+
+        let provider: DynProvider = ProviderBuilder::new()
+            .connect("https://bsc-dataseed.binance.org/")
+            .await
+            .expect("ket noi RPC cong khai that bai")
+            .erased();
+        let chain_id = provider.get_chain_id().await.expect("eth_chainId that bai");
+        assert_eq!(chain_id, 56);
+        let fork_block = provider.get_block_number().await.expect("eth_blockNumber that bai");
+        let cake = Address::from_str("0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82").unwrap(); // CAKE, zero-tax allowlisted
+        let probe_in = U256::from(50_000_000_000_000_000u128); // 0.05 BNB
+
+        let (front_units, back_units) =
+            measure_gas_units(provider, fork_block, cake, probe_in).await.expect("do gas unit that bai");
+        println!("real_rpc_measure_gas_units_on_cake THAT: fork_block={fork_block} front_units={front_units} back_units={back_units}");
+        assert!(front_units > 21_000, "front swap phai ton hon gas transfer BNB thuan (21000), got {front_units}");
+        assert!(back_units > 21_000, "back swap phai ton hon gas transfer BNB thuan (21000), got {back_units}");
+    }
+
     // `flavor = "multi_thread"` BẮT BUỘC — `WrapDatabaseAsync::new` (bridge
     // async AlloyDB -> sync Database revm cần) chỉ hoạt động trên runtime
     // multi-thread (đúng doc-comment crate, xem `revm-database-interface`);

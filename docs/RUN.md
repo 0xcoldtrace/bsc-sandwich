@@ -77,8 +77,8 @@ Script sẽ:
    xem log `pair.reload`/`pair.unvetted` để có số THẬT từ chính bot).
 6. Chạy bot ngầm (binary nhận config làm **tham số vị trí thứ 1**), đợi 30 phút.
 7. In: 30 dòng `funnel.minute` cuối, `/api/skips`, `/api/funnel`, `/api/tax`,
-   `/api/validate`, 20 dòng `tx.skip` (token+venue), 10 dòng `sim.evm`, số
-   `Simulated` (đếm `sim.evm` có `decision=simulated`).
+   `/api/pairs`, `/api/econ`, `/api/validate`, 20 dòng `tx.skip` (token+venue),
+   10 dòng `sim.evm`, số `Simulated` (đếm `sim.evm` có `decision=simulated`).
 8. `halt` sạch: ghi `state/halt.lock` + kill PID.
 
 ## Đọc kết quả
@@ -86,15 +86,33 @@ Script sẽ:
 - `/api/funnel`: phễu theo gate — `seen → not_pancake_router → decode_fail →
   not_wbnb_pair → venue_v3|venue_v2 → no_pool → below_min → thin_liq →
   honeypot_or_tax → unprofitable → victim_would_revert → simulated`, cộng
-  `sim_error` (số tx EVM/RPC không chạy được — nếu cao là RPC quá tải).
+  `sim_error` (số tx EVM/RPC không chạy được — nếu cao là RPC quá tải) và
+  `gas_cap` (cụm `real-economics-mode2` — `gas_cost_wei` đo thật vượt trần,
+  hoặc `eth_gasPrice` vượt `gas_price_max_gwei`).
 - `/api/tax`: cache tax đo tự động bằng `pairs_vet_task` NỀN (mỗi dòng có
   `buy_bps`/`sell_bps`/`honeypot`/`quote`), TTL theo `tax_cache_ttl_sec`.
 - `/api/pairs`: cụm `strategy-lock-mode2` — thêm cột `vetted_at`/`candidate`/
   `buy_bps`/`sell_bps`/`honeypot`/`last_vet_sec_ago` (kết quả `pairs_vet_task`
   gần nhất cho từng pool).
+- `/api/econ` (cụm `real-economics-mode2`, đọc trực tiếp `logs/bot.jsonl`):
+  bucket `victim_in` theo BNB (`<0.01`/`0.01-0.05`/`0.05-0.2`/`0.2-1`/`>=1`,
+  mỗi bucket có `count`/`gross_pos`/`net_pos`/`sum_net_pos_bnb`/
+  `best_net_bnb`/`median_gas_cost_bnb`), tách theo `by_quote`
+  (`wbnb`/`usdt`), `top_tokens` (10 token nhiều dòng nhất), `decode_fail_by_router`
+  (nhóm theo tên router: V2 Router/SwapRouter/SmartRouter/UR v3 (cũ)/UR
+  Infinity), `latency_ms.p50`/`p95` (`seen_to_decision_ms`),
+  `nonce_stale_pct_of_candidate`, và `summary_line` (dòng tổng dạng
+  `candidate=<n> net_pos=<n> best_net_bnb=<x> p50_ms=<n> p95_ms=<n>
+  stale_pct=<x> decode_fail_smartrouter=<n>`). Bucket BNB CHỈ áp dụng cho
+  `quote=wbnb` (USDT không quy đổi được sang BNB nếu không có price oracle —
+  CLAUDE.md cấm oracle giá).
 - `/api/validate`: chỉ số SỐNG của validator nhúng (B3.4) — `within_1pct_ratio`
-  là tỉ lệ dự đoán victim khớp on-chain ≤1%. Đây là thước đo độ chính xác sim
-  thay cho việc replay sandwich lịch sử.
+  là tỉ lệ dự đoán victim khớp on-chain ≤1%. Cụm `real-economics-mode2`
+  (F-27): tách riêng `isolated`/`non_isolated` (mỗi nhóm có `n`/
+  `within_1pct`/`p50_lech_pct`/`p95_lech_pct`) — bộ đếm CŨ chỉ tính đúng
+  nhóm `isolated` vào `within_1pct` tổng (bug audit F-27), giờ tổng cộng
+  đúng cả 2 nhóm. Đây là thước đo độ chính xác sim thay cho việc replay
+  sandwich lịch sử.
 
 ## Lưu ý hạ tầng (đo thật, xem `docs/STATE.md` mục cụm này)
 

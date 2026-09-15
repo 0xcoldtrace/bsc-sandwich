@@ -92,6 +92,16 @@ pub struct AppStateInner {
     /// `AppStateInner` để `GET /api/funnel` đọc trực tiếp (không cần `Arc`
     /// bọc thêm, `AppStateInner` đã nằm sau `Arc` — xem `AppState`).
     pub funnel: FunnelCounters,
+    /// Cụm `real-economics-mode2` (F-03) — cache `eth_gasPrice` theo block
+    /// (+ fallback median block MINED gần nhất khi lỗi), dùng bởi
+    /// `main.rs::handle_paper_tx` để tính `gas_cost_wei` THẬT thay vì trần
+    /// cấu hình cố định.
+    pub gas_oracle: crate::transport::GasOracle,
+    /// F-03 — `(gas_units_front, gas_units_back)` hiện dùng: khởi tạo bằng
+    /// giá trị FALLBACK từ `config.toml` (`gas_units_front`/`gas_units_back`),
+    /// được `main.rs::gas_units_boot_task` ghi đè bằng số ĐO THẬT (revm, 1
+    /// lần lúc boot trên 1 pair đã vet) nếu đo thành công.
+    pub gas_units: RwLock<(u64, u64)>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -105,29 +115,95 @@ pub struct AppStateInner {
 ///
 /// Chạy ở CẢ paper lẫn live — nếu tỉ lệ `≤1%` tụt xuống, đó là tín hiệu sớm
 /// rằng sim đang lệch khỏi thực tế (RPC sai block, token đổi hành vi, v.v.).
+/// Cụm `real-economics-mode2` (F-27) — thống kê 1 NHÓM (`isolated` hoặc
+/// `non_isolated`) riêng biệt: `n` (tổng dòng), `within_1pct` (số dòng
+/// `lech_pct <= 1.0`), + p50/p95 CỦA CHÍNH `lech_pct` (không phải chỉ đếm nhị
+/// phân đạt/không đạt — đúng lệnh "n, within_1pct, p50, p95 lệch"). Giữ tối
+/// đa 200 mẫu gần nhất/nhóm để tính percentile (đủ ổn định, không phình vô
+/// hạn qua thời gian chạy dài).
+#[derive(Debug, Default)]
+struct ValidateGroupStats {
+    n: u64,
+    within_1pct: u64,
+    lech_pct_samples: std::collections::VecDeque<f64>,
+}
+
+const VALIDATE_GROUP_SAMPLE_CAP: usize = 200;
+
+impl ValidateGroupStats {
+    fn push(&mut self, lech_pct: f64) {
+        self.n += 1;
+        if lech_pct <= 1.0 {
+            self.within_1pct += 1;
+        }
+        self.lech_pct_samples.push_back(lech_pct);
+        while self.lech_pct_samples.len() > VALIDATE_GROUP_SAMPLE_CAP {
+            self.lech_pct_samples.pop_front();
+        }
+    }
+
+    /// Percentile THUẦN (nearest-rank trên mẫu ĐÃ SẮP XẾP) của `lech_pct` —
+    /// `None` khi chưa có mẫu nào (tránh chia 0/hiện `0.0` giả).
+    fn percentile(&self, p: f64) -> Option<f64> {
+        if self.lech_pct_samples.is_empty() {
+            return None;
+        }
+        let mut v: Vec<f64> = self.lech_pct_samples.iter().copied().collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let idx = (((p / 100.0) * (v.len() - 1) as f64).round() as usize).min(v.len() - 1);
+        Some(v[idx])
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "n": self.n,
+            "within_1pct": self.within_1pct,
+            "within_1pct_ratio": if self.n > 0 { self.within_1pct as f64 / self.n as f64 } else { 0.0 },
+            "p50_lech_pct": self.percentile(50.0),
+            "p95_lech_pct": self.percentile(95.0),
+        })
+    }
+}
+
+/// F-27 — fix mâu thuẫn audit (`/api/validate` trả `within_1pct=2` trong khi
+/// 12/18 dòng thật có `lech_pct<=1.0` — bộ đếm CŨ chỉ tính dòng `isolated:true`
+/// vào `within_1pct` dù tên field không nói rõ điều đó). Giờ tách RÕ 2 nhóm
+/// (`isolated`/`non_isolated`), MỖI nhóm có bộ đếm riêng đúng nghĩa — tổng
+/// `total`/`within_1pct` ở gốc JSON là CỘNG DỒN cả 2 nhóm (đúng trực giác tên
+/// field, không còn ngầm định chỉ tính `isolated`).
 #[derive(Debug, Default)]
 pub struct ValidateStats {
     rows: std::collections::VecDeque<Value>,
-    pub total: u64,
-    pub within_1pct: u64,
+    isolated: ValidateGroupStats,
+    non_isolated: ValidateGroupStats,
 }
 
 impl ValidateStats {
-    pub fn push(&mut self, row: Value, ok: bool) {
-        self.total += 1;
-        if ok {
-            self.within_1pct += 1;
+    /// `is_isolated`/`lech_pct` tách riêng khỏi `ok` (cũ) — caller
+    /// (`main.rs::spawn_victim_validator`) đã tính cả 2 giá trị này trước khi
+    /// gọi, `push` giờ tự phân nhóm và tự tính `within_1pct` ĐÚNG cho MỖI
+    /// nhóm thay vì 1 cờ `ok` gộp sẵn dễ lẫn ý nghĩa (nguồn gốc bug F-27).
+    pub fn push(&mut self, row: Value, is_isolated: bool, lech_pct: f64) {
+        if is_isolated {
+            self.isolated.push(lech_pct);
+        } else {
+            self.non_isolated.push(lech_pct);
         }
         self.rows.push_back(row);
         while self.rows.len() > 50 {
             self.rows.pop_front();
         }
     }
+
     pub fn snapshot(&self) -> Value {
+        let total = self.isolated.n + self.non_isolated.n;
+        let within_1pct = self.isolated.within_1pct + self.non_isolated.within_1pct;
         json!({
-            "total": self.total,
-            "within_1pct": self.within_1pct,
-            "within_1pct_ratio": if self.total > 0 { self.within_1pct as f64 / self.total as f64 } else { 0.0 },
+            "total": total,
+            "within_1pct": within_1pct,
+            "within_1pct_ratio": if total > 0 { within_1pct as f64 / total as f64 } else { 0.0 },
+            "isolated": self.isolated.snapshot(),
+            "non_isolated": self.non_isolated.snapshot(),
             "rows": self.rows.iter().cloned().collect::<Vec<_>>(),
         })
     }
@@ -192,6 +268,8 @@ pub struct FunnelCounters {
     nonce_stale: AtomicU64,
     /// Cụm `exec-path-traps` (F-13) — `PipelineSkip::NonceFuture`.
     nonce_future: AtomicU64,
+    /// Cụm `real-economics-mode2` (F-03) — `PipelineSkip::GasCap`.
+    gas_cap: AtomicU64,
 }
 
 impl FunnelCounters {
@@ -250,6 +328,9 @@ impl FunnelCounters {
     pub fn record_nonce_future(&self) {
         self.nonce_future.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn record_gas_cap(&self) {
+        self.gas_cap.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// Đọc snapshot HIỆN TẠI (không reset) — dùng cho `GET /api/funnel`.
     pub fn snapshot(&self) -> Value {
@@ -272,6 +353,7 @@ impl FunnelCounters {
             "deadline": self.deadline.load(Ordering::Relaxed),
             "nonce_stale": self.nonce_stale.load(Ordering::Relaxed),
             "nonce_future": self.nonce_future.load(Ordering::Relaxed),
+            "gas_cap": self.gas_cap.load(Ordering::Relaxed),
         })
     }
 
@@ -297,6 +379,7 @@ impl FunnelCounters {
             "deadline": self.deadline.swap(0, Ordering::Relaxed),
             "nonce_stale": self.nonce_stale.swap(0, Ordering::Relaxed),
             "nonce_future": self.nonce_future.swap(0, Ordering::Relaxed),
+            "gas_cap": self.gas_cap.swap(0, Ordering::Relaxed),
         });
         out
     }
@@ -314,6 +397,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/hits", get(hits))
         .route("/api/skips", get(skips))
         .route("/api/funnel", get(funnel))
+        .route("/api/econ", get(econ))
         .route("/api/validate", get(validate_list))
         .route("/api/tax", get(tax_cache_list).post(tax_inject))
         .route("/api/control", post(control))
@@ -481,6 +565,214 @@ async fn funnel(State(state): State<AppState>) -> Json<Value> {
     Json(state.funnel.snapshot())
 }
 
+// ============================================================================
+// Cụm `real-economics-mode2` (mục 3) — GET /api/econ: đọc trực tiếp
+// `logs/bot.jsonl` (dòng `tx.skip`/`sim.result`, dùng field mới ở mục 2:
+// `amount_in`/`quote`/`gas_cost_wei`/`profit_gross_wei`/`profit_net_wei`/
+// `seen_to_decision_ms`) rồi tổng hợp bucket/latency/top token — KHÔNG cần
+// state riêng trong `AppStateInner` (đọc file trực tiếp mỗi lần gọi, đơn giản
+// hơn và luôn phản ánh log THẬT, chấp nhận chi phí đọc file mỗi request —
+// dashboard/paper_run.sh gọi endpoint này không thường xuyên).
+// ============================================================================
+
+/// Trần số dòng CUỐI đọc từ `logs/bot.jsonl` — tránh phình bộ nhớ với log
+/// chạy rất lâu (VPS nhiều ngày); đủ dư cho 1 lần `paper_run.sh` (60 phút).
+const ECON_MAX_LINES: usize = 2_000_000;
+
+/// 5 bucket `victim_in` (BNB) đúng CLAUDE.md mục 3.a.
+const BNB_BUCKETS: [(&str, f64, f64); 5] = [
+    ("<0.01", 0.0, 0.01),
+    ("0.01-0.05", 0.01, 0.05),
+    ("0.05-0.2", 0.05, 0.2),
+    ("0.2-1", 0.2, 1.0),
+    (">=1", 1.0, f64::INFINITY),
+];
+
+/// 5 router đã pin, tên hiển thị khớp CLAUDE.md mục 3.c ("V2 Router /
+/// SmartRouter / UR v3 / UR Infinity / SwapRouter") — dùng ĐÚNG địa chỉ đã
+/// pin trong `venues::PANCAKE_ROUTERS`, không lặp lại hằng số riêng.
+fn router_display_name(to: &str) -> &'static str {
+    let to_lower = to.to_lowercase();
+    for (addr, venue) in crate::venues::PANCAKE_ROUTERS.iter() {
+        if addr.to_lowercase() == to_lower {
+            return match *venue {
+                crate::venues::Venue::V2 => "V2 Router",
+                crate::venues::Venue::V3 => "SwapRouter",
+                crate::venues::Venue::SmartRouter => "SmartRouter",
+                // 2 dia chi UR (v3-cu / Infinity) deu map Venue::UniversalRouter -
+                // phan biet lai bang dia chi THAT de dat dung 2 nhan rieng.
+                crate::venues::Venue::UniversalRouter => {
+                    if addr.eq_ignore_ascii_case("0x1A0A18AC4BECDDbd6389559687d1A73d8927E416") {
+                        "UR v3 (cu)"
+                    } else {
+                        "UR Infinity"
+                    }
+                }
+            };
+        }
+    }
+    "other"
+}
+
+fn parse_wei_str_to_bnb(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().map(|w| w / 1e18)
+}
+
+fn percentile_f64(values: &[f64], p: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut v = values.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = (((p / 100.0) * (v.len() - 1) as f64).round() as usize).min(v.len() - 1);
+    Some(v[idx])
+}
+
+#[derive(Default)]
+struct BucketAcc {
+    count: u64,
+    gross_pos: u64,
+    net_pos: u64,
+    sum_net_pos_bnb: f64,
+    best_net_bnb: Option<f64>,
+    gas_cost_bnb_samples: Vec<f64>,
+}
+
+impl BucketAcc {
+    fn snapshot(&self, label: &str) -> Value {
+        let mut gas_samples = self.gas_cost_bnb_samples.clone();
+        gas_samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median_gas = if gas_samples.is_empty() { None } else { Some(gas_samples[gas_samples.len() / 2]) };
+        json!({
+            "bucket": label,
+            "count": self.count,
+            "gross_pos": self.gross_pos,
+            "net_pos": self.net_pos,
+            "sum_net_pos_bnb": self.sum_net_pos_bnb,
+            "best_net_bnb": self.best_net_bnb,
+            "median_gas_cost_bnb": median_gas,
+        })
+    }
+}
+
+async fn econ(State(state): State<AppState>) -> Json<Value> {
+    let log_path = state.logger.path().to_path_buf();
+    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
+    let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
+    Json(compute_econ_from_rows(&rows))
+}
+
+/// Lõi THUẦN (không I/O) của `GET /api/econ` — tách riêng để test được bằng
+/// dòng JSON dựng tay, không cần dựng `AppState`/ghi file thật.
+fn compute_econ_from_rows(rows: &[Value]) -> Value {
+    let mut buckets: [BucketAcc; 5] = Default::default();
+    let mut by_quote: HashMap<String, u64> = HashMap::new();
+    let mut by_token: HashMap<String, u64> = HashMap::new();
+    let mut decode_fail_by_router: HashMap<&'static str, u64> = HashMap::new();
+    let mut latency_ms_samples: Vec<f64> = Vec::new();
+    let mut nonce_stale_count: u64 = 0;
+    let mut candidate_count: u64 = 0;
+    let mut net_pos_total: u64 = 0;
+    let mut best_net_bnb_total: Option<f64> = None;
+
+    for row in rows {
+        let event = row["event"].as_str().unwrap_or("");
+        if event != "tx.skip" && event != "sim.result" {
+            continue;
+        }
+        candidate_count += 1;
+
+        if let Some(q) = row["quote"].as_str() {
+            *by_quote.entry(q.to_string()).or_insert(0) += 1;
+        }
+        if let Some(t) = row["token"].as_str() {
+            *by_token.entry(t.to_string()).or_insert(0) += 1;
+        }
+        if let Some(ms) = row["seen_to_decision_ms"].as_f64() {
+            latency_ms_samples.push(ms);
+        }
+        if event == "tx.skip" {
+            if row["reason"].as_str() == Some("nonce_stale") {
+                nonce_stale_count += 1;
+            }
+            if row["reason"].as_str() == Some("decode_fail") {
+                if let Some(to) = row["to"].as_str() {
+                    let name = router_display_name(to);
+                    *decode_fail_by_router.entry(name).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Cum mục 3.a — bucket theo victim_in (chỉ WBNB quote, "quy về BNB"
+        // đúng nghĩa — USDT không quy đổi được sang BNB nếu không có price
+        // oracle, CLAUDE.md cấm oracle giá).
+        if row["quote"].as_str() == Some("wbnb") {
+            if let Some(amount_bnb) = row["amount_in"].as_str().and_then(parse_wei_str_to_bnb) {
+                if let Some(bucket_idx) = BNB_BUCKETS.iter().position(|(_, lo, hi)| amount_bnb >= *lo && amount_bnb < *hi) {
+                    let acc = &mut buckets[bucket_idx];
+                    acc.count += 1;
+                    if let Some(gas_bnb) = row["gas_cost_wei"].as_str().and_then(parse_wei_str_to_bnb) {
+                        acc.gas_cost_bnb_samples.push(gas_bnb);
+                    }
+                    if event == "sim.result" {
+                        let gross = row["profit_gross_wei"].as_i64();
+                        let net = row["profit_net_wei"].as_i64();
+                        if gross.map(|g| g > 0).unwrap_or(false) {
+                            acc.gross_pos += 1;
+                        }
+                        if let Some(net_wei) = net {
+                            if net_wei > 0 {
+                                acc.net_pos += 1;
+                                net_pos_total += 1;
+                                let net_bnb = net_wei as f64 / 1e18;
+                                acc.sum_net_pos_bnb += net_bnb;
+                                acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net_bnb, |b: f64| b.max(net_bnb)));
+                                best_net_bnb_total = Some(best_net_bnb_total.map_or(net_bnb, |b: f64| b.max(net_bnb)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut top_tokens: Vec<(String, u64)> = by_token.into_iter().collect();
+    top_tokens.sort_by(|a, b| b.1.cmp(&a.1));
+    top_tokens.truncate(10);
+
+    let p50 = percentile_f64(&latency_ms_samples, 50.0);
+    let p95 = percentile_f64(&latency_ms_samples, 95.0);
+    let stale_pct = if candidate_count > 0 { nonce_stale_count as f64 / candidate_count as f64 * 100.0 } else { 0.0 };
+    let decode_fail_smartrouter = decode_fail_by_router.get("SmartRouter").copied().unwrap_or(0);
+
+    let summary_line = format!(
+        "candidate={} net_pos={} best_net_bnb={} p50_ms={} p95_ms={} stale_pct={:.2} decode_fail_smartrouter={}",
+        candidate_count,
+        net_pos_total,
+        best_net_bnb_total.map(|b| format!("{b:.6}")).unwrap_or_else(|| "-".to_string()),
+        p50.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
+        p95.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
+        stale_pct,
+        decode_fail_smartrouter,
+    );
+
+    json!({
+        "lines_scanned": rows.len(),
+        "candidate": candidate_count,
+        "buckets_bnb": buckets.iter().zip(BNB_BUCKETS.iter()).map(|(acc, (label, _, _))| acc.snapshot(label)).collect::<Vec<_>>(),
+        "by_quote": by_quote,
+        "top_tokens": top_tokens.into_iter().map(|(t, c)| json!({"token": t, "count": c})).collect::<Vec<_>>(),
+        "decode_fail_by_router": decode_fail_by_router,
+        "latency_ms": { "p50": p50, "p95": p95, "samples": latency_ms_samples.len() },
+        "nonce_stale_pct_of_candidate": stale_pct,
+        "net_pos_total": net_pos_total,
+        "best_net_bnb": best_net_bnb_total,
+        "summary_line": summary_line,
+    })
+}
+
 /// Cụm tax-cache-inject — bảng cache tax hiện có (token/bps/block/fresh?)
 /// cho web dashboard, đúng "Web: bảng cache token + bps + block".
 async fn tax_cache_list(State(state): State<AppState>) -> Json<Value> {
@@ -572,5 +864,190 @@ async fn control(State(state): State<AppState>, Json(body): Json<ControlBody>) -
             Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
         },
         None => Json(json!({ "ok": false, "error": "unknown action" })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ĐẠT CẦN DÁN (F-27) — tái tạo ĐÚNG bộ số audit (`BAOCAO_AUDIT_2026-09-15.md`
+    /// mục 5.4): 18 dòng, `isolated:true` 2 dòng (cả 2 đều 0.0% — trong
+    /// `within_1pct`), `isolated:false` 16 dòng (10 ≤1%, 6 >1%: 1.11, 1.19,
+    /// 1.61, 2.40, 2.40, 3.10). Bug cũ: `within_1pct` toàn cục chỉ đếm
+    /// `isolated:true` (=2, tỉ lệ 11.1%) — SAU fix, tổng `within_1pct` phải
+    /// là 12 (2 isolated + 10 non_isolated), khớp đúng số đếm tay của audit.
+    #[test]
+    fn validate_stats_matches_audit_manual_recount_after_f27_fix() {
+        let mut stats = ValidateStats::default();
+        // 2 dong isolated, ca 2 deu 0.0%.
+        stats.push(json!({"isolated": true, "lech_pct": 0.0}), true, 0.0);
+        stats.push(json!({"isolated": true, "lech_pct": 0.0}), true, 0.0);
+        // 16 dong non_isolated: 10 <=1%, 6 >1% (dung 6 gia tri audit liet ke).
+        for _ in 0..10 {
+            stats.push(json!({"isolated": false, "lech_pct": 0.5}), false, 0.5);
+        }
+        for pct in [1.11, 1.19, 1.61, 2.40, 2.40, 3.10] {
+            stats.push(json!({"isolated": false, "lech_pct": pct}), false, pct);
+        }
+
+        let snap = stats.snapshot();
+        assert_eq!(snap["total"], 18);
+        assert_eq!(snap["within_1pct"], 12, "F-27: tong within_1pct phai la 12 (2 isolated + 10 non_isolated), khong con la 2");
+        assert_eq!(snap["isolated"]["n"], 2);
+        assert_eq!(snap["isolated"]["within_1pct"], 2);
+        assert_eq!(snap["non_isolated"]["n"], 16);
+        assert_eq!(snap["non_isolated"]["within_1pct"], 10);
+        let ratio = snap["within_1pct_ratio"].as_f64().unwrap();
+        assert!((ratio - (12.0 / 18.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn validate_group_stats_percentile_matches_manual_sort() {
+        let mut g = ValidateGroupStats::default();
+        for pct in [0.0, 0.5, 1.11, 1.19, 1.61, 2.40, 2.40, 3.10] {
+            g.push(pct);
+        }
+        // 8 mau, sap xep: 0.0 0.5 1.11 1.19 1.61 2.40 2.40 3.10
+        // p50 (nearest-rank tren idx round(0.5*7)=round(3.5)=4 -> gia tri idx4=1.61)
+        assert_eq!(g.percentile(50.0), Some(1.61));
+        // p95: idx = round(0.95*7)=round(6.65)=7 -> gia tri cuoi 3.10
+        assert_eq!(g.percentile(95.0), Some(3.10));
+    }
+
+    #[test]
+    fn validate_group_stats_percentile_none_when_empty() {
+        let g = ValidateGroupStats::default();
+        assert_eq!(g.percentile(50.0), None);
+        assert_eq!(g.snapshot()["p50_lech_pct"], Value::Null);
+    }
+
+    #[test]
+    fn validate_stats_snapshot_empty_has_zero_ratio_not_panic() {
+        let stats = ValidateStats::default();
+        let snap = stats.snapshot();
+        assert_eq!(snap["total"], 0);
+        assert_eq!(snap["within_1pct_ratio"], 0.0);
+    }
+
+    // ===== Cụm `real-economics-mode2` (mục 3) — /api/econ =====
+
+    fn wei(bnb: f64) -> String {
+        ((bnb * 1e18) as u128).to_string()
+    }
+
+    /// ĐẠT CẦN DÁN — 1 dòng `sim.result` quote=wbnb, `amount_in`=0.06 BNB
+    /// (rơi vào bucket "0.05-0.2") với `profit_net_wei` DƯƠNG phải: tăng
+    /// `count`/`net_pos` đúng bucket, cộng vào `net_pos_total`/`best_net_bnb`,
+    /// và xuất hiện trong `by_quote`/`top_tokens`.
+    #[test]
+    fn compute_econ_buckets_a_positive_sim_result_row_correctly() {
+        let rows = vec![json!({
+            "event": "sim.result",
+            "token": "0xtoken1",
+            "quote": "wbnb",
+            "amount_in": wei(0.06),
+            "gas_cost_wei": wei(0.002),
+            "profit_gross_wei": 5_000_000_000_000_000i64,
+            "profit_net_wei": 3_000_000_000_000_000i64,
+            "seen_to_decision_ms": 12.5,
+        })];
+        let econ = compute_econ_from_rows(&rows);
+        assert_eq!(econ["candidate"], 1);
+        let buckets = econ["buckets_bnb"].as_array().unwrap();
+        let bucket_005_02 = buckets.iter().find(|b| b["bucket"] == "0.05-0.2").unwrap();
+        assert_eq!(bucket_005_02["count"], 1);
+        assert_eq!(bucket_005_02["gross_pos"], 1);
+        assert_eq!(bucket_005_02["net_pos"], 1);
+        assert!((bucket_005_02["sum_net_pos_bnb"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+        assert!((bucket_005_02["best_net_bnb"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+        assert!((bucket_005_02["median_gas_cost_bnb"].as_f64().unwrap() - 0.002).abs() < 1e-9);
+        assert_eq!(econ["net_pos_total"], 1);
+        assert!((econ["best_net_bnb"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+        assert_eq!(econ["by_quote"]["wbnb"], 1);
+        assert_eq!(econ["top_tokens"][0]["token"], "0xtoken1");
+        assert_eq!(econ["top_tokens"][0]["count"], 1);
+        assert!(econ["summary_line"].as_str().unwrap().contains("candidate=1"));
+    }
+
+    /// `decode_fail` với `to` = SmartRouter đã pin phải đếm đúng tên hiển thị
+    /// "SmartRouter" (mục 3.c), phản ánh vào `decode_fail_smartrouter` ở
+    /// dòng tổng.
+    #[test]
+    fn compute_econ_decode_fail_grouped_by_router_display_name() {
+        let smart_router = "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4";
+        let rows = vec![
+            json!({"event": "tx.skip", "reason": "decode_fail", "to": smart_router}),
+            json!({"event": "tx.skip", "reason": "decode_fail", "to": smart_router}),
+            json!({"event": "tx.skip", "reason": "decode_fail", "to": "0x0000000000000000000000000000000000dead"}),
+        ];
+        let econ = compute_econ_from_rows(&rows);
+        assert_eq!(econ["decode_fail_by_router"]["SmartRouter"], 2);
+        assert_eq!(econ["decode_fail_by_router"]["other"], 1);
+        assert!(econ["summary_line"].as_str().unwrap().contains("decode_fail_smartrouter=2"));
+    }
+
+    /// `nonce_stale` chia trên tổng `candidate` (mọi dòng tx.skip/sim.result)
+    /// -> `nonce_stale_pct_of_candidate` đúng tỉ lệ.
+    #[test]
+    fn compute_econ_nonce_stale_percentage_of_candidate() {
+        let rows = vec![
+            json!({"event": "tx.skip", "reason": "nonce_stale"}),
+            json!({"event": "tx.skip", "reason": "below_min"}),
+            json!({"event": "tx.skip", "reason": "below_min"}),
+            json!({"event": "tx.skip", "reason": "below_min"}),
+        ];
+        let econ = compute_econ_from_rows(&rows);
+        assert_eq!(econ["candidate"], 4);
+        assert!((econ["nonce_stale_pct_of_candidate"].as_f64().unwrap() - 25.0).abs() < 1e-9);
+    }
+
+    /// `seen_to_decision_ms` p50/p95 tính đúng trên mẫu THẬT (không phải chỉ
+    /// assert `Some`) — 4 mẫu [10, 20, 30, 40].
+    #[test]
+    fn compute_econ_latency_percentiles_match_manual_sort() {
+        let rows: Vec<Value> = [10.0, 20.0, 30.0, 40.0]
+            .iter()
+            .map(|ms| json!({"event": "tx.skip", "reason": "below_min", "seen_to_decision_ms": ms}))
+            .collect();
+        let econ = compute_econ_from_rows(&rows);
+        // nearest-rank: p50 idx=round(0.5*3)=2 -> gia tri 30; p95 idx=round(0.95*3)=3 -> 40.
+        assert_eq!(econ["latency_ms"]["p50"], 30.0);
+        assert_eq!(econ["latency_ms"]["p95"], 40.0);
+        assert_eq!(econ["latency_ms"]["samples"], 4);
+    }
+
+    /// USDT quote KHÔNG được quy vào bucket BNB (CLAUDE.md cấm price oracle
+    /// quy đổi) — vẫn đếm vào `by_quote`/`candidate` nhưng không rơi vào bất
+    /// kỳ bucket BNB nào.
+    #[test]
+    fn compute_econ_usdt_quote_not_bucketed_into_bnb_buckets() {
+        let rows = vec![json!({
+            "event": "sim.result", "token": "0xtoken2", "quote": "usdt",
+            "profit_gross_wei": 1i64, "profit_net_wei": 1i64,
+        })];
+        let econ = compute_econ_from_rows(&rows);
+        assert_eq!(econ["by_quote"]["usdt"], 1);
+        let total_bucket_count: i64 = econ["buckets_bnb"].as_array().unwrap().iter().map(|b| b["count"].as_i64().unwrap()).sum();
+        assert_eq!(total_bucket_count, 0, "usdt khong duoc quy sang bucket BNB");
+    }
+
+    #[test]
+    fn compute_econ_empty_rows_no_panic() {
+        let econ = compute_econ_from_rows(&[]);
+        assert_eq!(econ["candidate"], 0);
+        assert_eq!(econ["net_pos_total"], 0);
+        assert!(econ["best_net_bnb"].is_null());
+        assert!(econ["latency_ms"]["p50"].is_null());
+    }
+
+    #[test]
+    fn router_display_name_matches_all_5_pinned_routers() {
+        assert_eq!(router_display_name(crate::venues::V2_ROUTER_ADDRESS), "V2 Router");
+        assert_eq!(router_display_name("0x1b81D678ffb9C0263b24A97847620C99d213eB14"), "SwapRouter");
+        assert_eq!(router_display_name("0x13f4EA83D0bd40E75C8222255bc855a974568Dd4"), "SmartRouter");
+        assert_eq!(router_display_name("0x1A0A18AC4BECDDbd6389559687d1A73d8927E416"), "UR v3 (cu)");
+        assert_eq!(router_display_name("0xd9C500DfF816a1Da21A48A732d3498Bf09dc9AEB"), "UR Infinity");
+        assert_eq!(router_display_name("0x0000000000000000000000000000000000dead"), "other");
     }
 }

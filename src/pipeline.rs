@@ -99,6 +99,15 @@ pub enum PipelineSkip {
     /// thể thực thi ngay ở block kế tiếp — front-run giả định "chạy ngay sau"
     /// là sai, cùng loại bẫy với `Deadline`.
     NonceFuture,
+    /// Cụm `real-economics-mode2` (F-03) — `gas_cost_wei` đo THẬT
+    /// (`compute_gas_cost_wei`: gas unit đo bằng revm × max(`eth_gasPrice`,
+    /// `victim.gas_price`)) VƯỢT trần cấu hình
+    /// (`front_max_gas_bnb_wei + back_max_gas_bnb_wei`, nay CHỈ còn là trần —
+    /// không còn dùng thẳng làm chi phí gas nữa), HOẶC `eth_gasPrice` đo được
+    /// vượt `gas_price_max_gwei` (mạng đang tắc nghẽn bất thường). Khác
+    /// `Unprofitable` (profit dương nhưng dưới `min_profit_bnb`) — đây là gas
+    /// tự nó đã quá đắt, chưa cần tính tới profit.
+    GasCap,
 }
 
 impl PipelineSkip {
@@ -121,8 +130,32 @@ impl PipelineSkip {
             PipelineSkip::SimError => "sim_error",
             PipelineSkip::NonceStale => "nonce_stale",
             PipelineSkip::NonceFuture => "nonce_future",
+            PipelineSkip::GasCap => "gas_cap",
         }
     }
+}
+
+/// Cụm `real-economics-mode2` (F-03) — chi phí gas THẬT (wei BNB) cho 1 cặp
+/// front+back, thuần/sync/test-được (không gọi RPC ở đây, caller đã tự fetch
+/// `oracle_gas_price_wei` qua `transport::GasOracle` + `victim_gas_price_wei`
+/// từ chính tx quan sát được). `oracle_gas_price_wei > gas_price_max_wei`
+/// (mạng tắc nghẽn bất thường) → trả `u128::MAX` (sentinel CHẮC CHẮN vượt bất
+/// kỳ trần `cfg.gas_wei()` nào) để gate `gas_cap` ở `evaluate_candidate`/
+/// `evaluate_candidate_quote` tự động kích hoạt, không cần thêm nhánh so sánh
+/// riêng cho lý do (e) trong CLAUDE.md — gộp cả 2 điều kiện (c)+(e) vào ĐÚNG 1
+/// chỗ trả `gas_cap`.
+pub fn compute_gas_cost_wei(
+    gas_units_front: u64,
+    gas_units_back: u64,
+    oracle_gas_price_wei: u128,
+    victim_gas_price_wei: u128,
+    gas_price_max_wei: u128,
+) -> u128 {
+    if gas_price_max_wei > 0 && oracle_gas_price_wei > gas_price_max_wei {
+        return u128::MAX;
+    }
+    let effective_price = oracle_gas_price_wei.max(victim_gas_price_wei);
+    (gas_units_front as u128 + gas_units_back as u128).saturating_mul(effective_price)
 }
 
 /// Cụm `usdt-quote-asset` (BAOCAO29) — quote asset của 1 candidate: WBNB
@@ -327,6 +360,11 @@ pub struct PaperDecisionV2<'a> {
     pub reserves: PoolReserves,
     pub pair_addr: Address,
     pub current_block: u64,
+    /// Cụm `real-economics-mode2` (F-03) — chi phí gas THẬT (wei BNB), đã
+    /// tính sẵn bởi caller (`main.rs::handle_paper_tx`, qua
+    /// `compute_gas_cost_wei`) — `pipeline.rs` không gọi RPC nên không tự
+    /// tính được `eth_gasPrice`/gas unit đo bằng revm.
+    pub gas_cost_wei: u128,
 }
 
 /// Lõi đánh giá 1 candidate (đã biết chắc `token`/ngưỡng min-size, luôn
@@ -374,6 +412,8 @@ fn evaluate_candidate(
     tax_cache: &TaxCache,
     cfg: &Config,
     risk: &RiskGuard,
+    gas_cost_wei: u128,
+    skip_tax_gate: bool,
 ) -> PipelineOutcome {
     // F-14 - gate deadline TRUOC TIEN (thuan, 0 RPC, khong phu thuoc
     // amount/reserve) - front-run 1 tx sap het han la bay thuc thi that.
@@ -396,7 +436,16 @@ fn evaluate_candidate(
     // rỗng -> honeypot_or_tax) thì EVM KHÔNG BAO GIỜ chạy (deadlock: cache
     // không đầy vì EVM không chạy vì cache rỗng). `decide_paper_v2` lúc này
     // chỉ còn tính ước lượng `front_in` bằng `sim_v2` để đưa vào EVM.
-    if !cfg.sim_engine_is_evm() {
+    //
+    // Cụm `real-economics-mode2` (mục 0, fix BUG BAOCAO37) — `skip_tax_gate`
+    // (`true` CHỈ cho nhánh pair-mode khi `PairBook::is_tax_ok` xác nhận token
+    // đã vet tay VÀ chưa bị vet nền loại) bỏ HẲN qua tra `TaxCache` — token
+    // trong `pairs.txt` đã được Chủ vet tay + vet nền định kỳ, tra thêm
+    // `TaxCache` (nguồn khác, luôn rỗng trên đường nóng vì không ai tự động
+    // điền) chỉ khiến MỌI candidate pair-mode rơi vào `honeypot_or_tax` giả,
+    // che mất chuỗi gate kinh tế thật phía dưới (đúng phát hiện BAOCAO37:
+    // `honeypot_or_tax=95/phút`, `unprofitable=0`).
+    if !cfg.sim_engine_is_evm() && !skip_tax_gate {
         let measurement = match tax_cache.get_fresh(token, current_block, cfg.tax_cache_blocks) {
             Some(m) => m,
             None => return PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax),
@@ -411,8 +460,16 @@ fn evaluate_candidate(
     if risk.consecutive_loss_exceeded(cfg.max_consecutive_loss) {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
+    // Cụm `real-economics-mode2` (F-03) — `gas_cost_wei` (đo THẬT, xem
+    // `compute_gas_cost_wei`) so với TRẦN cấu hình (`cfg.gas_wei()`, không
+    // còn dùng thẳng làm chi phí gas nữa) — vượt trần thì `gas_cap`, KHÔNG
+    // tính sim (tránh phí `search_max_front_in` cho candidate chắc chắn gas
+    // quá đắt).
+    if gas_cost_wei > cfg.gas_wei() {
+        return PipelineOutcome::Skip(PipelineSkip::GasCap);
+    }
     let front_cap = RiskGuard::front_cap_after_gas_reserve(cfg.effective_front_cap_wei(), cfg.gas_reserve_bnb_wei);
-    let quote = match sim_v2::search_max_front_in(reserves, amount_in, front_cap, cfg.gas_wei()) {
+    let quote = match sim_v2::search_max_front_in(reserves, amount_in, front_cap, gas_cost_wei) {
         Some(q) => q,
         None => return PipelineOutcome::Skip(PipelineSkip::Unprofitable),
     };
@@ -473,13 +530,26 @@ pub fn decide_paper_v2(
                 tax_cache,
                 cfg,
                 risk,
+                input.gas_cost_wei,
+                false, // wallet-mode khong co co che vet PairBook - luon tra TaxCache
             );
             return (outcome, "wallet");
         }
     }
 
-    if cfg.pair_scan_enabled && pairbook.contains(&input.pair_addr) {
+    if cfg.pair_scan_enabled && pairbook.knows_pool(&input.pair_addr) {
+        // Cum `real-economics-mode2` (muc 0) - pool DA BIET nhung vet NEN vua
+        // loai (tax/honeypot do bang EVM that) -> tra honeypot_or_tax NGAY,
+        // KHONG de roi xuong not_in_list/universal (mat visibility) - khac
+        // `contains()` (loai vet_failed hoan toan khoi candidate).
+        if pairbook.is_vet_failed(&input.pair_addr) {
+            return (PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax), "pair");
+        }
         let min_wei: u128 = cfg.pairs_min_swap_wei().try_into().unwrap_or(u128::MAX);
+        // Cum `real-economics-mode2` (muc 0) - fix bug BAOCAO37: token da vet
+        // tay + chua bi vet nen loai -> bo qua TaxCache (xem
+        // PairBook::is_tax_ok / doc-comment evaluate_candidate).
+        let skip_tax_gate = pairbook.is_tax_ok(&input.pair_addr);
         let outcome = evaluate_candidate(
             token,
             decoded.amount_in,
@@ -491,6 +561,8 @@ pub fn decide_paper_v2(
             tax_cache,
             cfg,
             risk,
+            input.gas_cost_wei,
+            skip_tax_gate,
         );
         return (outcome, "pair");
     }
@@ -508,6 +580,8 @@ pub fn decide_paper_v2(
             tax_cache,
             cfg,
             risk,
+            input.gas_cost_wei,
+            false, // universal-mode quet MOI pool WBNB, khong co vet tay -> tra TaxCache
         );
         return (outcome, "universal");
     }
@@ -698,14 +772,16 @@ fn evaluate_candidate_quote(
     current_block: u64,
     tax_cache: &TaxCache,
     cfg: &Config,
+    gas_cost_bnb_wei: u128,
+    gas_cost_in_quote_wei: u128,
 ) -> PipelineOutcome {
     // F-14 - cung gate deadline nhu evaluate_candidate, ap dung ca 2 quote asset.
     if deadline_expired(deadline, now_unix()) {
         return PipelineOutcome::Skip(PipelineSkip::Deadline);
     }
-    let (min_reserve_wei, front_cap_raw, gas_wei_for_profit, min_profit_wei) = match quote {
-        QuoteAsset::Wbnb => (cfg.min_reserve_wei(), cfg.effective_front_cap_wei(), cfg.gas_wei(), cfg.min_profit_wei()),
-        QuoteAsset::Usdt => (cfg.min_reserve_usdt_wei(), cfg.max_front_usdt_wei(), 0u128, cfg.min_profit_usdt_wei()),
+    let (min_reserve_wei, front_cap_raw, min_profit_wei) = match quote {
+        QuoteAsset::Wbnb => (cfg.min_reserve_wei(), cfg.effective_front_cap_wei(), cfg.min_profit_wei()),
+        QuoteAsset::Usdt => (cfg.min_reserve_usdt_wei(), cfg.max_front_usdt_wei(), cfg.min_profit_usdt_wei()),
     };
 
     if reserves.reserve_wbnb < min_reserve_wei {
@@ -724,8 +800,17 @@ fn evaluate_candidate_quote(
         }
     }
 
+    // Cụm `real-economics-mode2` (mục 1.d, sửa CLAUDE.md Math "profit_usdt
+    // không trừ gas") — trần gas LUÔN so bằng ĐƠN VỊ BNB (gas trả bằng BNB
+    // bất kể quote asset nào của pool), `gas_cost_in_quote_wei` (đã quy đổi
+    // sẵn bởi caller cho USDT qua reserve WBNB/USDT thật tại block, xem
+    // `main.rs`) mới là số THỰC SỰ trừ vào profit bên dưới.
+    if gas_cost_bnb_wei > cfg.gas_wei() {
+        return PipelineOutcome::Skip(PipelineSkip::GasCap);
+    }
+
     let front_cap = RiskGuard::front_cap_after_gas_reserve(front_cap_raw, cfg.gas_reserve_bnb_wei);
-    let quote_result = match sim_v2::search_max_front_in(reserves, amount_in, front_cap, gas_wei_for_profit) {
+    let quote_result = match sim_v2::search_max_front_in(reserves, amount_in, front_cap, gas_cost_in_quote_wei) {
         Some(q) => q,
         None => return PipelineOutcome::Skip(PipelineSkip::Unprofitable),
     };
@@ -749,6 +834,12 @@ fn evaluate_candidate_quote(
 /// `"none"` khi skip sớm (decode_fail/not_quote_pair) — dùng cho log (khác ý
 /// nghĩa field `source` của `decide_paper_v2`, đây là QUOTE ASSET chứ không
 /// phải wallet|pair|universal).
+/// Cụm `real-economics-mode2` — `gas_cost_bnb_wei` luôn là chi phí gas THẬT
+/// tính bằng BNB (gas trả bằng BNB, không phụ thuộc quote asset của pool).
+/// `gas_cost_in_quote_wei` là số THỰC SỰ trừ vào `profit`, ĐÃ quy đổi sẵn bởi
+/// caller sang đúng đơn vị quote asset (bằng chính `gas_cost_bnb_wei` khi
+/// `quote=Wbnb` — không cần quy đổi; quy đổi qua reserve WBNB/USDT thật khi
+/// `quote=Usdt`, xem `main.rs::handle_paper_tx`).
 pub fn decide_paper_quote(
     tax_cache: &TaxCache,
     cfg: &Config,
@@ -756,14 +847,44 @@ pub fn decide_paper_quote(
     tx_value: U256,
     reserves: PoolReserves,
     current_block: u64,
+    gas_cost_bnb_wei: u128,
+    gas_cost_in_quote_wei: u128,
 ) -> (PipelineOutcome, &'static str) {
     let (decoded, token, quote) = match decode_and_classify_quote(calldata, tx_value, cfg.scan_quote_usdt) {
         Ok(v) => v,
         Err(skip) => return (PipelineOutcome::Skip(skip), "none"),
     };
-    let outcome =
-        evaluate_candidate_quote(quote, token, decoded.amount_in, decoded.amount_out_min, decoded.deadline, reserves, current_block, tax_cache, cfg);
+    let outcome = evaluate_candidate_quote(
+        quote,
+        token,
+        decoded.amount_in,
+        decoded.amount_out_min,
+        decoded.deadline,
+        reserves,
+        current_block,
+        tax_cache,
+        cfg,
+        gas_cost_bnb_wei,
+        gas_cost_in_quote_wei,
+    );
     (outcome, quote.as_str())
+}
+
+/// Cụm `real-economics-mode2` (mục 1.d) — quy đổi `gas_cost_bnb_wei` (BNB)
+/// sang đơn vị USDT qua tỉ giá reserve THẬT của pool WBNB/USDT tại block hiện
+/// tại (`reserve_wbnb`/`reserve_usdt` của pool đó — KHÔNG phải price oracle,
+/// không phải pool token/USDT đang xét). `reserve_wbnb=0` (không thể xảy ra
+/// với pool USDT thật đã pin, nhưng tự vệ input rác) → trả `u128::MAX` (sentinel
+/// "không quy đổi được, coi như gas vô cùng đắt" — AN TOÀN hơn trả 0).
+pub fn convert_gas_cost_bnb_to_usdt(gas_cost_bnb_wei: u128, reserve_wbnb: U256, reserve_usdt: U256) -> u128 {
+    if reserve_wbnb.is_zero() {
+        return u128::MAX;
+    }
+    let gas_u256 = U256::from(gas_cost_bnb_wei);
+    match gas_u256.checked_mul(reserve_usdt).map(|n| n / reserve_wbnb) {
+        Some(v) => u128::try_from(v).unwrap_or(u128::MAX),
+        None => u128::MAX,
+    }
 }
 
 pub fn decide_paper(victims: &VictimBook, tax_cache: &TaxCache, cfg: &Config, input: &PaperDecision) -> PipelineOutcome {
@@ -1003,9 +1124,34 @@ pub struct TxLogMeta {
     pub fee: Option<u32>,
     /// Cụm `exec-path-traps` (F-16) — chi tiết thêm cho `reason=decode_fail`
     /// khi lý do CỤ THỂ là `venue_mismatch` (selector đã decode không khớp
-    /// router `tx.to` thật, xem `decoder::venue_matches_router`) — `None`
-    /// cho MỌI trường hợp khác (không bịa lý do).
+    /// router `tx.to` thật, xem `decoder::venue_matches_router`), hoặc
+    /// (cụm `real-economics-mode2`, mục 0) `"vet_fail"` khi pool pair-mode
+    /// đã biết nhưng vet nền vừa loại — `None` cho MỌI trường hợp khác
+    /// (không bịa lý do).
     pub detail: Option<String>,
+    /// Cụm `real-economics-mode2` (mục 2) — số lượng victim đưa vào (wei,
+    /// đơn vị QUOTE ASSET của candidate — WBNB hoặc USDT). `None` khi chưa
+    /// decode được (`decode_fail`/`not_pancake_router`...).
+    pub amount_in: Option<String>,
+    /// Quote asset của candidate: `"wbnb"`/`"usdt"` — KHÁC `source` (mang
+    /// nghĩa wallet/pair/universal/none ở nhánh WBNB, hoặc wbnb/usdt/none ở
+    /// nhánh quote-aware). `None` khi chưa xác định được (skip quá sớm).
+    pub quote: Option<String>,
+    /// Địa chỉ pool V2 đã resolve (`None` khi chưa resolve được — skip trước
+    /// bước đó, vd `decode_fail`/`no_pool`).
+    pub pair: Option<String>,
+    /// Reserve của quote asset trong pool đã resolve (wei) — `None` khi chưa
+    /// resolve được pool.
+    pub reserve_quote: Option<String>,
+    /// Cụm F-03 — chi phí gas THẬT đã tính (wei, đơn vị BNB — gas luôn trả
+    /// bằng BNB) tại thời điểm quyết định. `None` khi chưa tính tới bước đó.
+    pub gas_cost_wei: Option<String>,
+    /// F-03 — giá gas (gwei) đọc từ `GasOracle` tại block quyết định.
+    pub gas_price_gwei: Option<f64>,
+    /// Số mili-giây từ lúc `handle_paper_tx` NHẬN tx (proxy cho lúc `tx.seen`
+    /// được log — độ trễ giữa 2 mốc này là chi phí `tokio::spawn`, không
+    /// đáng kể ở mức ms) tới lúc quyết định CUỐI CÙNG (outcome terminal).
+    pub seen_to_decision_ms: Option<f64>,
 }
 
 /// Cụm pair-mode — bản `log_outcome` có thêm field `source` ("wallet"/"pair"/
@@ -1037,10 +1183,29 @@ pub fn log_outcome_v2(
                     "selector": meta.selector,
                     "fee": meta.fee,
                     "detail": meta.detail,
+                    // Cum `real-economics-mode2` (muc 2)
+                    "amount_in": meta.amount_in,
+                    "quote": meta.quote,
+                    "pair": meta.pair,
+                    "reserve_quote": meta.reserve_quote,
+                    "gas_cost_wei": meta.gas_cost_wei,
+                    "gas_price_gwei": meta.gas_price_gwei,
+                    "seen_to_decision_ms": meta.seen_to_decision_ms,
                 }),
             );
         }
         PipelineOutcome::Simulated(q) => {
+            // Cum `real-economics-mode2` (muc 2) - profit_gross_wei = profit
+            // TRUOC khi tru gas (SandwichQuote.profit_wei DA la net, tru san
+            // gas_cost_wei ben trong sim_v2::quote_at) - cong nguoc lai gas
+            // da biet de co so gross doi chieu, KHONG tinh lai tu dau.
+            let gas_cost_i128: i128 = meta
+                .gas_cost_wei
+                .as_deref()
+                .and_then(|s| s.parse::<u128>().ok())
+                .map(|g| g as i128)
+                .unwrap_or(0);
+            let profit_gross_wei = q.profit_wei + gas_cost_i128;
             logger.log(
                 "sim.result",
                 serde_json::json!({
@@ -1054,6 +1219,16 @@ pub fn log_outcome_v2(
                     "to": meta.to,
                     "venue": meta.venue,
                     "selector": meta.selector,
+                    // Cum `real-economics-mode2` (muc 2)
+                    "amount_in": meta.amount_in,
+                    "quote": meta.quote,
+                    "pair": meta.pair,
+                    "reserve_quote": meta.reserve_quote,
+                    "gas_cost_wei": meta.gas_cost_wei,
+                    "gas_price_gwei": meta.gas_price_gwei,
+                    "profit_gross_wei": profit_gross_wei,
+                    "profit_net_wei": q.profit_wei,
+                    "seen_to_decision_ms": meta.seen_to_decision_ms,
                 }),
             );
         }
@@ -1157,7 +1332,8 @@ mod tests {
              max_front_usdt = 3000.0\nmin_reserve_usdt = 15000.0\n\
              sim_engine = \"evm\"\ntax_cache_ttl_sec = 600\n\
              front_slippage_bps = 10\nback_slippage_bps = 50\n\
-             pairs_vet_interval_sec = 600\npairs_require_vetted = false\n",
+             pairs_vet_interval_sec = 600\npairs_require_vetted = false\n\
+             gas_units_front = 160000\ngas_units_back = 140000\ngas_price_max_gwei = 10\n",
         );
         for (needle, replacement) in overrides {
             s = s.replace(needle, replacement);
@@ -1655,6 +1831,7 @@ mod tests {
             reserves: fixture_reserves(),
             pair_addr,
             current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
         };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "wallet");
@@ -1689,6 +1866,7 @@ mod tests {
             reserves: fixture_reserves(),
             pair_addr,
             current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
         };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "pair");
@@ -1696,6 +1874,111 @@ mod tests {
             PipelineOutcome::Simulated(q) => assert!(q.profit_wei > 0),
             other => panic!("expect Simulated (pair mode), got {other:?}"),
         }
+    }
+
+    // ===== Cụm `real-economics-mode2` (mục 0) — fix BUG BAOCAO37: pool
+    // pair-mode ĐÃ VET (qua `PairBook::reload` thật, không phải
+    // `insert_test_entry`) không còn bị chặn bởi `TaxCache` rỗng =====
+
+    /// Resolver giả trả `Address::ZERO` cho MỌI token -> dòng `pairs.txt`
+    /// dạng "0xAddress" trần TỰ NÓ trở thành `pair_addr` (`ResolvedFrom::Direct`,
+    /// xem `pairbook.rs::reload`) — đủ để dựng 1 `PairBook` đã vet THẬT (qua
+    /// `reload()`, khác `insert_test_entry` luôn `vetted_at=None`) mà không
+    /// cần factory/RPC thật.
+    #[derive(Clone, Default)]
+    struct DirectPairResolver;
+    impl crate::pairbook::PairResolver for DirectPairResolver {
+        async fn get_pair(&self, _token: Address) -> Result<Address, String> {
+            Ok(Address::ZERO)
+        }
+    }
+
+    fn pairbook_test_logger() -> (tempfile::TempDir, BotLogger) {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
+        (dir, logger)
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh `real-economics-mode2`, mục 0): pool ĐÃ VET THẬT
+    /// (`vetted_at=Some`, qua `reload()`) + `TaxCache` RỖNG HOÀN TOÀN vẫn ra
+    /// `Simulated` — TRƯỚC fix này, mọi candidate pair-mode rơi vào
+    /// `honeypot_or_tax` vì đường nóng tra nhầm `TaxCache` (luôn rỗng vì
+    /// không ai tự động điền) thay vì tin `pairs.txt` đã vet tay (BAOCAO37:
+    /// `honeypot_or_tax=95/phút`, `unprofitable=0`).
+    #[tokio::test]
+    async fn decide_paper_v2_pair_mode_vetted_pool_reaches_sim_with_empty_tax_cache() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0x9999999999999999999999999999999999999999"); // khong trong victims_ab
+        let tx_value = U256::from(60_000_000_000_000_000u64); // 0.06 BNB >= pairs_min_swap_bnb 0.05
+        let victims = victims_ab();
+        let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let (_dir, logger) = pairbook_test_logger();
+        let mut pairbook = PairBook::new();
+        let content = format!("{pair_addr:#x} # SYM | vetted 2026-09-16 | tax 0/0 | owner renounced | note\n");
+        pairbook.reload(&content, &DirectPairResolver, &logger, std::time::Instant::now(), true).await;
+        assert!(pairbook.is_tax_ok(&pair_addr), "setup: pool phai da vet va chua vet_fail");
+
+        let cache = TaxCache::new(); // RONG HOAN TOAN - trong tam bug fix
+        let risk = RiskGuard::new();
+        let cfg = test_config();
+        let input = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
+        };
+        let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
+        assert_eq!(source, "pair");
+        match outcome {
+            PipelineOutcome::Simulated(q) => assert!(q.profit_wei > 0),
+            other => panic!("expect Simulated (pool da vet, TaxCache rong khong duoc chan) - day la bug BAOCAO37, got {other:?}"),
+        }
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh `real-economics-mode2`, mục 0): pool đã vet nhưng
+    /// vet NỀN (`pairs_vet_task`) vừa loại (`set_vet_result(ok=false)`) ->
+    /// `honeypot_or_tax`, `source="pair"` (KHÔNG rơi xuống `not_in_list` —
+    /// giữ visibility đúng lý do kinh tế thật, xem `PairBook::knows_pool`/
+    /// `is_vet_failed`).
+    #[tokio::test]
+    async fn decide_paper_v2_pair_mode_vet_failed_pool_is_honeypot_or_tax() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0x9999999999999999999999999999999999999999");
+        let tx_value = U256::from(60_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let (_dir, logger) = pairbook_test_logger();
+        let mut pairbook = PairBook::new();
+        let content = format!("{pair_addr:#x} # SYM | vetted 2026-09-16 | tax 0/0 | owner renounced | note\n");
+        pairbook.reload(&content, &DirectPairResolver, &logger, std::time::Instant::now(), true).await;
+        pairbook.set_vet_result(
+            pair_addr,
+            crate::pairbook::VetResult { buy_bps: 0, sell_bps: 2000, honeypot: false, block: 1 },
+            false,
+        );
+        assert!(!pairbook.is_tax_ok(&pair_addr));
+        assert!(pairbook.is_vet_failed(&pair_addr));
+
+        let cache = TaxCache::new();
+        let risk = RiskGuard::new();
+        let cfg = test_config();
+        let input = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
+        };
+        let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
+        assert_eq!(source, "pair", "pool DA BIET (vet_failed) phai van route vao nhanh pair, khong roi xuong not_in_list");
+        assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax)), "got {outcome:?}");
     }
 
     /// Wallet khớp `victims.txt` PHẢI THẮNG, không check `PairBook` dù
@@ -1714,7 +1997,7 @@ mod tests {
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let risk = RiskGuard::new();
         let cfg = test_config();
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (_, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "wallet", "wallet mode phai thang du pair_addr cung khop PairBook");
     }
@@ -1732,7 +2015,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = test_config();
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "none");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotInList)));
@@ -1759,7 +2042,7 @@ mod tests {
         let cfg = test_config(); // pair_scan_universal = false (ship mac dinh)
         assert!(!cfg.pair_scan_universal, "test_config() phai ship pair_scan_universal=false");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "none");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotInList)));
@@ -1783,7 +2066,7 @@ mod tests {
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("pair_scan_universal = false", "pair_scan_universal = true")]))
             .expect("cfg universal=true phai load duoc");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead"); // pool la, khong trong pairs.txt
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "universal");
         match outcome {
@@ -1808,7 +2091,7 @@ mod tests {
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("pair_scan_universal = false", "pair_scan_universal = true")]))
             .expect("cfg universal=true phai load duoc");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "universal");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::BelowMin)));
@@ -1830,7 +2113,7 @@ mod tests {
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("pair_scan_universal = false", "pair_scan_universal = true")]))
             .expect("cfg universal=true phai load duoc");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (_, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "wallet", "wallet mode phai thang universal du universal dang bat");
     }
@@ -1868,7 +2151,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("wallet_scan_enabled = true", "wallet_scan_enabled = false")]))
             .expect("cfg wallet_scan_enabled=false phai load duoc");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "pair", "wallet_scan_enabled=false phai khien tx roi xuong pair mode");
         match outcome {
@@ -1892,7 +2175,7 @@ mod tests {
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("wallet_scan_enabled = true", "wallet_scan_enabled = false")]))
             .expect("cfg wallet_scan_enabled=false phai load duoc");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "none");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotInList)));
@@ -1919,7 +2202,7 @@ mod tests {
             ("pair_scan_universal = false", "pair_scan_universal = true"),
         ]))
         .expect("cfg pair_scan_enabled=false + universal=true phai load duoc");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "universal", "pair_scan_enabled=false phai khien tx roi xuong universal mode");
         match outcome {
@@ -1944,7 +2227,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("pair_scan_enabled = true", "pair_scan_enabled = false")]))
             .expect("cfg pair_scan_enabled=false phai load duoc");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "none");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotInList)));
@@ -1984,7 +2267,15 @@ mod tests {
             ("pair_scan_universal = false", "pair_scan_universal = false"), // giu false (mac dinh)
         ]))
         .expect("to hop chi-wallet phai load duoc");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg_wallet_only.gas_wei(),
+        };
         let (outcome, source) = decide_paper_v2(&victims, &build_pairbook(), &build_cache(), &cfg_wallet_only, &risk, &input);
         assert_eq!(source, "wallet", "to hop chi-wallet=true phai match source=wallet");
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)));
@@ -2044,6 +2335,7 @@ mod tests {
             reserves: fixture_reserves(),
             pair_addr,
             current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
         };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "none");
@@ -2081,7 +2373,7 @@ mod tests {
         assert!(cfg.dry_run, "test_config phai dry_run=true (khop config ship)");
         assert!(cfg.sim_engine_is_evm(), "test_config ship sim_engine=evm");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, source) = decide_and_build_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &logger, &input);
         assert_eq!(source, "wallet");
@@ -2118,7 +2410,7 @@ mod tests {
         let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
         assert!(!cfg.sim_engine_is_evm());
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, _source) = decide_and_build_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &logger, &input);
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)));
@@ -2147,7 +2439,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = test_config();
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, source) = decide_and_build_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &logger, &input);
         assert_eq!(source, "none");
@@ -2302,7 +2594,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "wallet");
@@ -2325,7 +2617,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, _source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "expect Simulated, got {outcome:?}");
@@ -2380,7 +2672,7 @@ mod tests {
         let cache = TaxCache::new();
         let cfg = test_config();
         assert!(!cfg.scan_quote_usdt, "ship default phai la false");
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000);
+        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "none");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotQuotePair)), "got {outcome:?}");
     }
@@ -2395,7 +2687,7 @@ mod tests {
         let calldata = build_tokens_for_tokens(50_000_000_000_000_000, 0, usdt(), token);
         let cache = TaxCache::new();
         let cfg = cfg_usdt_enabled(&[]);
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000);
+        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::ThinLiq)), "got {outcome:?}");
     }
@@ -2411,27 +2703,41 @@ mod tests {
         // Cong tax cong-thuc-dong nay CHI ap dung khi sim_engine="v2" (evm thi
         // EVM tu do tax, xem `evaluate_candidate_quote`) - override ve "v2".
         let cfg = cfg_usdt_enabled(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")]);
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000);
+        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax)), "got {outcome:?}");
     }
 
-    /// ĐẠT CẦN DÁN (lệnh usdt-quote-asset, mục 4): "profit_usdt = backUSDT -
-    /// frontUSDT THUẦN, không trừ gas". Đối chiếu `profit_wei`/`front_in` trả
-    /// về từ `decide_paper_quote` (nhánh USDT) với 2 lời gọi
-    /// `sim_v2::search_max_front_in` TRỰC TIẾP: 1 lần `gas_wei=0` (kỳ vọng
-    /// khớp CHÍNH XÁC) và 1 lần `gas_wei=cfg.gas_wei()` (khác — lệch đúng
-    /// bằng tổng gas, chứng minh nhánh USDT KHÔNG hề trừ gas vào profit).
+    /// Cụm `real-economics-mode2` (mục 1.d) — CLAUDE.md Math ĐÃ SỬA: bỏ luật
+    /// cũ "profit_usdt không trừ gas" (test cũ
+    /// `usdt_quote_profit_has_no_gas_subtracted_matches_gas_wei_zero_exactly`
+    /// đã XOÁ, hành vi đó không còn đúng). Giờ `gas_cost_in_quote_wei` (đã
+    /// quy đổi sẵn bởi caller — `main.rs` qua `convert_gas_cost_bnb_to_usdt`)
+    /// được trừ THẲNG vào profit USDT, y hệt cơ chế WBNB — đối chiếu
+    /// `profit_wei`/`front_in` trả về từ `decide_paper_quote` với
+    /// `sim_v2::search_max_front_in` gọi TRỰC TIẾP cùng `gas_cost_in_quote_wei`.
     #[test]
-    fn usdt_quote_profit_has_no_gas_subtracted_matches_gas_wei_zero_exactly() {
+    fn usdt_quote_profit_subtracts_gas_converted_to_usdt() {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_tokens_for_tokens(USDT_VICTIM_1000_WEI, 0, usdt(), token);
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = cfg_usdt_enabled(&[]);
-        assert!(cfg.gas_wei() > 0, "gas ship phai > 0 de test co y nghia");
+        let gas_cost_bnb_wei = cfg.gas_wei();
+        // Gia tri gia lap "da quy doi sang USDT" (0.5 USDT, 18dp) - trong test
+        // nay chi can KHAC 0 va nho hon loi nhuan du de van con Simulated.
+        let gas_cost_usdt_wei: u128 = 500_000_000_000_000_000u128;
 
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000);
+        let (outcome, tag) = decide_paper_quote(
+            &cache,
+            &cfg,
+            &calldata,
+            U256::ZERO,
+            usdt_deep_reserves(),
+            1000,
+            gas_cost_bnb_wei,
+            gas_cost_usdt_wei,
+        );
         assert_eq!(tag, "usdt");
         let q = match outcome {
             PipelineOutcome::Simulated(q) => q,
@@ -2441,19 +2747,35 @@ mod tests {
         assert!(q.profit_wei > 0);
 
         let front_cap = RiskGuard::front_cap_after_gas_reserve(cfg.max_front_usdt_wei(), cfg.gas_reserve_bnb_wei);
-        let expected_no_gas = sim_v2::search_max_front_in(usdt_deep_reserves(), U256::from(USDT_VICTIM_1000_WEI), front_cap, 0)
-            .expect("phai co quote");
-        let expected_with_gas =
-            sim_v2::search_max_front_in(usdt_deep_reserves(), U256::from(USDT_VICTIM_1000_WEI), front_cap, cfg.gas_wei())
-                .expect("phai co quote");
+        let expected_with_gas = sim_v2::search_max_front_in(
+            usdt_deep_reserves(),
+            U256::from(USDT_VICTIM_1000_WEI),
+            front_cap,
+            gas_cost_usdt_wei,
+        )
+        .expect("phai co quote");
+        let expected_no_gas =
+            sim_v2::search_max_front_in(usdt_deep_reserves(), U256::from(USDT_VICTIM_1000_WEI), front_cap, 0).expect("phai co quote");
 
-        assert_eq!(q.front_in, expected_no_gas.front_in);
-        assert_eq!(q.profit_wei, expected_no_gas.profit_wei, "nhanh USDT phai khop CHINH XAC gas_wei=0");
-        assert_eq!(
-            expected_no_gas.profit_wei - expected_with_gas.profit_wei,
-            cfg.gas_wei() as i128,
-            "chenh lech dung bang tong gas -> chung minh nhanh USDT khong tru gas"
-        );
+        assert_eq!(q.front_in, expected_with_gas.front_in);
+        assert_eq!(q.profit_wei, expected_with_gas.profit_wei, "nhanh USDT phai khop CHINH XAC gas_cost_in_quote_wei da truyen vao");
+        assert_ne!(q.profit_wei, expected_no_gas.profit_wei, "gas phai THUC SU duoc tru, khac luat cu 'khong tru gas'");
+    }
+
+    /// F-03 — `gas_cost_bnb_wei` (LUÔN đơn vị BNB, bất kể quote asset) vượt
+    /// trần `cfg.gas_wei()` -> `gas_cap`, KHÔNG phụ thuộc `gas_cost_in_quote_wei`
+    /// nhỏ tới đâu (trần gas so bằng BNB vì gas luôn trả bằng BNB).
+    #[test]
+    fn usdt_quote_gas_cap_when_gas_cost_bnb_exceeds_config_cap() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_tokens_for_tokens(USDT_VICTIM_1000_WEI, 0, usdt(), token);
+        let mut cache = TaxCache::new();
+        cache.insert(token, TaxMeasurement::manual(0, 995));
+        let cfg = cfg_usdt_enabled(&[]);
+        let gas_cost_bnb_wei = cfg.gas_wei() + 1; // vuot tran dung 1 wei
+        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, gas_cost_bnb_wei, 1u128);
+        assert_eq!(tag, "usdt");
+        assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::GasCap)), "got {outcome:?}");
     }
 
     /// Lãi mô phỏng DƯƠNG nhưng dưới `min_profit_usdt` chỉnh tay rất cao ->
@@ -2466,7 +2788,7 @@ mod tests {
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = cfg_usdt_enabled(&[("min_profit_usdt = 3.0", "min_profit_usdt = 1000000.0")]);
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000);
+        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::Unprofitable)), "got {outcome:?}");
     }
@@ -2481,7 +2803,7 @@ mod tests {
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = test_config(); // scan_quote_usdt=false ship
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, tx_value, fixture_reserves(), 1000);
+        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, tx_value, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "wbnb");
         match outcome {
             PipelineOutcome::Simulated(q) => assert!(q.profit_wei > 0),
@@ -2558,5 +2880,89 @@ mod tests {
         // doi hanh vi - van la not_wbnb_pair y het truoc phien nay.
         let err_old = decode_and_classify(&calldata, U256::ZERO).unwrap_err();
         assert_eq!(err_old, PipelineSkip::NotWbnbPair);
+    }
+
+    // ===== Cụm `real-economics-mode2` (F-03) — compute_gas_cost_wei / gas_cap =====
+
+    #[test]
+    fn compute_gas_cost_wei_uses_max_of_oracle_and_victim_gas_price() {
+        let cost_oracle_higher = compute_gas_cost_wei(100_000, 100_000, 5_000_000_000, 1_000_000_000, 10_000_000_000);
+        assert_eq!(cost_oracle_higher, 200_000u128 * 5_000_000_000u128);
+        let cost_victim_higher = compute_gas_cost_wei(100_000, 100_000, 1_000_000_000, 5_000_000_000, 10_000_000_000);
+        assert_eq!(cost_victim_higher, 200_000u128 * 5_000_000_000u128, "victim.gas_price cao hon oracle phai duoc dung");
+    }
+
+    #[test]
+    fn compute_gas_cost_wei_sentinel_when_oracle_price_exceeds_gas_price_max() {
+        let cost = compute_gas_cost_wei(100_000, 100_000, 11_000_000_000, 0, 10_000_000_000);
+        assert_eq!(cost, u128::MAX, "oracle gas price vuot gas_price_max_gwei -> sentinel gas_cap");
+    }
+
+    #[test]
+    fn compute_gas_cost_wei_gas_price_max_zero_disables_ceiling_check() {
+        // gas_price_max_wei=0 nghia la KHONG check tran gia (cung tinh than
+        // "0 = tat" cua max_exposure_bnb/max_consecutive_loss).
+        let cost = compute_gas_cost_wei(100_000, 100_000, 999_000_000_000, 0, 0);
+        assert_eq!(cost, 200_000u128 * 999_000_000_000u128);
+    }
+
+    /// ĐẠT CẦN DÁN (F-03) — `gas_cost_wei` vượt trần `cfg.gas_wei()` (đúng 1
+    /// wei) -> `gas_cap`, KHÔNG rơi vào `unprofitable`/`Simulated` — chứng
+    /// minh gate mới hoạt động ở tầng `decide_paper_v2` đầy đủ (không chỉ
+    /// đơn vị `evaluate_candidate`).
+    #[test]
+    fn decide_paper_v2_wallet_mode_gas_cap_when_gas_cost_exceeds_config_cap() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // trong victims_ab
+        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pairbook = PairBook::new();
+        let mut cache = TaxCache::new();
+        cache.insert(token, TaxMeasurement::manual(0, 995));
+        let risk = RiskGuard::new();
+        let cfg = test_config();
+        let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let input = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg.gas_wei() + 1, // vuot tran dung 1 wei
+        };
+        let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
+        assert_eq!(source, "wallet");
+        assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::GasCap)), "got {outcome:?}");
+    }
+
+    /// Đối chứng: `gas_cost_wei == cfg.gas_wei()` (đúng bằng trần, KHÔNG vượt)
+    /// vẫn phải đi tới sim bình thường — trần chỉ chặn khi VƯỢT, không chặn
+    /// khi bằng.
+    #[test]
+    fn decide_paper_v2_gas_cost_equal_to_cap_still_reaches_sim() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pairbook = PairBook::new();
+        let mut cache = TaxCache::new();
+        cache.insert(token, TaxMeasurement::manual(0, 995));
+        let risk = RiskGuard::new();
+        let cfg = test_config();
+        let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let input = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
+        };
+        let (outcome, _source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
+        assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "gas_cost_wei == tran (khong vuot) khong duoc gas_cap, got {outcome:?}");
     }
 }

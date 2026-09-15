@@ -12,33 +12,43 @@
 3. `revm`/`sim_evm.rs` giữ đúng 3 việc: (a) vet NỀN định kỳ `pairs.txt`
    (`pairs_vet_task`, mỗi `pairs_vet_interval_sec`), (b) đo lại token ngay
    trước khi ký ở live (`7.x`, CHƯA làm), (c) validator `validate.victim`.
-4. Cụm đã XONG gần nhất: `exec-path-traps` (12 bẫy thực thi trước signer,
-   BAOCAO35) rồi `strategy-lock-mode2` (BAOCAO36).
-5. Cụm ĐANG LÀM: `docs-cleanup-mode2` (phiên này, BAOCAO37) — dọn tài liệu
-   vận hành theo chiến lược mode 2, KHÔNG đổi logic `src/`.
-6. Cụm KẾ TIẾP (**CHƯA BẮT ĐẦU**): `real-economics-mode2` — sửa F-03 (gas
-   thật qua `eth_gasPrice` × gas đo, thay trần cấu hình), validator đối
-   chiếu V2 math vs thật, tinh chỉnh `pairs_vet_task`. Bản hiện tại **CHƯA
-   CÓ** `/api/econ`, field `gas_price_max_gwei`, hay dòng tổng kinh tế dạng
-   "candidate=... net_pos=..." — tất cả thuộc cụm này, đừng viết tài liệu
-   như thể đã có.
+4. Cụm đã XONG gần nhất: `docs-cleanup-mode2` (BAOCAO37) rồi
+   `real-economics-mode2` cụm B (BAOCAO38, phiên này).
+5. (mục này gộp vào mục 4 — `docs-cleanup-mode2` đã XONG, không còn
+   "đang làm").
+6. Cụm `real-economics-mode2` (BAOCAO38, phiên này) — **MỘT PHẦN, ĐÃ XONG**:
+   (a) fix BUG cổng tax pair-mode (BAOCAO37: `honeypot_or_tax=95/phút` —
+   đường nóng tra nhầm `TaxCache` rỗng cho token đã vet tay trong
+   `pairs.txt`), (b) F-03 gas thật (`eth_gasPrice` qua `GasOracle` × gas
+   unit đo bằng revm lúc boot, thay trần cấu hình cũ) cho đường nóng
+   `sim_engine="v2"`, (c) `GET /api/econ` (bucket victim_in theo BNB,
+   latency, decode_fail theo router, dòng tổng) — **CÓ** từ phiên này, (d)
+   F-27 validator tách isolated/non_isolated. **CHƯA LÀM** (xem "Nợ CÒN
+   THẬT" ở `docs/TASKS.md`): gas thật cho đường `sim_engine="evm"` (không
+   phải hot path), nonce gate (F-13) chưa wire vào đường nóng v2, V4 sim,
+   `decoder-coverage`, `strategy-exec`.
 7. `fork-actor-perf` (cụm 3 cũ): HẠ ƯU TIÊN xuống SAU cụm 6 `strategy-exec`
    — đường nóng mode 2 không còn nghẽn fork EVM mỗi tx.
 8. `7.3` (gửi tx thật/`sendRaw`): **VẪN CHƯA LÀM** — không có hàm ký/gửi tx
    nào trong repo (xác nhận lại nhiều lần qua grep + test chuyên dụng).
-9. Test baseline đầu phiên `docs-cleanup-mode2`: `cargo test --release`
-   (WSL) = **295 passed** (280 lib + 15 main), 0 failed, 11 ignored — xem
-   `baocao/BAOCAO37.md` ô 5 cho log đầy đủ + sha256 binary.
-10. Git HEAD đầu phiên `docs-cleanup-mode2`:
-    `17a273b72380d9396ada4ef534ea1dcb9bf7b39b` (commit BAOCAO36).
+9. Test baseline ĐẦU phiên `real-economics-mode2` cụm B (HEAD=`8cf5923`):
+   `cargo test --release` (WSL) = 295 passed (280 lib + 15 main), 0 failed,
+   12 ignored. **CUỐI phiên này** (sau khi sửa): xem `baocao/BAOCAO38.md`
+   ô 5 cho số liệu mới (307 lib + 15 main = 322 passed, tăng 27 test) +
+   sha256 binary.
+10. Git HEAD đầu phiên `real-economics-mode2` cụm B:
+    `8cf5923f9a358156a1b45f70d9615f1d1a360d57` (commit "pairs.txt: vet nhóm
+    A, xóa 7 token FAIL").
 11. Venue đã pin: V2+V3+V4/Infinity (`DEX_REGISTRY.md`, `eth_getCode>0`
     chain 56, 5 router pin trong `venues::PANCAKE_ROUTERS`); "bản mới hơn"
     DISABLED (chưa deploy trên BSC).
 12. `pairs.txt`: nguồn candidate DUY NHẤT đang bật, `pairs_require_vetted=true`
     — dòng thiếu `vetted YYYY-MM-DD` hợp lệ = CHƯA VET, không sim.
-13. Web dashboard: `/api/*` theo CLAUDE.md mục "Web" — KHÔNG có `/api/econ`
-    (thuộc `real-economics-mode2`, mục 6 ở trên).
-14. **Sự cố phiên `docs-cleanup-mode2` (ghi minh bạch, không giấu)**: một
+13. Web dashboard: `/api/*` theo CLAUDE.md mục "Web" — **CÓ** `/api/econ` từ
+    phiên `real-economics-mode2` cụm B (BAOCAO38), xem mục 6 ở trên và mục
+    "real-economics-mode2 cụm B" cuối file này.
+14. **Sự cố phiên `docs-cleanup-mode2` (ghi minh bạch, không giấu — sự cố cũ
+    ĐÃ XÁC NHẬN không mất dữ liệu, giữ nguyên văn cho lịch sử)**: một
     agent nghiên cứu được giao việc ĐỌC-ONLY đã vượt phạm vi, và tại một
     thời điểm giữa phiên `pairs.txt`/`README.md` bị thấy ở trạng thái revert
     về đúng bản `git HEAD` cũ (mất nội dung vet tay CHƯA COMMIT của Chủ).
@@ -3576,3 +3586,183 @@ GoPlus, không có trong tài liệu API:
    tối đa 3 lần), và khi vẫn thất bại → ghi `ERROR`/`REVIEW`, TUYỆT ĐỐI KHÔNG
    coi thiếu dữ liệu là "không có cờ đỏ" rồi tính `PASS` (sẽ ẩn token rủi ro
    thật dưới lớp dữ liệu rỗng do rate-limit, không phải do token sạch).
+
+## `real-economics-mode2` cụm B — fix bug tax-gate, F-03 gas thật, `/api/econ`, F-27 (BAOCAO38, 2026-09-15)
+
+Lệnh Grok sau khi đọc bug BAOCAO37 (`honeypot_or_tax=95/phút`,
+`unprofitable=0` với `sim_engine="v2"`) — sửa cổng tax cho token đã vet, nối
+gas thật (F-03), đo kinh tế trên pair-mode.
+
+### Mục 0 — fix BUG cổng tax (nguyên nhân gốc BAOCAO37)
+
+`pipeline::evaluate_candidate` (dùng bởi `decide_paper_v2` nhánh pair-mode)
+tra `TaxCache` cho MỌI candidate bất kể nguồn — nhưng `TaxCache` chỉ được
+điền THỦ CÔNG (`POST /api/tax`/`tax_inject.jsonl`) hoặc bởi
+`run_evm_decision` (chỉ chạy khi `sim_engine="evm"`, KHÔNG BAO GIỜ chạy trên
+đường nóng ship `sim_engine="v2"`, xem test
+`ship_config_sim_engine_v2_means_hot_path_never_opens_evm_fork`) — nghĩa là
+trên đường nóng thật, `TaxCache` LUÔN RỖNG cho token trong `pairs.txt`, dù
+token đó đã được Chủ vet tay VÀ `pairs_vet_task` đã vet nền PASS. Mọi
+candidate pair-mode vì vậy rơi vào `honeypot_or_tax` giả — đúng số liệu quan
+sát BAOCAO37.
+
+**Sửa**: `PairBook::is_tax_ok(pair) -> bool` = entry có `vetted_at=Some` (Chủ
+đã vet tay) VÀ KHÔNG nằm trong `vet_failed` (vet nền chưa loại) — đọc THẲNG
+2 nguồn sự thật đã có sẵn (`pairs.txt` comment + `pairs_vet_task`), KHÔNG cần
+`TaxCache`. `decide_paper_v2` nhánh pair truyền `skip_tax_gate =
+pairbook.is_tax_ok(pair_addr)` vào `evaluate_candidate` — `true` thì BỎ QUA
+hẳn bước tra `TaxCache` (chỉ khi `sim_engine="v2"`; `sim_engine="evm"` đã có
+cơ chế bỏ qua riêng từ trước, không đổi). Nhánh wallet/universal (không có
+cơ chế vet) LUÔN truyền `false` — hành vi tra `TaxCache` giữ NGUYÊN cho 2
+nhánh đó.
+
+**Đổi thêm để giữ visibility**: trước đây `pipeline::decide_paper_v2` dùng
+`pairbook.contains(pair)` (loại trừ `vet_failed`) để quyết định có route vào
+nhánh "pair" hay không — nghĩa là 1 pool `vet_failed` sẽ KHÔNG route vào
+nhánh pair, rơi xuống `universal`/`not_in_list` (mất dấu vết TẠI SAO bị
+loại). Đổi sang `pairbook.knows_pool(pair)` (bao gồm cả `vet_failed`) +
+kiểm tra `is_vet_failed` NGAY ĐẦU nhánh pair: pool `vet_failed` trả
+`(Skip(HoneypotOrTax), "pair")` tường minh — `main.rs` gắn thêm
+`meta.detail="vet_fail"` vào log `tx.skip` khi phát hiện trường hợp này
+(khác `detail="venue_mismatch"` của F-16, cùng field).
+
+Test bằng chứng (`pipeline.rs`): `decide_paper_v2_pair_mode_vetted_pool_reaches_sim_with_empty_tax_cache`
+(pool vet qua `PairBook::reload()` thật, `TaxCache::new()` RỖNG HOÀN TOÀN →
+`Simulated`) và `decide_paper_v2_pair_mode_vet_failed_pool_is_honeypot_or_tax`
+(pool `set_vet_result(ok=false)` → `Skip(HoneypotOrTax)`, `source="pair"`).
+
+### Mục 1 — F-03 gas thật
+
+`transport::GasOracle` — cache `eth_gasPrice` theo block (1 lần/block, không
+gọi lặp lại cho mỗi candidate cùng block); lỗi thì fallback median
+`gas_price` của các tx trong block MINED gần nhất
+(`eth_getBlockByNumber(block-1, full)`); lỗi cả 2 thì giữ giá trị cache CŨ
+(khác block) thay vì trả `0` (0 sẽ đánh giá thấp giả tạo chi phí gas — nguy
+hiểm hơn dùng số cũ hơi lệch); chưa từng đo lần nào thì `0` (an toàn theo
+hướng khác: `max(oracle, victim.gas_price)` vẫn còn `victim.gas_price` chặn
+được). Log `gas.oracle{block,gwei,source}` mỗi lần đo mới (không log khi
+cache hit).
+
+Gas UNIT (KHÔNG phải wei) đo 1 LẦN lúc boot bằng revm thật
+(`sim_evm::measure_gas_units`, tái dùng đúng calldata front-buy/back-sell
+`*SupportingFeeOnTransferTokens` như `run_sandwich`) trên 1 token đã vet đầu
+tiên tìm thấy trong `pairs.txt` (`PairBook::tokens_to_vet().first()`) —
+`main.rs::gas_units_boot_task` poll mỗi 5s tối đa 12 lần (chờ provider +
+`pairs.txt` sẵn sàng), ghi kết quả vào `AppStateInner.gas_units:
+RwLock<(u64,u64)>` (khởi tạo sẵn = fallback `config.toml::gas_units_front`/
+`gas_units_back`, ship `160000`/`140000`). Đo lỗi/hết số lần thử → GIỮ
+fallback config, log `gas.units_measure_giveup`, KHÔNG panic/KHÔNG chặn
+boot.
+
+`pipeline::compute_gas_cost_wei(units_front, units_back, oracle_gas_price_wei,
+victim_gas_price_wei, gas_price_max_wei) -> u128` (THUẦN, không RPC) —
+`gas_cost = (units_front+units_back) × max(oracle, victim.gas_price)`.
+`oracle_gas_price_wei > gas_price_max_wei` (config mới, ship `10` gwei —
+mạng tắc nghẽn bất thường) → trả sentinel `u128::MAX`, tự động kích hoạt gate
+`gas_cap` ở tầng gọi (gộp 2 điều kiện (c)+(e) của lệnh vào ĐÚNG 1 chỗ, không
+cần nhánh so sánh riêng).
+
+`front_max_gas_bnb_wei`/`back_max_gas_bnb_wei` (`Config::gas_wei()`) ĐỔI Ý
+NGHĨA: TRƯỚC là chi phí gas dùng THẲNG (sai — cao hơn thực tế 10-100 lần,
+audit F-03); NAY chỉ còn là TRẦN so với `gas_cost_wei` đo thật —
+`gas_cost_wei > gas_wei()` → skip `PipelineSkip::GasCap` (`"gas_cap"`, thêm
+vào `SKIP_REASONS`/`FunnelCounters`/CLAUDE.md mục Skip). `evaluate_candidate`/
+`evaluate_candidate_quote` nhận thêm `gas_cost_wei`/`gas_cost_bnb_wei` +
+`gas_cost_in_quote_wei` (tham số MỚI, do caller `main.rs` tính sẵn — pipeline
+KHÔNG tự gọi RPC) — dùng THẲNG số này (không phải `cfg.gas_wei()`) làm
+`gas_wei` truyền vào `sim_v2::search_max_front_in`, nên `profit_wei` trả về
+đã là `profit_net = back_out - front_in - gas_cost_wei` THẬT.
+
+Quote USDT (mục 1.d) — sửa CLAUDE.md Math, BỎ luật cũ "profit_usdt không trừ
+gas": `main.rs` quy đổi `gas_cost_bnb_wei` sang USDT qua
+`pipeline::convert_gas_cost_bnb_to_usdt(gas_cost_bnb_wei, reserve_wbnb,
+reserve_usdt)` — 2 reserve này lấy THẬT từ pool WBNB/USDT (gọi lại
+`pipeline::resolve_v2_reserves(provider, USDT_ADDRESS)`, KHÔNG phải pool
+token/USDT đang xét, KHÔNG phải price oracle). `gas_cap` (mục c) LUÔN so
+bằng ĐƠN VỊ BNB (`gas_cost_bnb_wei` thô, trước quy đổi) vì gas trả bằng BNB
+bất kể quote asset nào của pool. **CÒN NỢ**: `main.rs::run_evm_decision`
+(`sim_engine="evm"`, không phải hot path) VẪN dùng `cfg.gas_wei()` trực tiếp
+làm chi phí (chưa nối `GasOracle`/gas unit đo thật vào đường này — đường đó
+chỉ phục vụ vet nền/pre-sign/validator theo `strategy-lock-mode2`, không
+phải nơi cần độ chính xác kinh tế cao nhất).
+
+### Mục 2 — log mở rộng
+
+`pipeline::TxLogMeta` thêm 7 field: `amount_in`/`quote`/`pair`/
+`reserve_quote`/`gas_cost_wei`/`gas_price_gwei`/`seen_to_decision_ms` — điền
+dần trong `main.rs::handle_paper_tx` ngay khi có dữ liệu (resolve pool xong,
+gas tính xong), `None` cho tx chưa qua tới bước đó (`decode_fail`/
+`not_pancake_router`...). `sim.result` thêm `profit_gross_wei` (= `q.profit_wei
++ gas_cost_wei` — cộng ngược lại gas đã trừ sẵn trong `SandwichQuote.profit_wei`,
+KHÔNG tính lại từ đầu) + `profit_net_wei` (= `q.profit_wei`, alias rõ nghĩa).
+`seen_to_decision_ms` đo từ lúc `handle_paper_tx` NHẬN tx (proxy cho lúc
+`tx.seen` được log — độ lệch là chi phí `tokio::spawn`, không đáng kể ở mức
+ms) tới lúc log outcome cuối — KHÔNG có `seen_to_nonce_check_ms` riêng (nonce
+gate chỉ chạy trong `run_evm_decision`, không phải đường nóng v2 mặc định,
+xem `docs/TASKS.md` mục Nợ).
+
+USDT `amount_in` CHƯA wire (nằm trong calldata, không phải `tx.value` như
+WBNB) — `meta.amount_in=None` cho nhánh USDT, ghi rõ CÒN NỢ (không bịa số,
+`scan_quote_usdt=false` ship nên không phải hot path).
+
+### Mục 3 — `GET /api/econ`
+
+Đọc trực tiếp `logs/bot.jsonl` (dòng `tx.skip`/`sim.result`, tối đa 2 triệu
+dòng cuối) mỗi lần gọi (không giữ state riêng trong `AppStateInner` — đơn
+giản hơn, luôn phản ánh log thật). Lõi tính toán (`compute_econ_from_rows`)
+THUẦN (nhận `&[Value]`, không I/O) — test được bằng dòng JSON dựng tay,
+`econ()` (handler) chỉ đọc file rồi gọi hàm này.
+
+- **Bucket BNB** (5 khoảng CLAUDE.md mục 3.a) CHỈ áp dụng cho `quote="wbnb"`
+  (USDT không quy đổi được sang BNB nếu không có price oracle — CLAUDE.md
+  cấm oracle giá — nên KHÔNG bị ép vào bucket BNB, vẫn đếm riêng trong
+  `by_quote`). Mỗi bucket: `count` (mọi `tx.skip`+`sim.result` rơi vào),
+  `gross_pos`/`net_pos`/`sum_net_pos_bnb`/`best_net_bnb` (CHỈ từ `sim.result`
+  — `tx.skip` không có `profit_gross_wei`/`profit_net_wei`, không bịa),
+  `median_gas_cost_bnb` (từ `gas_cost_wei` có trên CẢ 2 loại dòng).
+- `by_quote` (đếm wbnb/usdt), `top_tokens` (10 token nhiều dòng nhất).
+- `decode_fail_by_router`: nhóm theo `to` qua bảng tên hiển thị khớp CHÍNH
+  XÁC 5 địa chỉ `venues::PANCAKE_ROUTERS` ("V2 Router"/"SwapRouter"/
+  "SmartRouter"/"UR v3 (cu)"/"UR Infinity"), địa chỉ lạ → "other".
+- `latency_ms.p50`/`p95` (nearest-rank trên `seen_to_decision_ms`),
+  `nonce_stale_pct_of_candidate` (đếm `reason="nonce_stale"` / tổng dòng
+  `tx.skip`+`sim.result` — LUÔN `0` trên đường nóng v2 mặc định vì nonce
+  gate chưa wire ở đó, xem Nợ).
+- `summary_line`: `"candidate=<n> net_pos=<n> best_net_bnb=<x> p50_ms=<n>
+  p95_ms=<n> stale_pct=<x> decode_fail_smartrouter=<n>"` đúng CLAUDE.md mục
+  3.e.
+
+### Mục 4 — F-27 validator tách isolated/non_isolated
+
+Audit F-27 chỉ ra `/api/validate` trả `within_1pct=2` (`within_1pct_ratio`
+0.111) trong khi đếm tay 18 dòng ra `12/18` (0.667) — bộ đếm CŨ chỉ tính
+dòng `isolated:true` vào `within_1pct` dù tên field không nói rõ. Sửa:
+`web::ValidateGroupStats` (n, within_1pct, p50/p95 CỦA CHÍNH `lech_pct`, giữ
+200 mẫu gần nhất/nhóm) tách riêng cho `isolated`/`non_isolated`;
+`ValidateStats::push(row, is_isolated, lech_pct)` (thay `push(row, ok:
+bool)` cũ — `ok` gộp sẵn `isolated && pct<=1.0` chính là nguồn gốc bug) tự
+route vào đúng nhóm. Tổng `within_1pct`/`within_1pct_ratio` ở gốc JSON giờ
+CỘNG ĐÚNG cả 2 nhóm — test `validate_stats_matches_audit_manual_recount_after_f27_fix`
+tái tạo NGUYÊN bộ số audit (2 isolated cùng 0.0%, 16 non_isolated với 10
+≤1%/6 >1% đúng 6 giá trị audit liệt kê) và assert `within_1pct=12` (khớp
+đếm tay audit), không còn `2`.
+
+### Mục 5 — nonce_future
+
+Test `nonce_future_then_ok_after_k_confirms_same_sender`
+(`transport.rs`) mô phỏng ĐÚNG kịch bản lệnh ("1 sender 2 tx k/k+1 → k ok,
+k+1 nonce_future; k lên block → k+1 ok") bằng CHÍNH `compare_nonce`/
+`NonceCache` mà `run_evm_decision` gọi thật — KHÔNG cần RPC sống (nonce kỳ
+vọng insert tay, đúng ngữ nghĩa `eth_getTransactionCount` production sẽ
+trả). **Lưu ý phạm vi**: nonce gate (F-13) hiện CHỈ tồn tại trong
+`main.rs::run_evm_decision` (nhánh `sim_engine="evm"`) — đường nóng mặc
+định (`sim_engine="v2"`) KHÔNG kiểm nonce victim. Đây không phải điều lệnh
+yêu cầu sửa (chỉ yêu cầu 1 test cho cơ chế nonce_future) nhưng ghi rõ để
+không ai hiểu nhầm nonce đã được gate trên đường nóng — xem `docs/TASKS.md`
+mục Nợ nếu Chủ muốn wire thêm.
+
+### Field config mới
+
+`gas_units_front` (ship `160000`), `gas_units_back` (ship `140000`),
+`gas_price_max_gwei` (ship `10`) — cả 3 bắt buộc (thiếu = fail load, cùng
+khuôn mọi field khác).

@@ -116,6 +116,18 @@ sim_engine = "v2"
 # (revm) cho MỌI entry `pairs.txt` đã có `vetted` mỗi khoảng này (giây), độc
 # lập với đường nóng. KHÔNG liên quan `config_reload_sec` (đó là hot-reload
 # ngưỡng, đây là cadence vet nền).
+# Cụm `real-economics-mode2` (F-03): số gas UNIT fallback cho front-buy/
+# back-sell khi chưa đo được thật bằng revm lúc boot (đo 1 lần trên 1 pair
+# đã vet trong pairs.txt, cache; đo lỗi thì dùng 2 field này). front_max_gas_bnb_wei/
+# back_max_gas_bnb_wei ở trên GIỜ CHỈ LÀ TRẦN so với gas_cost_wei đo thật
+# (units * max(eth_gasPrice, gas_price victim)), không còn dùng thẳng làm
+# chi phí gas trừ vào profit nữa.
+gas_units_front = 160000
+gas_units_back = 140000
+# gas_price_max_gwei: eth_gasPrice đo được > ngưỡng này (mạng tắc nghẽn bất
+# thường) -> skip gas_cap, không đoán gas sẽ rẻ lại kịp lúc.
+gas_price_max_gwei = 10
+
 pairs_vet_interval_sec = 600
 
 # Cụm `strategy-lock-mode2`: true = entry `pairs.txt` KHÔNG có `vetted

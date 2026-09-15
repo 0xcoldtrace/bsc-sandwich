@@ -54,12 +54,12 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | `foundation-fix-then-real-sim` cụm B1+B2 (sim EVM qua revm) | 31 | 6d50a31 | MỘT PHẦN — cơ chế đúng, verify RPC thật; CHƯA nối vào pipeline (đó là ý định cụm C, xem "Hoãn, lý do") |
 | `foundation-fix-then-real-sim` cụm B4 (validate 3 sandwich thật qua BscScan) | 31 | 6d50a31 | BLOCKED — sandbox không có BscScan API/trình duyệt |
 | `evm-validate-wire-tax` cụm B4' (validate tự động thay BscScan) | 32 | 6d50a31 | KHÔNG ĐẠT SỐ — cơ chế đúng (B4'.1/.2/.4 đạt), B4'.3(a)/(b) thiếu mẫu vì RPC công khai rate-limit |
-| `evm-validate-fixed-then-wire` cụm B3+C+D + `wsl-env-rules-paperrun` | 33, 34 | 6d50a31 (33) / e24a834 (34) | Nội dung đầy đủ CHƯA được backfill vào bảng này (khoảng trống lịch sử đã biết từ `exec-path-traps`) — xem `baocao/BAOCAO33.md`/`BAOCAO34.md` trực tiếp. **Hướng "cụm C: EVM mỗi tx trên đường nóng" của B3+C+D này đã bị `strategy-lock-mode2` THAY THẾ**, xem "Hoãn, lý do". |
+| `evm-validate-fixed-then-wire` cụm B3+C+D + `wsl-env-rules-paperrun` | 33, 34 | 6d50a31 (33) / e24a834 (34) | **Backfill (cụm `real-economics-mode2`, đọc trực tiếp BAOCAO33/34):** BAOCAO33 sửa bug decoder thật (thêm 3 selector `*SupportingFeeOnTransferTokens` — decoder cũ `decode_fail` 100% mempool BSC thật vì mọi tx V2-buy dùng nhóm này), nối `sim_evm` vào pipeline (`decide_with_evm`/`BlockForkCache`), C1 đo tax thật bằng revm (`measure_tax_evm`, phát hiện 1 honeypot thật `TRANSFER_FROM_FAILED`), C3 `ZERO_TAX_ALLOWLIST` 8 token verify on-chain, B3.4 validator nhúng `/api/validate`. B4''.2 (dự đoán victim khớp on-chain) ĐẠT 9/9=100% lệch 0.000000%. B4''.3 (replay ≥3 sandwich thật lệch ≤2%) KHÔNG đạt số (1/3 replay được) vì 2 giới hạn hạ tầng thật: cửa sổ state ~128 block của RPC công khai, và 28/28 bộ sandwich thật tìm được đều route qua CONTRACT riêng (không phải EOA) nên `profit_real` đo bằng EOA-balance-delta ra `0 vs 0` vô nghĩa — đây chính là bằng chứng sớm nhất trong repo cho kết luận sau này của audit ("EOA + 2 router call là mô hình đã bị đào thải", F1). BAOCAO34 xác nhận môi trường WSL, thêm 3 luật BAOCAO (#1/#2/#3), tạo `scripts/paper_run.sh` dùng chung WSL/VPS, smoke test 0 phút (chưa chạy 30 phút thật, chưa chạy `real_rpc_*` — ghi CÒN NỢ đúng lúc đó). **Hướng "cụm C: EVM mỗi tx trên đường nóng" của B3+C+D này đã bị `strategy-lock-mode2` THAY THẾ**, xem "Hoãn, lý do". |
 | Audit toàn diện trước live | AUDIT_2026-09-15 | 6d50a31 | XONG (27 lỗi code F-01..F-27 + 12 lỗi vận hành V-01..V-12) |
 | `exec-path-traps` (chặn 12 bẫy thực thi trước signer `7.3`) | 35 | 3694908 | XONG 12/12 + mục 13 (sửa `paper_run.sh`) |
 | `strategy-lock-mode2` (Chủ chốt mode 2 only) | 36 | 5675f81 | XONG |
-| `docs-cleanup-mode2` (dọn tài liệu vận hành cho mode 2) | 37 | *(phiên này, xem BAOCAO37 ô 3)* | ĐANG LÀM |
-| `real-economics-mode2` (F-03 gas thật, validator V2, tinh chỉnh vet nền) | — | — | **CHƯA LÀM** |
+| `docs-cleanup-mode2` (dọn tài liệu vận hành cho mode 2) | 37 | bfd992b | XONG |
+| `real-economics-mode2` cụm B (fix bug tax-gate BAOCAO37, F-03 gas thật, `/api/econ`, F-27 validator, nonce_future test) | 38 | *(phiên này, xem BAOCAO38 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (gas thật cho `sim_engine="evm"`, V4 sim, decoder-coverage...) |
 
 ## Hoãn, lý do (không phải "chưa làm" — có chủ đích, cần lệnh Chủ mới đổi)
 
@@ -87,11 +87,43 @@ chép, mà là giới hạn lịch sử git thật của repo).
 
 ## Nợ CÒN THẬT theo chiến lược mode 2 (cần làm hoặc cần lệnh Chủ)
 
-- **F-03 (gas thật)** — `front_max_gas_bnb_wei`/`back_max_gas_bnb_wei` hiện
-  là TRẦN cấu hình tĩnh, cao hơn thực tế 10–100 lần; số `unprofitable`/
-  `profit` trên đường nóng V2 chưa dùng được để kết luận kinh tế chính xác
-  cho tới khi `real-economics-mode2` sửa (đổi sang `eth_gasPrice` × gas đo
-  qua revm nền).
+- **BUG cổng tax pair-mode — ĐÃ SỬA** (cụm `real-economics-mode2`, BAOCAO38):
+  `honeypot_or_tax=95/phút`/`unprofitable=0` phát hiện ở BAOCAO37 do đường
+  nóng tra nhầm `TaxCache` (luôn rỗng) cho token đã vet tay trong `pairs.txt`.
+  `PairBook::is_tax_ok` + `pipeline::evaluate_candidate(skip_tax_gate)` bỏ
+  qua `TaxCache` khi pool đã vet + chưa bị vet nền loại; pool `vet_failed`
+  giờ route rõ ràng vào `honeypot_or_tax` (detail `"vet_fail"`) thay vì rơi
+  im lặng xuống `not_in_list`.
+- **F-27 (validator `/api/validate`) — ĐÃ SỬA**: bộ đếm `within_1pct` cũ chỉ
+  tính dòng `isolated:true` (audit: trả `2` trong khi đếm tay ra `12/18`).
+  `web::ValidateStats`/`ValidateGroupStats` giờ tách riêng 2 nhóm
+  (`isolated`/`non_isolated`), mỗi nhóm có `n`/`within_1pct`/`p50_lech_pct`/
+  `p95_lech_pct`; tổng gốc `within_1pct` giờ cộng đúng cả 2 nhóm.
+- **nonce_future — có test cơ chế, CHƯA wire vào đường nóng `sim_engine="v2"`**:
+  `transport::compare_nonce`/`NonceCache` đã có test kịch bản đầy đủ
+  (`nonce_future_then_ok_after_k_confirms_same_sender`, BAOCAO38), nhưng gate
+  nonce (F-13) hiện CHỈ được gọi trong `main.rs::run_evm_decision`
+  (`sim_engine="evm"`) — đường nóng mặc định (`sim_engine="v2"`,
+  `decide_paper_v2`/`evaluate_candidate`) KHÔNG kiểm nonce victim. Cần lệnh
+  riêng nếu Chủ muốn thêm gate này vào đường nóng v2 (thêm 1 `eth_call`
+  `eth_getTransactionCount` mỗi candidate trước khi sim).
+
+- **F-03 (gas thật) — XONG cho đường nóng `sim_engine="v2"`** (cụm
+  `real-economics-mode2`, BAOCAO38): `pipeline::compute_gas_cost_wei` dùng
+  `max(eth_gasPrice qua GasOracle, gas_price của chính victim)` × gas unit đo
+  1 lần lúc boot bằng revm (`sim_evm::measure_gas_units`, fallback config
+  `gas_units_front`/`gas_units_back` nếu đo lỗi) — `front_max_gas_bnb_wei`/
+  `back_max_gas_bnb_wei` giờ CHỈ còn là TRẦN (skip `gas_cap` khi vượt), không
+  còn dùng thẳng làm chi phí trừ vào profit. **CÒN NỢ**: đường `sim_engine="evm"`
+  (`main.rs::run_evm_decision`/`pipeline::decide_with_evm`, KHÔNG phải đường
+  nóng mode 2 mặc định) VẪN dùng `cfg.gas_wei()` (trần) làm chi phí trực
+  tiếp như cũ — chưa nối `GasOracle`/gas unit đo thật vào đường này (chỉ dùng
+  cho vet nền/pre-sign/validator/đối chiếu thủ công, không phải hot path).
+- **F-03 mục 1.d (gas USDT) — XONG một phần**: `evaluate_candidate_quote`/
+  `decide_paper_quote` nhận `gas_cost_in_quote_wei` đã quy đổi sẵn (BAOCAO38),
+  `main.rs` quy đổi qua `pipeline::convert_gas_cost_bnb_to_usdt` (reserve
+  WBNB/USDT thật). Chưa verify bằng `real_rpc_*`/paper run thật với
+  `scan_quote_usdt=true` (ship `false`, nhánh USDT không phải hot path).
 - **V4/Infinity chưa sim được** — `pool.rs::resolve_infinity_pool` tìm ra
   `PoolKey` thật (từ `v4-pool-resolve`) nhưng chưa có hàm nào gọi
   `CLQuoter`/`BinQuoter` để sim giá — việc sim V4 vẫn ngoài phạm vi mọi cụm

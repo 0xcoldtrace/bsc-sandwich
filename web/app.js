@@ -142,11 +142,20 @@ function renderTaxCache(data) {
 }
 
 // Cụm evm-validate-fixed-then-wire (B3.4) — validator nhung song.
+// Cụm real-economics-mode2 (F-27) — tach isolated/non_isolated (fix bug audit:
+// within_1pct cu chi dem dong isolated:true).
 function renderValidate(data) {
   const meta = document.getElementById("validate-meta");
   if (meta) {
     const ratio = (data.within_1pct_ratio * 100).toFixed(2);
-    meta.textContent = `total=${data.total} within_1pct=${data.within_1pct} (${ratio}%)`;
+    const iso = data.isolated || {};
+    const nonIso = data.non_isolated || {};
+    const isoRatio = ((iso.within_1pct_ratio || 0) * 100).toFixed(2);
+    const nonIsoRatio = ((nonIso.within_1pct_ratio || 0) * 100).toFixed(2);
+    meta.textContent =
+      `total=${data.total} within_1pct=${data.within_1pct} (${ratio}%) | ` +
+      `isolated: n=${iso.n || 0} within_1pct=${iso.within_1pct || 0} (${isoRatio}%) p50=${iso.p50_lech_pct ?? "-"}% p95=${iso.p95_lech_pct ?? "-"}% | ` +
+      `non_isolated: n=${nonIso.n || 0} within_1pct=${nonIso.within_1pct || 0} (${nonIsoRatio}%) p50=${nonIso.p50_lech_pct ?? "-"}% p95=${nonIso.p95_lech_pct ?? "-"}%`;
   }
   const body = document.getElementById("validate-body");
   if (body) {

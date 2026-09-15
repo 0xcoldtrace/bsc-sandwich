@@ -136,12 +136,16 @@ không cần restart.
 | `back_slippage_bps` | `50` | Trượt giá cho phép ở chân bán sau (0.50%, nới hơn vì giá đã dịch sau khi victim khớp). |
 | `max_roundtrip_tax` | `0.005` | Tổng tax mua+bán tối đa cho phép (0.5%) — cao hơn thì coi `honeypot_or_tax`, bỏ qua. |
 | `max_consecutive_loss` | `3` | Số lần "thua" liên tiếp (tín hiệu từ validator nội bộ) trước khi risk-guard chặn thêm kèo mới. |
+| `gas_price_max_gwei` | `10` | Trần `eth_gasPrice` (gwei nguyên) — đo được cao hơn số này (mạng tắc nghẽn bất thường) thì coi `gas_cap`, bỏ qua kèo. |
 
-Không có field `gas_price_max_gwei` trong bot này — gas được chặn qua 3 field
-wei cố định: `gas_reserve_bnb_wei`, `front_max_gas_bnb_wei`,
-`back_max_gas_bnb_wei` (đơn vị wei, không phải gwei — xem comment ngay trong
-`config.toml`). (`/api/econ`/dòng tổng "net_pos=..." sắp có ở cụm
-`real-economics-mode2`, CHƯA có trong bot hiện tại.)
+Gas giờ được chặn theo **2 lớp** (cụm `real-economics-mode2`, F-03):
+`gas_reserve_bnb_wei`/`front_max_gas_bnb_wei`/`back_max_gas_bnb_wei` (wei,
+đã có từ trước) giờ CHỈ còn là TRẦN so với `gas_cost_wei` ĐO THẬT
+(`eth_gasPrice` × gas unit đo bằng revm lúc boot — không còn dùng thẳng làm
+chi phí gas như trước); `gas_units_front`/`gas_units_back` (ship
+`160000`/`140000`) là số gas UNIT FALLBACK khi chưa đo được thật. Vượt trần
+BẤT KỲ lớp nào → `gas_cap` (skip reason mới, xem mục 7). Dòng tổng kinh tế
+"candidate=... net_pos=..." đọc qua `GET /api/econ` (mục 6).
 
 Kiểm tra nhanh config đang hợp lệ (không cần chạy cả bot):
 
@@ -324,6 +328,11 @@ Kỳ vọng đầu ra (rút gọn, số thật sẽ khác):
   `POST /api/tax`.
 - **`/api/validate`** — độ chính xác sim: `within_1pct_ratio` càng gần `1.0`
   càng tốt (dự đoán sim khớp với kết quả thật trên chain trong biên độ 1%).
+  Cụm `real-economics-mode2` (F-27): tách riêng `isolated`/`non_isolated`
+  (mỗi nhóm có `n`/`within_1pct`/`p50_lech_pct`/`p95_lech_pct`) — block **cô
+  lập** (không tx nào khác chen vào cùng pool) thường khớp gần tuyệt đối,
+  block **có tx khác chen vào** (điều kiện MEV thật) mới phản ánh đúng độ
+  khó thật của việc dự đoán.
 - Dòng `sim_engine="v2"` (ship mặc định) → `sim.evm`/`sim_error` trên đường
   nóng sẽ **RỖNG** trong lần chạy bình thường. Đây **không phải lỗi** — đường
   nóng dùng công thức đóng V2, không mở fork EVM mỗi tx (xem mục 1). Muốn
@@ -333,8 +342,8 @@ Kỳ vọng đầu ra (rút gọn, số thật sẽ khác):
   thấp là dấu hiệu tích cực. `not_in_list`/`decode_fail` cao là bình thường
   (đa số tx mempool không liên quan). `sim_error` cao, hoặc `venue_v2 = 0`
   suốt nhiều phút dù `seen` cao, là dấu hiệu XẤU (xem mục 10).
-- Dòng tổng kết kinh tế dạng "candidate=… net_pos=…" **sắp có ở cụm
-  `real-economics-mode2`** — chưa tồn tại trong bản hiện tại.
+- Dòng tổng kết kinh tế dạng "candidate=… net_pos=…" đọc qua `GET /api/econ`
+  (field `summary_line`, cụm `real-economics-mode2`) — xem mục 6.
 
 ## 6. Dashboard
 
@@ -354,13 +363,11 @@ GET /api/pairs
 GET /api/hits?limit=50
 GET /api/skips
 GET /api/funnel
+GET /api/econ       (cụm real-economics-mode2 — bucket victim_in theo BNB, quote wbnb/usdt, top token, decode_fail theo router, latency, dòng tổng)
 GET /api/validate
 GET /api/tax        POST /api/tax   (inject tax thủ công, cần allow_tax_inject=true)
 POST /api/control   (body {"action":"halt"|"disarm"|"reset"})
 ```
-
-(`/api/econ` sắp có ở cụm `real-economics-mode2` — chưa tồn tại trong bản
-hiện tại.)
 
 ## 7. Đọc log `logs/bot.jsonl`
 
@@ -399,6 +406,7 @@ Bảng lý do `tx.skip` (field `reason`):
 | `honeypot_or_tax` | Tax đo được > `max_roundtrip_tax`, hoặc chưa đo (an toàn mặc định) |
 | `hooks_unread` | Pool V4/Infinity không đọc được hook |
 | `sim_error` | Lỗi kỹ thuật khi mô phỏng (RPC timeout, ...) |
+| `gas_cap` | `gas_cost_wei` đo thật vượt trần cấu hình, hoặc `eth_gasPrice` vượt `gas_price_max_gwei` (cụm `real-economics-mode2`) |
 
 ## 8. Dừng / khởi động / halt
 

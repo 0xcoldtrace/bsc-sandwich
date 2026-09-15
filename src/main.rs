@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let http_pool = Arc::new(transport::RpcPool::new(transport::filter_read_urls(http_urls)));
+    let initial_gas_units = (cfg.gas_units_front, cfg.gas_units_back);
 
     let app_state = Arc::new(AppStateInner {
         config: RwLock::new(cfg),
@@ -126,6 +127,8 @@ async fn main() -> anyhow::Result<()> {
         risk_guard: RwLock::new(RiskGuard::new()),
         nonce_cache: RwLock::new(transport::NonceCache::new()),
         funnel: FunnelCounters::new(),
+        gas_oracle: transport::GasOracle::new(),
+        gas_units: RwLock::new(initial_gas_units),
     });
 
     {
@@ -234,6 +237,12 @@ async fn main() -> anyhow::Result<()> {
     // duong nong) cho moi entry `pairs.txt` da co `vetted` - xem
     // `pairs_vet_task` duoi day.
     tokio::spawn(pairs_vet_task(app_state.clone()));
+
+    // Cum `real-economics-mode2` (F-03) - do gas UNIT that 1 lan luc boot
+    // bang revm tren 1 pair da vet trong pairs.txt (fallback config
+    // gas_units_front/back neu do loi/khong co pair nao san sang) - xem
+    // gas_units_boot_task duoi day.
+    tokio::spawn(gas_units_boot_task(app_state.clone()));
 
     // Cum A6 - bo dem funnel gio nam trong `app_state.funnel`
     // (AppStateInner, src/web.rs) - moi ham spawn tx doc/ghi truc tiep qua
@@ -824,6 +833,8 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
             pipeline::PipelineSkip::Deadline => funnel.record_deadline(),
             pipeline::PipelineSkip::NonceStale => funnel.record_nonce_stale(),
             pipeline::PipelineSkip::NonceFuture => funnel.record_nonce_future(),
+            // Cum `real-economics-mode2` (F-03)
+            pipeline::PipelineSkip::GasCap => funnel.record_gas_cap(),
             // NotInList/NotPancakeRouter khong roi vao day (NotPancakeRouter
             // bi chan truoc khi co PipelineOutcome nao duoc tao; NotInList
             // khong co bucket rieng trong danh sach lenh goc A6).
@@ -923,6 +934,60 @@ async fn pairs_vet_task(app_state: AppState) {
 
         tokio::time::sleep(Duration::from_secs(interval_sec)).await;
     }
+}
+
+/// Cụm `real-economics-mode2` (F-03) — đo gas UNIT thật (KHÔNG phải wei) 1
+/// LẦN lúc boot bằng revm, trên 1 pair đã vet trong `pairs.txt`
+/// (`PairBook::tokens_to_vet` — chỉ entry `resolved_from=Token` đã có
+/// `vetted`, xem `pairbook.rs`), rồi GHI ĐÈ `app_state.gas_units` (khởi tạo
+/// sẵn = fallback config). Chờ tới khi có CẢ provider HTTP lẫn ≥1 pair đã vet
+/// sẵn sàng (poll mỗi 5s, tối đa `MAX_ATTEMPTS` lần) — đo lỗi (revert/RPC lỗi)
+/// thì thử lại; hết số lần thử vẫn giữ fallback config, log rõ, KHÔNG panic,
+/// KHÔNG chặn boot (task nền độc lập, `main()` không `.await` task này).
+async fn gas_units_boot_task(app_state: AppState) {
+    const MAX_ATTEMPTS: u32 = 12; // 12 * 5s = 60s cho pairs.txt/provider san sang
+    let probe_in = alloy::primitives::U256::from(50_000_000_000_000_000u128); // 0.05 BNB
+    for attempt in 1..=MAX_ATTEMPTS {
+        let provider_opt = app_state.provider.read().await.clone();
+        let current_block = app_state.last_block.read().await.unwrap_or(0);
+        let target = app_state.pairbook.read().await.tokens_to_vet().into_iter().next();
+        if let (Some(provider), true, Some((_pair_addr, token))) = (provider_opt, current_block > 0, target) {
+            match bsc_sandwich::sim_evm::measure_gas_units(provider, current_block, token, probe_in).await {
+                Ok((front, back)) => {
+                    *app_state.gas_units.write().await = (front, back);
+                    app_state.logger.log(
+                        "gas.units_measured",
+                        serde_json::json!({
+                            "token": format!("{token:#x}"),
+                            "block": current_block,
+                            "gas_units_front": front,
+                            "gas_units_back": back,
+                            "source": "revm_boot",
+                            "attempt": attempt,
+                        }),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    app_state.logger.log(
+                        "gas.units_measure_error",
+                        serde_json::json!({ "token": format!("{token:#x}"), "error": e.to_string(), "attempt": attempt }),
+                    );
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let (f, b) = *app_state.gas_units.read().await;
+    app_state.logger.log(
+        "gas.units_measure_giveup",
+        serde_json::json!({
+            "attempts": MAX_ATTEMPTS,
+            "fallback_gas_units_front": f,
+            "fallback_gas_units_back": b,
+            "reason": "het so lan thu (chua co provider san sang, hoac pairs.txt chua co pair da vet nao, hoac do lien tuc loi)",
+        }),
+    );
 }
 
 /// Cụm A6 — task nền log 1 dòng `funnel.minute` mỗi `interval` (ship 60s)
@@ -1029,6 +1094,17 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         selector: selector_hex_of(&raw.input),
         fee: None,
         detail: None,
+        // Cum `real-economics-mode2` (muc 2) - dien dan trong handle_paper_tx
+        // khi tung gia tri co san (resolve pool/tinh gas that xong) - None
+        // luc khoi tao la dung cho tx chua qua toi buoc do (decode_fail/
+        // not_pancake_router...).
+        amount_in: None,
+        quote: None,
+        pair: None,
+        reserve_quote: None,
+        gas_cost_wei: None,
+        gas_price_gwei: None,
+        seen_to_decision_ms: None,
     }
 }
 
@@ -1067,6 +1143,11 @@ fn log_tx_seen(logger: &BotLogger, source: &str, raw: &PendingTxRaw) {
 /// `scan_quote_usdt=false` (ship mặc định) -> nhánh 2 không bao giờ chạy ->
 /// hành vi tổng thể KHÔNG đổi 1 bit so với trước phiên này.
 async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
+    // Cum `real-economics-mode2` (muc 2) - moc thoi gian NHAN tx (proxy cho
+    // luc "tx.seen" duoc log - do lech giua 2 moc nay la chi phi tokio::spawn,
+    // khong dang ke o muc ms) - dung de tinh "seen_to_decision_ms" luc log
+    // outcome CUOI CUNG.
+    let handle_started = std::time::Instant::now();
     // Cum A4 - funnel.record_seen() da chuyen ra 3 ham goi (subscribe_pending_txs/
     // poll_txpool_pending/watch_inject_file) NGAY khi quan sat duoc raw tx, TRUOC
     // gate (a) - "seen" dem MOI tx quan sat duoc, khong phu thuoc co spawn task
@@ -1091,6 +1172,15 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     }
     let current_block = app_state.last_block.read().await.unwrap_or(0);
     let mut meta = build_tx_log_meta(&raw);
+    // Cum `real-economics-mode2` (muc 2) - gia tri MAC DINH cho nhanh WBNB
+    // (da so tx hot path): amount_in = tx.value (dung cho swapExactETHForTokens/
+    // UR V2_SWAP_EXACT_IN, noi amountIn nam trong msg.value, khong phai
+    // calldata) - nhanh USDT (scan_quote_usdt=true) ghi de lai quote="usdt"
+    // ben duoi, amount_in USDT (nam trong calldata, khong phai tx.value)
+    // CHUA wire o day, ghi ro CON NO (scan_quote_usdt=false ship, khong phai
+    // duong nong).
+    meta.quote = Some("wbnb".to_string());
+    meta.amount_in = Some(raw.value.to_string());
 
     // Cum pair-mode - precheck CHI decode + xac dinh chieu (KHONG loc theo
     // victims.txt som nhu 5.1, vi pair-mode khong quan tam dia chi `from` -
@@ -1145,8 +1235,36 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                 Some(provider) => match pipeline::resolve_v2_reserves(provider, token).await {
                     Err(skip) => (PipelineOutcome::Skip(skip), "none"),
                     Ok((pair_addr, reserves)) => {
+                        // Cum `real-economics-mode2` (F-03) - gas that: gia
+                        // eth_gasPrice (cache theo block) x max(gia do, gia
+                        // gas cua chinh victim) x tong gas unit front+back
+                        // (do 1 lan luc boot bang revm, xem gas_units_boot_task).
+                        let gas_price_wei = app_state.gas_oracle.gas_price_wei(provider, current_block, &app_state.logger).await;
+                        let (units_front, units_back) = *app_state.gas_units.read().await;
+                        let victim_gas_price: u128 = u128::try_from(raw.gas_price).unwrap_or(u128::MAX);
+                        let gas_cost_wei = pipeline::compute_gas_cost_wei(
+                            units_front,
+                            units_back,
+                            gas_price_wei,
+                            victim_gas_price,
+                            cfg.gas_price_max_wei(),
+                        );
+                        // Cum `real-economics-mode2` (muc 2) - dien cac field
+                        // log moi ngay khi co du lieu (pool da resolve, gas da tinh).
+                        meta.pair = Some(format!("{pair_addr:#x}"));
+                        meta.reserve_quote = Some(reserves.reserve_wbnb.to_string());
+                        meta.gas_cost_wei = Some(gas_cost_wei.to_string());
+                        meta.gas_price_gwei = Some(gas_price_wei as f64 / 1e9);
                         let victims = app_state.victims.read().await;
                         let pairbook = app_state.pairbook.read().await;
+                        // Cum `real-economics-mode2` (muc 0) - danh dau ro
+                        // "vet_fail" trong log tx.skip khi pool DA BIET nhung
+                        // vet NEN vua loai (giu visibility, khac im lang roi
+                        // not_in_list) - xem pipeline::decide_paper_v2 nhanh
+                        // pair moi tra honeypot_or_tax cho truong hop nay.
+                        if pairbook.is_vet_failed(&pair_addr) {
+                            meta.detail = Some("vet_fail".to_string());
+                        }
                         let tax_cache = app_state.tax_cache.read().await;
                         let risk = app_state.risk_guard.read().await;
                         let input = pipeline::PaperDecisionV2 {
@@ -1156,6 +1274,7 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                             reserves,
                             pair_addr,
                             current_block,
+                            gas_cost_wei,
                         };
                         pipeline::decide_and_build_paper_v2(&victims, &pairbook, &tax_cache, &cfg, &risk, &app_state.logger, &input)
                     }
@@ -1173,16 +1292,58 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
         match pipeline::precheck_quote_only(&raw.input, raw.value, true) {
             Ok((token, pipeline::QuoteAsset::Usdt)) => {
                 token_hint = Some(token); // biet token THAT du buoc sau co skip vi ly do gi
+                meta.quote = Some("usdt".to_string());
+                // amount_in USDT nam trong calldata (khong phai tx.value nhu
+                // nhanh WBNB) - CHUA wire rieng o day (scan_quote_usdt=false
+                // ship, khong phai duong nong), xoa gia tri WBNB mac dinh sai
+                // ngu canh de khong bia so.
+                meta.amount_in = None;
                 let provider_guard = app_state.provider.read().await;
                 let usdt_outcome = match provider_guard.as_ref() {
                     None => PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool),
                     Some(provider) => {
                         match pipeline::resolve_reserves_for_quote(provider, token, pipeline::QuoteAsset::Usdt).await {
                             Err(skip) => PipelineOutcome::Skip(skip),
-                            Ok((_pair_addr, reserves)) => {
+                            Ok((pair_addr, reserves)) => {
+                                // Cum `real-economics-mode2` (muc 1.d) - gas
+                                // that (BNB) quy doi sang USDT qua reserve
+                                // WBNB/USDT THAT tai block hien tai (KHONG
+                                // price oracle) - resolve_v2_reserves(USDT)
+                                // tra dung cap (reserve_wbnb, reserve_usdt)
+                                // cua pool do.
+                                meta.pair = Some(format!("{pair_addr:#x}"));
+                                meta.reserve_quote = Some(reserves.reserve_wbnb.to_string());
+                                let gas_price_wei = app_state.gas_oracle.gas_price_wei(provider, current_block, &app_state.logger).await;
+                                let (units_front, units_back) = *app_state.gas_units.read().await;
+                                let victim_gas_price: u128 = u128::try_from(raw.gas_price).unwrap_or(u128::MAX);
+                                let gas_cost_bnb_wei = pipeline::compute_gas_cost_wei(
+                                    units_front,
+                                    units_back,
+                                    gas_price_wei,
+                                    victim_gas_price,
+                                    cfg.gas_price_max_wei(),
+                                );
+                                let gas_cost_usdt_wei = match pipeline::resolve_v2_reserves(provider, venues::usdt_addr()).await {
+                                    Ok((_p, wbnb_usdt_reserves)) => pipeline::convert_gas_cost_bnb_to_usdt(
+                                        gas_cost_bnb_wei,
+                                        wbnb_usdt_reserves.reserve_wbnb,
+                                        wbnb_usdt_reserves.reserve_token,
+                                    ),
+                                    Err(_) => u128::MAX, // khong quy doi duoc -> coi gas vo cung dat, an toan
+                                };
+                                meta.gas_cost_wei = Some(gas_cost_usdt_wei.to_string());
+                                meta.gas_price_gwei = Some(gas_price_wei as f64 / 1e9);
                                 let tax_cache = app_state.tax_cache.read().await;
-                                let (o, _tag) =
-                                    pipeline::decide_paper_quote(&tax_cache, &cfg, &raw.input, raw.value, reserves, current_block);
+                                let (o, _tag) = pipeline::decide_paper_quote(
+                                    &tax_cache,
+                                    &cfg,
+                                    &raw.input,
+                                    raw.value,
+                                    reserves,
+                                    current_block,
+                                    gas_cost_bnb_wei,
+                                    gas_cost_usdt_wei,
+                                );
                                 o
                             }
                         }
@@ -1220,6 +1381,7 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     };
 
     record_funnel_terminal(&app_state.funnel, &outcome);
+    meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
     pipeline::log_outcome_v2(&app_state.logger, raw.from, token_hint, source, &meta, &outcome);
     if let PipelineOutcome::Skip(skip) = &outcome {
         let mut counts = app_state.skip_counts.write().await;
@@ -1460,7 +1622,6 @@ fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Addr
         let diff = if pred_out > victim_out_real { pred_out - victim_out_real } else { victim_out_real - pred_out };
         let base = victim_out_real.max(alloy::primitives::U256::from(1u64));
         let pct = (u128::try_from(diff).unwrap_or(u128::MAX) as f64) / (u128::try_from(base).unwrap_or(1) as f64) * 100.0;
-        let ok = isolated && pct <= 1.0;
 
         // Cum `exec-path-traps` (F-04, muc b) - wire RiskGuard::record_result
         // O DUONG PAPER: chua co giao dich that (dry_run=true, khong ky/gui
@@ -1487,7 +1648,10 @@ fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Addr
             "risk_guard_is_loss": is_loss,
         });
         app_state.logger.log("validate.victim", row.clone());
-        app_state.validate_log.write().await.push(row, ok);
+        // Cum `real-economics-mode2` (F-27) - truyen rieng `isolated`/`pct`
+        // (khong con gop san 1 co `ok`) de ValidateStats tu phan nhom dung -
+        // fix bug audit (within_1pct cu chi dem dong isolated=true).
+        app_state.validate_log.write().await.push(row, isolated, pct);
     });
 }
 
@@ -1583,6 +1747,8 @@ mod tests {
             risk_guard: RwLock::new(RiskGuard::new()),
             nonce_cache: RwLock::new(transport::NonceCache::new()),
             funnel: FunnelCounters::new(),
+            gas_oracle: transport::GasOracle::new(),
+            gas_units: RwLock::new((160_000, 140_000)),
         });
 
         let task_state = app_state.clone();

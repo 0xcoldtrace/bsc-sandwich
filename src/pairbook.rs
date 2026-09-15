@@ -200,6 +200,35 @@ impl PairBook {
         self.pairs.contains_key(pair) && !self.vet_failed.contains(pair)
     }
 
+    /// Cụm `real-economics-mode2` — mục 0 (fix bug BAOCAO37:
+    /// `honeypot_or_tax=95/phút` với `sim_engine="v2"`): token có trong
+    /// `PairBook` VÀ ĐÃ vet tay (`vetted_at=Some`, đọc thẳng field đó — độc
+    /// lập với `pairs_require_vetted`, không chỉ dựa `contains()` vì cờ đó
+    /// có thể tắt) VÀ KHÔNG nằm trong `vet_failed` (vet nền vẫn có thể loại
+    /// pool bất kỳ lúc nào) → coi là "tax OK", đường nóng KHÔNG cần tra
+    /// `TaxCache` (cache đó chỉ còn ý nghĩa khi `pairs_require_vetted=false`,
+    /// xem CLAUDE.md mục "Chiến lược đã chốt"/"BUG cổng tax"). `pair` KHÔNG
+    /// có trong map (vd wallet-mode/universal-mode) → `false`, giữ nguyên
+    /// hành vi tra `TaxCache` cũ cho 2 nhánh đó.
+    pub fn is_tax_ok(&self, pair: &Address) -> bool {
+        self.pairs.get(pair).map(|e| e.vetted_at.is_some()).unwrap_or(false) && !self.vet_failed.contains(pair)
+    }
+
+    /// Cụm `real-economics-mode2` — `true` khi `pair` CÓ trong `pairs.txt`
+    /// (bất kể `vet_failed` hay không) — KHÁC `contains()` (loại trừ
+    /// `vet_failed`). Dùng để pipeline VẪN route pool vet_failed vào nhánh
+    /// "pair" (trả `honeypot_or_tax` rõ ràng, giữ visibility) thay vì để nó
+    /// rơi im lặng xuống `not_in_list`/`universal`.
+    pub fn knows_pool(&self, pair: &Address) -> bool {
+        self.pairs.contains_key(pair)
+    }
+
+    /// Cụm `real-economics-mode2` — `true` khi vet nền (`pairs_vet_task`) đã
+    /// loại `pair` khỏi candidate (tax/honeypot đo bằng EVM thật).
+    pub fn is_vet_failed(&self, pair: &Address) -> bool {
+        self.vet_failed.contains(pair)
+    }
+
     /// Cụm `strategy-lock-mode2` — kết quả vet nền gần nhất cho 1 pool
     /// (`buy_bps`/`sell_bps`/`honeypot`/`block`) + số giây từ lúc đo, dùng cho
     /// `GET /api/pairs`. `None` = chưa từng vet nền lần nào.
@@ -688,6 +717,43 @@ mod tests {
 
         book.set_vet_result(pair, VetResult { buy_bps: 0, sell_bps: 0, honeypot: false, block: 101 }, true);
         assert!(book.contains(&pair), "vet PASS lan sau phai tra lai candidate");
+    }
+
+    /// Cụm `real-economics-mode2` — ĐẠT CẦN DÁN mục 0: token vetted (từ
+    /// `reload`, `vetted_at=Some`) VÀ chưa từng `vet_fail` → `is_tax_ok=true`.
+    /// Token chưa vet (`insert_test_entry`, `vetted_at=None`) → `false`.
+    /// Token vetted nhưng vừa bị `set_vet_result(ok=false)` → `false`.
+    #[tokio::test]
+    async fn is_tax_ok_true_only_for_vetted_and_not_vet_failed() {
+        let (_dir, logger) = test_logger();
+        let vetted_token = addr("0x00000000000000000000000000000000000000aa");
+        let pair_vetted = addr("0x00000000000000000000000000000000000000bb");
+        let mut map = HashMap::new();
+        map.insert(vetted_token, pair_vetted);
+        let resolver = MockResolver { map, err_for: vec![] };
+        let content = format!("{vetted_token:#x} # VET | vetted 2026-09-16 | tax 0/0 | owner renounced | note\n");
+        let mut book = PairBook::new();
+        book.reload(&content, &resolver, &logger, Instant::now(), true).await;
+        assert!(book.is_tax_ok(&pair_vetted), "token da vet, chua tung vet_fail -> tax OK");
+
+        let unknown_pair = addr("0x00000000000000000000000000000000000000cc");
+        assert!(!book.is_tax_ok(&unknown_pair), "pair khong co trong PairBook -> khong duoc coi tax OK");
+
+        book.set_vet_result(pair_vetted, VetResult { buy_bps: 0, sell_bps: 2000, honeypot: false, block: 1 }, false);
+        assert!(!book.is_tax_ok(&pair_vetted), "vet nen vua loai (vet_fail) -> khong con tax OK");
+    }
+
+    /// Entry CHƯA vet (helper `insert_test_entry`, `vetted_at=None` cố ý) →
+    /// `is_tax_ok=false` dù đã `contains()==true` — hai hàm KHÁC ý nghĩa
+    /// nhau (`contains` chỉ cần có trong map + không vet_fail, `is_tax_ok`
+    /// đòi thêm `vetted_at=Some`).
+    #[test]
+    fn is_tax_ok_false_for_unvetted_entry_even_if_contains_true() {
+        let mut book = PairBook::new();
+        let pair = addr("0x00000000000000000000000000000000000000dd");
+        book.insert_test_entry(pair, "0xtoken", ResolvedFrom::Token);
+        assert!(book.contains(&pair), "helper insert truc tiep vao map -> contains=true");
+        assert!(!book.is_tax_ok(&pair), "insert_test_entry luon vetted_at=None -> is_tax_ok phai false");
     }
 
     #[test]

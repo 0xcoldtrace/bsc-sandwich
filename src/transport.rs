@@ -442,6 +442,90 @@ impl NonceCache {
     }
 }
 
+// ============================================================================
+// Cụm `real-economics-mode2` (F-03) — GasOracle: `eth_gasPrice` cache theo
+// block, fallback median gas_price tx trong block MINED gần nhất khi
+// `eth_gasPrice` lỗi (node không hỗ trợ/timeout).
+// ============================================================================
+
+/// Giá gas THẬT (wei/gas-unit) cho 1 block cụ thể + nguồn đo được — dùng để
+/// tính `gas_cost_wei = (units_front+units_back) * max(gia_nay, victim.gas_price)`
+/// (xem `pipeline::compute_gas_cost_wei`). Cache theo block để KHÔNG gọi
+/// `eth_gasPrice` lặp lại cho mỗi candidate trong cùng 1 block.
+#[derive(Debug, Default)]
+pub struct GasOracle {
+    cached: RwLock<Option<(u64, u128)>>,
+}
+
+impl GasOracle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `median` của gas_price các tx trong `block` (block ĐÃ MINED, có đủ
+    /// danh sách tx) — fallback khi `eth_gasPrice` lỗi. `None` nếu lấy block
+    /// thất bại hoặc block rỗng (không tx nào để tính median).
+    async fn median_from_mined_block(provider: &dyn Provider, block: u64) -> Option<u128> {
+        use alloy::eips::BlockNumberOrTag;
+        let b = provider.get_block_by_number(BlockNumberOrTag::Number(block)).full().await.ok().flatten()?;
+        let mut prices: Vec<u128> = b
+            .transactions
+            .txns()
+            .map(|tx| {
+                <_ as alloy::consensus::Transaction>::gas_price(tx)
+                    .unwrap_or_else(|| <_ as alloy::consensus::Transaction>::max_fee_per_gas(tx))
+            })
+            .collect();
+        if prices.is_empty() {
+            return None;
+        }
+        prices.sort_unstable();
+        Some(prices[prices.len() / 2])
+    }
+
+    /// Trả giá gas (wei/unit) cho `block` — cache hit nếu đã đo đúng block
+    /// này; ngược lại gọi `eth_gasPrice`, lỗi thì thử median block MINED gần
+    /// nhất (`block.saturating_sub(1)` — block hiện tại `bot` đang xét CHƯA
+    /// mined nên không tự chứa danh sách tx đầy đủ ổn định), lỗi cả 2 thì
+    /// GIỮ giá trị cache CŨ (nếu có, khác block) thay vì trả `0` (0 sẽ khiến
+    /// `gas_cost_wei` bị đánh giá thấp giả tạo — nguy hiểm hơn dùng số cũ hơi
+    /// lệch). Chưa từng đo lần nào -> `0` (an toàn theo hướng khác: caller
+    /// dùng `max(oracle, victim.gas_price)` nên `victim.gas_price` vẫn chặn
+    /// được, `0` chỉ là "không có thông tin thêm từ oracle").
+    pub async fn gas_price_wei(&self, provider: &dyn Provider, block: u64, logger: &BotLogger) -> u128 {
+        if let Some((b, price)) = *self.cached.read().await {
+            if b == block {
+                return price;
+            }
+        }
+        let (price, source) = match provider.get_gas_price().await {
+            Ok(p) => (p, "eth_gasPrice"),
+            Err(e) => match Self::median_from_mined_block(provider, block.saturating_sub(1)).await {
+                Some(p) => (p, "block_median"),
+                None => {
+                    let old = self.cached.read().await.map(|(_, p)| p);
+                    match old {
+                        Some(p) => (p, "stale_cache"),
+                        None => {
+                            logger.log(
+                                "gas.oracle_error",
+                                serde_json::json!({ "block": block, "reason": e.to_string() }),
+                            );
+                            (0u128, "unavailable")
+                        }
+                    }
+                }
+            },
+        };
+        *self.cached.write().await = Some((block, price));
+        logger.log(
+            "gas.oracle",
+            serde_json::json!({ "block": block, "gwei": price as f64 / 1e9, "source": source }),
+        );
+        price
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +770,165 @@ mod tests {
         (dir, logger)
     }
 
+    // ===== Cụm `real-economics-mode2` (F-03) — GasOracle (mock JSON-RPC theo
+    // METHOD, khác `mock_rpc_server` ở trên vốn trả CỐ ĐỊNH 1 giá trị cho mọi
+    // request) =====
+
+    /// Mock JSON-RPC server dispatch theo TÊN METHOD (`eth_chainId`,
+    /// `eth_gasPrice`, `eth_getBlockByNumber`...) — cần cho test `GasOracle`
+    /// vì nó gọi ≥2 method khác nhau trên CÙNG 1 kết nối (khác `mock_rpc_server`
+    /// chỉ phục vụ `connect_and_verify` gọi đúng 1 method).
+    async fn mock_rpc_dispatch<F>(handler: F) -> String
+    where
+        F: Fn(&str) -> serde_json::Value + Send + Sync + 'static,
+    {
+        use axum::extract::{Json as ReqJson, State as AxState};
+        use axum::response::Json as RespJson;
+        use axum::routing::post;
+        use std::sync::Arc;
+
+        async fn handle(
+            AxState(handler): AxState<Arc<dyn Fn(&str) -> serde_json::Value + Send + Sync>>,
+            ReqJson(body): ReqJson<serde_json::Value>,
+        ) -> RespJson<serde_json::Value> {
+            let id = body.get("id").cloned().unwrap_or(serde_json::json!(1));
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let result = handler(method);
+            RespJson(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+        }
+
+        let handler: Arc<dyn Fn(&str) -> serde_json::Value + Send + Sync> = Arc::new(handler);
+        let app = axum::Router::new().route("/", post(handle)).with_state(handler);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock rpc dispatch server");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}/")
+    }
+
+    /// ĐẠT CẦN DÁN — `GasOracle::gas_price_wei` gọi `eth_gasPrice` THẬT (qua
+    /// mock) và trả đúng giá trị hex đã decode, log `gas.oracle{source:"eth_gasPrice"}`.
+    #[tokio::test]
+    async fn gas_oracle_reads_eth_gas_price_and_logs_source() {
+        let (_dir, logger) = test_logger();
+        let url = mock_rpc_dispatch(|method| match method {
+            "eth_chainId" => serde_json::json!("0x38"),
+            "eth_gasPrice" => serde_json::json!("0x3b9aca00"), // 1_000_000_000 wei = 1 gwei
+            _ => serde_json::json!(null),
+        })
+        .await;
+        let provider = connect_and_verify(&url).await.expect("connect phai OK (chain 56)");
+        let oracle = GasOracle::new();
+        let price = oracle.gas_price_wei(&provider, 100, &logger).await;
+        assert_eq!(price, 1_000_000_000u128);
+        let tail = logger.tail(10);
+        let row = tail.iter().find(|l| l["event"] == "gas.oracle").expect("phai co dong gas.oracle");
+        assert_eq!(row["source"], "eth_gasPrice");
+        assert_eq!(row["block"], 100);
+        assert!((row["gwei"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    /// Cache theo BLOCK: gọi lại CÙNG block phải trả giá CŨ (không gọi lại
+    /// `eth_gasPrice`) dù mock đã đổi giá trị trả về — chỉ block MỚI mới lấy
+    /// giá MỚI. Dùng `AtomicU64` đếm số lần method `eth_gasPrice` thực sự
+    /// được gọi để chứng minh cache hit không tốn round-trip.
+    #[tokio::test]
+    async fn gas_oracle_caches_per_block_does_not_refetch_same_block() {
+        let (_dir, logger) = test_logger();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cc = call_count.clone();
+        let url = mock_rpc_dispatch(move |method| match method {
+            "eth_chainId" => serde_json::json!("0x38"),
+            "eth_gasPrice" => {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // Lan goi dau -> 1 gwei, lan goi sau (block moi) -> 2 gwei.
+                if n == 0 { serde_json::json!("0x3b9aca00") } else { serde_json::json!("0x77359400") }
+            }
+            _ => serde_json::json!(null),
+        })
+        .await;
+        let provider = connect_and_verify(&url).await.expect("connect phai OK");
+        let oracle = GasOracle::new();
+
+        let p1 = oracle.gas_price_wei(&provider, 100, &logger).await;
+        assert_eq!(p1, 1_000_000_000u128);
+        let p1_again = oracle.gas_price_wei(&provider, 100, &logger).await;
+        assert_eq!(p1_again, 1_000_000_000u128, "cung block 100 phai tra gia CU, khong goi lai eth_gasPrice");
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1, "block khong doi thi khong duoc goi lai eth_gasPrice");
+
+        let p2 = oracle.gas_price_wei(&provider, 101, &logger).await;
+        assert_eq!(p2, 2_000_000_000u128, "block MOI phai goi lai va lay gia MOI");
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// `eth_gasPrice` lỗi (node trả JSON-RPC error) -> fallback median gas_price
+    /// từ block MINED gần nhất (`eth_getBlockByNumber(block-1, full)`).
+    #[tokio::test]
+    async fn gas_oracle_falls_back_to_block_median_when_eth_gas_price_errors() {
+        use axum::extract::{Json as ReqJson, State as AxState};
+        use axum::response::Json as RespJson;
+        use axum::routing::post;
+
+        async fn handle(AxState(_): AxState<()>, ReqJson(body): ReqJson<serde_json::Value>) -> RespJson<serde_json::Value> {
+            let id = body.get("id").cloned().unwrap_or(serde_json::json!(1));
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            match method {
+                "eth_chainId" => RespJson(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": "0x38" })),
+                "eth_gasPrice" => RespJson(serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "method not supported" } })),
+                "eth_getBlockByNumber" => {
+                    // 3 tx voi gasPrice 1/2/3 gwei -> median = 2 gwei.
+                    let mk_tx = |gp_hex: &str| {
+                        serde_json::json!({
+                            "hash": format!("0x{:064x}", 1),
+                            "nonce": "0x0",
+                            "blockHash": format!("0x{:064x}", 1),
+                            "blockNumber": "0x1",
+                            "transactionIndex": "0x0",
+                            "from": format!("0x{:040x}", 1),
+                            "to": format!("0x{:040x}", 2),
+                            "value": "0x0",
+                            "gas": "0x5208",
+                            "gasPrice": gp_hex,
+                            "input": "0x",
+                            "v": "0x1b", "r": format!("0x{:064x}", 1), "s": format!("0x{:064x}", 1),
+                            "type": "0x0", "chainId": "0x38",
+                        })
+                    };
+                    let block = serde_json::json!({
+                        "number": "0x63", "hash": format!("0x{:064x}", 99), "parentHash": format!("0x{:064x}", 98),
+                        "nonce": "0x0000000000000000", "mixHash": format!("0x{:064x}", 0), "sha3Uncles": format!("0x{:064x}", 0),
+                        "logsBloom": format!("0x{}", "0".repeat(512)), "transactionsRoot": format!("0x{:064x}", 0),
+                        "stateRoot": format!("0x{:064x}", 0), "receiptsRoot": format!("0x{:064x}", 0),
+                        "miner": format!("0x{:040x}", 0), "difficulty": "0x0", "totalDifficulty": "0x0",
+                        "extraData": "0x", "size": "0x0", "gasLimit": "0x0", "gasUsed": "0x0",
+                        "timestamp": "0x0", "transactions": [mk_tx("0x3b9aca00"), mk_tx("0x77359400"), mk_tx("0xb2d05e00")],
+                        "uncles": [],
+                    });
+                    RespJson(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": block }))
+                }
+                _ => RespJson(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null })),
+            }
+        }
+
+        let app = axum::Router::new().route("/", post(handle)).with_state(());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let url = format!("http://{addr}/");
+
+        let (_dir, logger) = test_logger();
+        let provider = connect_and_verify(&url).await.expect("connect phai OK");
+        let oracle = GasOracle::new();
+        let price = oracle.gas_price_wei(&provider, 100, &logger).await;
+        assert_eq!(price, 2_000_000_000u128, "median cua 1/2/3 gwei phai la 2 gwei");
+        let tail = logger.tail(10);
+        let row = tail.iter().find(|l| l["event"] == "gas.oracle").expect("phai co dong gas.oracle");
+        assert_eq!(row["source"], "block_median");
+    }
+
     /// ĐẠT CẦN DÁN: "test failover URL đầu chết → URL sau". URL đầu là cổng
     /// TCP không ai lắng nghe (`127.0.0.1:1`, refused NGAY, không cần chờ
     /// timeout DNS) — mô phỏng "1 node chết". URL sau là mock server hợp lệ
@@ -813,6 +1056,56 @@ mod tests {
         // Block khac -> van la cache miss (khoa theo (from, block), khong
         // phai chi theo from).
         assert_eq!(cache.cached(from, 1001), None);
+    }
+
+    /// Cụm `real-economics-mode2` (mục 5) — ĐẠT CẦN DÁN: "1 sender 2 tx (k,
+    /// k+1) → k ok, k+1 nonce_future; k lên block → k+1 ok". Mô phỏng đúng
+    /// kịch bản dùng CHÍNH `compare_nonce`/`NonceCache` mà
+    /// `main.rs::run_evm_decision` gọi thật (nonce EXPECTED từ
+    /// `eth_getTransactionCount(from,"latest")` — ở đây giả lập bằng số
+    /// nguyên tay, không cần RPC sống): lúc đầu ví có nonce THẬT trên chain
+    /// = 5 (tx thứ 5 đã confirm, tx TIẾP THEO hợp lệ phải mang nonce=5).
+    /// Candidate mang nonce=5 (k) → `Ok` (đúng nonce kỳ vọng). Candidate
+    /// KHÁC cùng ví, cùng lúc, mang nonce=6 (k+1, tx sau) → `Future` (còn
+    /// thiếu 1 tx ở giữa). Sau khi tx k được coi là đã lên block (nonce THẬT
+    /// trên chain tăng lên 6), candidate nonce=6 lúc này → `Ok`.
+    #[test]
+    fn nonce_future_then_ok_after_k_confirms_same_sender() {
+        let from = Address::from_str("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        let mut cache = NonceCache::new();
+
+        // Block 1000: nonce THAT tren chain = 5 (tu eth_getTransactionCount,
+        // gia lap qua insert truc tiep - production goi fetch_expected_nonce
+        // that qua RPC, xem run_evm_decision).
+        let block = 1000u64;
+        cache.insert(from, block, 5);
+        let expected = cache.cached(from, block).expect("da insert, phai co trong cache");
+
+        // Candidate k: nonce=5, dung nonce ke tiep -> Ok.
+        let candidate_k_nonce = 5u64;
+        assert_eq!(compare_nonce(candidate_k_nonce, expected), NonceCheck::Ok, "tx k (nonce=5) phai la Ok");
+
+        // Candidate k+1 (cung vi, cung block quan sat, nonce=6) TOI TRUOC khi
+        // k len block -> nonce THAT van con la 5 -> Future (con thieu 1 tx).
+        let candidate_k_plus_1_nonce = 6u64;
+        assert_eq!(
+            compare_nonce(candidate_k_plus_1_nonce, expected),
+            NonceCheck::Future,
+            "tx k+1 (nonce=6) truoc khi k len block phai la Future"
+        );
+
+        // "k len block" = nonce THAT tren chain tang len 6 (khoi block MOI,
+        // cache theo (from, block) nen khong the tai su dung entry cu - phai
+        // insert lai cho block moi, dung y "khong the tai su dung nonce cu
+        // qua block khac" da kiem o nonce_cache_miss_then_hit_after_insert).
+        let next_block = block + 1;
+        cache.insert(from, next_block, 6);
+        let expected_after_k_confirmed = cache.cached(from, next_block).expect("da insert cho block moi");
+        assert_eq!(
+            compare_nonce(candidate_k_plus_1_nonce, expected_after_k_confirmed),
+            NonceCheck::Ok,
+            "sau khi k len block (nonce that=6), candidate k+1 (nonce=6) phai la Ok"
+        );
     }
 
     /// `#[ignore]` — chỉ chạy thủ công khi có RPC sống (cùng khuôn

@@ -179,6 +179,9 @@ RUN_LOG | grep '"event":"funnel.minute"' | tail -30 || echo "(chua co funnel.min
 echo "---- /api/skips ----"; curl -s "$BASE/api/skips" || true; echo
 echo "---- /api/funnel ----"; curl -s "$BASE/api/funnel" || true; echo
 echo "---- /api/tax ----"; curl -s "$BASE/api/tax" || true; echo
+echo "---- /api/pairs ----"; curl -s "$BASE/api/pairs" || true; echo
+ECON_JSON="$(curl -s "$BASE/api/econ" || true)"
+echo "---- /api/econ (cum real-economics-mode2, muc 3) ----"; printf '%s\n' "$ECON_JSON"
 echo "---- /api/validate ----"; curl -s "$BASE/api/validate" || true; echo
 echo "---- 20 dong tx.skip cuoi (lan chay nay) ----"
 RUN_LOG | grep '"event":"tx.skip"' | tail -20 || true
@@ -214,6 +217,8 @@ TX_BUILD_COUNT="$(count_matches '"event":"tx.build"')"
 SIMULATED_COUNT="$(count_matches_in '"event":"sim.evm"' '"decision":"simulated"')"
 BUILD_REFUSED_COUNT="$(count_matches '"event":"build.refused"')"
 echo "tx.build=$TX_BUILD_COUNT simulated=$SIMULATED_COUNT build.refused=$BUILD_REFUSED_COUNT halt.triggered=$HALT_TRIGGERED_COUNT"
+echo "---- /api/econ summary_line (cum real-economics-mode2, muc 3.e, doc tu ECON_JSON lay TRUOC khi kill) ----"
+printf '%s' "$ECON_JSON" | jq -r '.summary_line // "MISSING"' 2>/dev/null || echo "MISSING"
 
 echo "DONE. Log day du: $LOG (redact secret truoc khi dan cho Grok)."
 echo "Nho dan lai: may=$RUN_ENV, binary sha256=$BIN_SHA, git HEAD=$GIT_HEAD (luat #2 CLAUDE.md)."

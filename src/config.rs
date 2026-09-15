@@ -202,6 +202,26 @@ pub struct Config {
     /// nếu muốn, KHÔNG phải mặc định. Field bắt buộc (thiếu = fail load).
     pub pairs_require_vetted: bool,
 
+    /// Cụm `real-economics-mode2` (F-03) — số gas UNIT (KHÔNG phải wei) cho
+    /// chân front-buy (`swapExactETHForTokensSupportingFeeOnTransferTokens`),
+    /// dùng làm FALLBACK khi chưa đo được thật bằng revm lúc boot
+    /// (`main.rs` đo 1 lần trên 1 pair đã vet trong `pairs.txt`, cache vào
+    /// `AppStateInner`; đo lỗi thì dùng thẳng field này). Ship `160000` (ước
+    /// lượng thực tế 1 swap V2 fee-on-transfer trên BSC). Field bắt buộc
+    /// (thiếu = fail load, cùng khuôn mọi field khác).
+    pub gas_units_front: u64,
+
+    /// F-03 — như trên nhưng cho chân back-sell
+    /// (`swapExactTokensForETHSupportingFeeOnTransferTokens`). Ship `140000`.
+    pub gas_units_back: u64,
+
+    /// F-03 — trần `eth_gasPrice` (gwei nguyên) — oracle đọc được gas price
+    /// CAO HƠN ngưỡng này (mạng đang tắc nghẽn bất thường) thì coi như
+    /// `gas_cap` (an toàn, không đoán gas thật sẽ rẻ lại kịp lúc). Ship `10`
+    /// (gwei) — BSC bình thường quanh 1-3 gwei, 10 gwei đã là tắc nghẽn rõ
+    /// rệt. Field bắt buộc (thiếu = fail load).
+    pub gas_price_max_gwei: u64,
+
     /// Mốc lần reload gần nhất — KHÔNG đọc/ghi từ `config.toml`
     /// (`#[serde(skip)]`, mặc định `None`). Dùng bởi `reload_if_due`, cùng
     /// quy ước `VictimBook::last_reload` (`src/victims.rs`).
@@ -390,11 +410,22 @@ impl Config {
         }
     }
 
-    /// Gas front+back cộng dồn (wei) — `search_max_front_in` trừ thẳng vào
-    /// profit, không gọi `eth_gasPrice` on-chain (CLAUDE.md, xem
-    /// `docs/STATE.md` mục "V2 sandwich math").
+    /// Cụm `real-economics-mode2` (F-03) — TRẦN gas front+back cộng dồn
+    /// (wei). TRƯỚC cụm này đây là số dùng THẲNG làm chi phí gas trừ vào
+    /// profit (sai — cao hơn thực tế 10-100 lần, xem audit F-03); TỪ cụm này
+    /// chỉ còn là TRẦN so sánh với `gas_cost_wei` đo thật
+    /// (`pipeline::compute_gas_cost_wei`) — `gas_cost_wei > gas_wei()` thì
+    /// skip `gas_cap`, KHÔNG còn dùng trực tiếp làm chi phí trừ vào profit
+    /// trên đường nóng `sim_engine="v2"` nữa.
     pub fn gas_wei(&self) -> u128 {
         self.front_max_gas_bnb_wei as u128 + self.back_max_gas_bnb_wei as u128
+    }
+
+    /// F-03 — `gas_price_max_gwei` quy đổi wei/gas-unit, dùng để so với
+    /// `eth_gasPrice` đo được (`GasOracle`) — vượt ngưỡng này thì coi gas
+    /// hiện tại "quá đắt", không đoán sẽ rẻ lại kịp lúc.
+    pub fn gas_price_max_wei(&self) -> u128 {
+        self.gas_price_max_gwei as u128 * 1_000_000_000u128
     }
 
     /// Cụm `usdt-quote-asset` — ngưỡng lợi nhuận tối thiểu (wei USDT, 18
@@ -630,6 +661,9 @@ front_slippage_bps = 10
 back_slippage_bps = 50
 pairs_vet_interval_sec = 600
 pairs_require_vetted = true
+gas_units_front = 160000
+gas_units_back = 140000
+gas_price_max_gwei = 10
 "#
         .to_string()
     }
@@ -1177,6 +1211,29 @@ pairs_require_vetted = true
         let cfg = Config::from_str(&base_toml()).unwrap();
         assert_eq!(cfg.pairs_vet_interval_sec, 600);
         assert!(cfg.pairs_require_vetted);
+    }
+
+    /// Cụm `real-economics-mode2` (F-03) — 3 field mới bắt buộc, thiếu field
+    /// nào cũng phải fail load, cùng khuôn mọi field bắt buộc khác.
+    #[test]
+    fn missing_gas_units_or_gas_price_max_fields_fail_load() {
+        for needle in ["gas_units_front = 160000\n", "gas_units_back = 140000\n", "gas_price_max_gwei = 10\n"] {
+            let toml_str = base_toml().replace(needle, "");
+            let err = Config::from_str(&toml_str).unwrap_err();
+            match err {
+                ConfigError::Parse(_) => {}
+                other => panic!("expected Parse error khi thieu '{needle}', got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn gas_units_and_gas_price_max_ship_defaults() {
+        let cfg = Config::from_str(&base_toml()).unwrap();
+        assert_eq!(cfg.gas_units_front, 160_000);
+        assert_eq!(cfg.gas_units_back, 140_000);
+        assert_eq!(cfg.gas_price_max_gwei, 10);
+        assert_eq!(cfg.gas_price_max_wei(), 10_000_000_000u128);
     }
 
     #[test]
