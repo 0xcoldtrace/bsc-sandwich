@@ -1,0 +1,7 @@
+{
+  "chain_id": 56,
+  "region_hint": "us-east",
+  "region_note": "VPS New Jersey (NJ) - gan cluster RPC US, xem README.md muc VPS",
+  "rpc_http": "REPLACE_ME_HTTP_RPC_URL",
+  "rpc_ws": "REPLACE_ME_WSS_RPC_URL"
+}

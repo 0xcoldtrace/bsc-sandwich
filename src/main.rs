@@ -1,0 +1,1342 @@
+// Cụm `rpc-probe`: module thật giờ sống trong lib crate (`src/lib.rs`) để
+// `src/bin/rpc_probe.rs` dùng lại được `transport::parse_rpc_url_list`/
+// `filter_read_urls`/`redact_rpc_url` — binary chính import qua
+// `bsc_sandwich::...` thay vì tự `mod ...` như trước.
+use bsc_sandwich::config::{Config, RiskGuard};
+use bsc_sandwich::decoder::SwapVenue;
+use bsc_sandwich::logger::BotLogger;
+use bsc_sandwich::pairbook::{PairBook, RpcPairResolver};
+use bsc_sandwich::pipeline::{self, PipelineOutcome, TxLogMeta};
+use bsc_sandwich::state::{BotState, StateFiles};
+use bsc_sandwich::tax::{self, TaxCache};
+use bsc_sandwich::transport::{self, PendingTxRaw};
+use bsc_sandwich::venues::{self, V2_FACTORY_ADDRESS};
+use bsc_sandwich::victims::VictimBook;
+use bsc_sandwich::web::{build_router, AppState, AppStateInner, FunnelCounters};
+
+use alloy::primitives::Address;
+use alloy::providers::Provider;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{RwLock, Semaphore};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config.toml".to_string());
+
+    let cfg = match Config::load(std::path::Path::new(&config_path)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("FAIL load config {config_path}: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    println!(
+        "bsc_sandwich boot: chain_id={} dry_run={} allow_live={} bot_armed={}",
+        cfg.chain_id, cfg.dry_run, cfg.allow_live, cfg.bot_armed
+    );
+
+    let state_files = Arc::new(StateFiles::new("state")?);
+    let logger = Arc::new(BotLogger::new("logs/bot.jsonl")?);
+
+    let mut book = VictimBook::new();
+    let victims_path = PathBuf::from(&cfg.victims_path);
+    if let Err(e) = book.load_from_file(&victims_path) {
+        eprintln!("victims load loi (tiep tuc voi 0 victim, khong crash): {e}");
+    }
+
+    logger.log(
+        "bot.start",
+        serde_json::json!({ "chain_id": cfg.chain_id, "dry_run": cfg.dry_run }),
+    );
+    logger.log(
+        "victim.reload",
+        serde_json::json!({ "count": book.len(), "error_lines": book.error_lines }),
+    );
+
+    // Cum `5.2` muc 2 - canh bao BOOT (KHONG fail load) khi min_profit_bnb
+    // thap hon tong gas 2 chieu front+back - xem Config::gas_warning_needed.
+    // Config ship mac dinh (min_profit_bnb=0.001 < gas_total=0.006 BNB)
+    // CHAC CHAN bat canh bao nay, dung de smoke-test khong can chinh tay.
+    if cfg.gas_warning_needed() {
+        let gas_total_wei = cfg.gas_wei();
+        logger.log(
+            "config.gas_warning",
+            serde_json::json!({
+                "min_profit_bnb": cfg.min_profit_bnb,
+                "front_max_gas_bnb_wei": cfg.front_max_gas_bnb_wei,
+                "back_max_gas_bnb_wei": cfg.back_max_gas_bnb_wei,
+                "gas_total_wei": gas_total_wei.to_string(),
+                "message": "min_profit_bnb thap hon tong gas front+back, chi la canh bao, khong fail load",
+            }),
+        );
+        eprintln!(
+            "CANH BAO: min_profit_bnb={} BNB thap hon tong gas front+back cap ({} wei) - xem logs/bot.jsonl config.gas_warning",
+            cfg.min_profit_bnb, gas_total_wei
+        );
+    }
+
+    let reload_interval = Duration::from_secs(cfg.victims_reload_sec.max(1));
+    let config_reload_interval = Duration::from_secs(cfg.config_reload_sec.max(1));
+    let pending_poll_interval = Duration::from_millis(cfg.pending_poll_ms.max(1));
+    // Cum pair-mode - PairBook (pairs.txt), cung khuon victims_path o tren.
+    let pairs_path = PathBuf::from(&cfg.pairs_path);
+    let pairs_reload_interval = Duration::from_secs(cfg.pairs_reload_sec.max(1));
+    let web_bind = cfg.web_bind.clone();
+    let web_port = cfg.web_port;
+    let config_path_buf = PathBuf::from(&config_path);
+
+    // Cum `5.3` — pool nhieu URL HTTP doc (eth_call/getBlock/txpool_content):
+    // uu tien BSC_HTTP_LIST (phay) hoac BSC_HTTP+BSC_HTTP_2..16, fallback
+    // vps.json khi rong. Loc bo URL kenh gui/private (maxbackrun/fullprivacy/
+    // privacy trong host) khoi pool DOC nay (CLAUDE.md lenh 5.3 muc A4) — cac
+    // URL do van co the dung cho kenh gui live sau nay (7.x), chua lam o day.
+    // Khong dua http_pool vao AppStateInner (web.rs) — truyen tay qua tham so
+    // ham de khong phai sua struct dinh nghia o file khac ngoai pham vi lenh.
+    let vps_fallback_boot = transport::VpsFallback::load(std::path::Path::new("vps.json"));
+    let mut http_urls = transport::collect_rpc_urls_from_env("BSC_HTTP");
+    if http_urls.is_empty() {
+        if let Some(v) = transport::pick_url(None, &vps_fallback_boot.rpc_http) {
+            http_urls.push(v);
+        }
+    }
+    let http_pool = Arc::new(transport::RpcPool::new(transport::filter_read_urls(http_urls)));
+
+    let app_state = Arc::new(AppStateInner {
+        config: RwLock::new(cfg),
+        victims: RwLock::new(book),
+        pairbook: RwLock::new(PairBook::new()),
+        state_files: state_files.clone(),
+        logger: logger.clone(),
+        bot_state: RwLock::new(BotState::Idle),
+        start_time: Instant::now(),
+        skip_counts: RwLock::new(HashMap::new()),
+        last_block: RwLock::new(None),
+        provider: RwLock::new(None),
+        tax_cache: RwLock::new(TaxCache::new()),
+        validate_log: RwLock::new(bsc_sandwich::web::ValidateStats::default()),
+        pending_semaphore: Arc::new(Semaphore::new(4)),
+        pending_source: RwLock::new(transport::PendingSource::InjectOnly),
+        risk_guard: RwLock::new(RiskGuard::new()),
+        funnel: FunnelCounters::new(),
+    });
+
+    {
+        let mut st = app_state.bot_state.write().await;
+        *st = BotState::Watching;
+    }
+
+    let reload_state = app_state.clone();
+    let reload_path = victims_path.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(reload_interval);
+        loop {
+            interval.tick().await;
+            let now = Instant::now();
+            let mut book = reload_state.victims.write().await;
+            if book.reload_if_due(&reload_path, reload_interval, now) {
+                reload_state.logger.log(
+                    "victim.reload",
+                    serde_json::json!({ "count": book.len(), "error_lines": book.error_lines }),
+                );
+            }
+        }
+    });
+
+    // Cum config-hot-reload: giong het khuon mau victims o tren
+    // (Config::reload_if_due tu ghi log/giu config cu khi file loi, khong
+    // panic) - chu doi min_profit_bnb/max_front_bnb/... trong luc bot dang
+    // chay, lan decide_paper SAU dung ngay, khong can restart.
+    let cfg_reload_state = app_state.clone();
+    let cfg_reload_path = config_path_buf.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(config_reload_interval);
+        loop {
+            interval.tick().await;
+            let now = Instant::now();
+            let mut cfg = cfg_reload_state.config.write().await;
+            if cfg.reload_if_due(&cfg_reload_path, config_reload_interval, now) {
+                cfg_reload_state.logger.log(
+                    "config.reload",
+                    serde_json::json!({
+                        "min_profit_bnb": cfg.min_profit_bnb,
+                        "max_front_bnb": cfg.max_front_bnb,
+                        "min_reserve_wbnb": cfg.min_reserve_wbnb,
+                        "max_roundtrip_tax": cfg.max_roundtrip_tax,
+                    }),
+                );
+            }
+        }
+    });
+
+    // Cum pair-mode - PairBook hot-reload, cung khuon victims/config o tren,
+    // KHAC o cho can provider RPC that de resolve getPair (V2 factory da pin)
+    // - chua co provider (chua connect_rpc xong/dang failover) thi bo qua tick
+    // nay, log skip, thu lai o tick sau (KHONG halt bot).
+    let pair_reload_state = app_state.clone();
+    tokio::spawn(async move {
+        let factory =
+            Address::from_str(V2_FACTORY_ADDRESS).expect("V2_FACTORY_ADDRESS da pin phai la address hop le");
+        let mut interval = tokio::time::interval(pairs_reload_interval);
+        loop {
+            interval.tick().await;
+            let now = Instant::now();
+            let due = {
+                let book = pair_reload_state.pairbook.read().await;
+                match book.last_reload {
+                    None => true,
+                    Some(last) => now.saturating_duration_since(last) >= pairs_reload_interval,
+                }
+            };
+            if !due {
+                continue;
+            }
+            let provider_opt = pair_reload_state.provider.read().await.clone();
+            let provider = match provider_opt {
+                Some(p) => p,
+                None => {
+                    pair_reload_state.logger.log(
+                        "pair.reload_skip",
+                        serde_json::json!({ "reason": "chua co provider HTTP, thu lai tick sau" }),
+                    );
+                    let mut book = pair_reload_state.pairbook.write().await;
+                    book.last_reload = Some(now); // tranh retry moi tick khi provider chua san sang
+                    continue;
+                }
+            };
+            let resolver = RpcPairResolver { provider, factory };
+            let mut book = pair_reload_state.pairbook.write().await;
+            let _ = book
+                .reload_if_due(&pairs_path, &resolver, &pair_reload_state.logger, pairs_reload_interval, now)
+                .await;
+        }
+    });
+
+    // Cum A6 - bo dem funnel gio nam trong `app_state.funnel`
+    // (AppStateInner, src/web.rs) - moi ham spawn tx doc/ghi truc tiep qua
+    // `app_state.funnel`, khong can truyen Arc rieng nua.
+    connect_rpc(app_state.clone(), http_pool.clone(), pending_poll_interval).await;
+
+    // Cum `5.3` — health-check dinh ky provider HTTP hien tai qua http_pool:
+    // get_block_number() loi/chua co provider -> connect()/advance_and_reconnect()
+    // sang URL ke trong pool (quay vong), cap nhat app_state.provider/last_block.
+    // Bao ve MOI noi doc app_state.provider (bao gom pipeline::resolve_v2_reserves
+    // qua handle_paper_tx) ma KHONG can doi chu ky pipeline.rs (giu tach loi
+    // thuan/RPC that dung quy uoc docs/STATE.md).
+    tokio::spawn(http_pool_health_check(app_state.clone(), http_pool.clone(), Duration::from_secs(5)));
+
+    // Cum 5.1 - doc state/inject_tx.jsonl de bom tx test khi pending that
+    // trong (khong co BSC_WS / node khong day pending) - chay song song voi
+    // pending subscription that, khong loai tru lan nhau.
+    tokio::spawn(watch_inject_file(app_state.clone()));
+
+    // Cum tax-cache-inject - doc state/tax_inject.jsonl de chu/test dien
+    // tax_cache luc bot dang chay, khong phai sua code/build lai.
+    tokio::spawn(watch_tax_inject_file(app_state.clone()));
+
+    // Cum A6 - log tong hop funnel moi 60 giay - KHONG phai nguong chu chinh
+    // trong config.toml, cadence noi bo giong `http_pool_health_check`/
+    // `watch_inject_file`.
+    tokio::spawn(funnel_report_task(app_state.clone(), Duration::from_secs(60)));
+
+    let addr = format!("{web_bind}:{web_port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    println!(
+        "web dashboard bind tai http://{addr} (dry_run={})",
+        app_state.config.read().await.dry_run
+    );
+
+    let router = build_router(app_state.clone());
+
+    tokio::select! {
+        res = axum::serve(listener, router) => {
+            if let Err(e) = res {
+                eprintln!("web server loi: {e}");
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("nhan Ctrl+C, dung bot");
+            let mut st = app_state.bot_state.write().await;
+            *st = BotState::Stopped;
+        }
+    }
+
+    Ok(())
+}
+
+/// Cụm `5.3` (thay `2.1`): kết nối HTTP qua `http_pool` (đã build ở `main()`
+/// từ `BSC_HTTP`/`BSC_HTTP_2..16`/`BSC_HTTP_LIST` + fallback `vps.json`) —
+/// `RpcPool::connect` tự thử lần lượt, log `rpc.failover` cho URL lỗi,
+/// `rpc.connect` cho URL thành công. Không URL nào connect được -> log
+/// `rpc.skip`, boot vẫn tiếp tục — không panic, không halt. `BSC_WS` đọc
+/// thành DANH SÁCH tương tự (`ws_urls`), truyền cho `subscribe_ws_heads`
+/// (best-effort, block header) và `subscribe_pending_txs` (fallback
+/// WSS -> WSS khác trong list -> `txpool_content` qua `http_pool`).
+async fn connect_rpc(app_state: AppState, http_pool: Arc<transport::RpcPool>, pending_poll_interval: Duration) {
+    match http_pool.connect(&app_state.logger, "http").await {
+        Some(provider) => {
+            if let Ok(block_number) = provider.get_block_number().await {
+                *app_state.last_block.write().await = Some(block_number);
+            }
+            // Cum 5.1 - giu lai provider HTTP da verify de dung cho
+            // pipeline::resolve_v2_reserves (eth_call getPair/getReserves
+            // that) trong live paper loop, khong mo ket noi rieng moi tx.
+            *app_state.provider.write().await = Some(provider);
+        }
+        None => {
+            app_state.logger.log(
+                "rpc.skip",
+                serde_json::json!({
+                    "transport": "http",
+                    "reason": "khong URL HTTP nao trong pool ket noi duoc (rong hoac tat ca fail, xem rpc.failover)"
+                }),
+            );
+        }
+    }
+
+    let vps_fallback = transport::VpsFallback::load(std::path::Path::new("vps.json"));
+    let mut ws_urls = transport::collect_rpc_urls_from_env("BSC_WS");
+    if ws_urls.is_empty() {
+        if let Some(v) = transport::pick_url(None, &vps_fallback.rpc_ws) {
+            ws_urls.push(v);
+        }
+    }
+    if ws_urls.is_empty() {
+        app_state.logger.log(
+            "rpc.skip",
+            serde_json::json!({
+                "transport": "ws",
+                "reason": "BSC_WS rong (.env chua dien) va vps.json chua co fallback hop le"
+            }),
+        );
+    }
+
+    tokio::spawn(subscribe_ws_heads(app_state.clone(), ws_urls.clone()));
+
+    // Cum 5.2+5.3 - fallback chain WSS (nhieu URL, lag/rot thi thu WSS KE
+    // trong danh sach truoc) -> txpool_content (qua http_pool, failover URL
+    // HTTP ke khi loi) -> chi con inject_only. Khong halt bot o bat ky nhanh
+    // nao (CLAUDE.md).
+    tokio::spawn(subscribe_pending_txs(app_state, ws_urls, http_pool, pending_poll_interval));
+}
+
+/// Cụm `5.3` — thử lần lượt từng URL trong `ws_urls` (log `rpc.failover` cho
+/// URL lỗi connect/`subscribe_blocks`) tới khi 1 URL thành công; ở lại vòng
+/// nhận block header tới khi lỗi/rớt (best-effort, KHÔNG tự động nhảy sang
+/// URL khác giữa chừng — khác `subscribe_pending_txs` nơi pending-tx quan
+/// trọng hơn). Hết `ws_urls` (rỗng hoặc mọi URL đều lỗi) -> log `rpc.skip`,
+/// KHÔNG halt bot (CLAUDE.md: "Không halt vì WSS im (ship)") — `last_block`
+/// vẫn có giá trị từ HTTP `get_block_number` lúc boot/health-check.
+async fn subscribe_ws_heads(app_state: AppState, ws_urls: Vec<String>) {
+    for url in &ws_urls {
+        let redacted = transport::redact_rpc_url(url);
+        let provider = match transport::connect_and_verify(url).await {
+            Ok(p) => p,
+            Err(e) => {
+                app_state.logger.log(
+                    "rpc.failover",
+                    serde_json::json!({ "transport": "ws_heads", "url": redacted, "reason": e.to_string() }),
+                );
+                continue;
+            }
+        };
+        let mut sub = match provider.subscribe_blocks().await {
+            Ok(s) => s,
+            Err(e) => {
+                app_state.logger.log(
+                    "rpc.failover",
+                    serde_json::json!({ "transport": "ws_heads", "url": redacted, "reason": format!("subscribe_blocks that bai: {e}") }),
+                );
+                continue;
+            }
+        };
+        app_state
+            .logger
+            .log("rpc.connect", serde_json::json!({ "transport": "ws_heads", "url": redacted }));
+
+        loop {
+            match sub.recv().await {
+                Ok(header) => {
+                    let block_number = header.number;
+                    *app_state.last_block.write().await = Some(block_number);
+                    app_state.logger.log("rpc.block", serde_json::json!({ "block": block_number }));
+                }
+                Err(e) => {
+                    app_state.logger.log(
+                        "rpc.skip",
+                        serde_json::json!({ "transport": "ws_heads", "url": redacted, "reason": format!("subscription rot: {e}") }),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    if !ws_urls.is_empty() {
+        app_state.logger.log(
+            "rpc.skip",
+            serde_json::json!({ "transport": "ws_heads", "reason": "khong URL WSS nao trong danh sach connect/subscribe_blocks duoc" }),
+        );
+    }
+}
+
+/// Cụm `5.3` (mở rộng `5.2`) — orchestrate fallback: "WSS -> WSS KHÁC trong
+/// danh sách -> `txpool_content` (HTTP pool)". Thử LẦN LƯỢT từng URL trong
+/// `ws_urls`: connect lỗi -> log `rpc.failover`, thử URL kế; connect được
+/// nhưng `subscribe_full_pending_transactions` lỗi (`PubsubUnavailable`...)
+/// -> log `rpc.pending_unavailable`, thử URL kế; subscribe thành công ->
+/// set `pending_source=Ws`, ở lại vòng `recv()` (buffer lớn qua
+/// `channel_size(PENDING_WS_CHANNEL_SIZE)`, xem `transport.rs`) tới khi lỗi/
+/// rớt (`channel lagged`...) -> log `rpc.pending_unavailable`, THỬ URL WSS KẾ
+/// (khác `5.2`: trước đây rớt là rơi thẳng xuống txpool, giờ còn URL WSS nào
+/// chưa thử thì thử tiếp trước). Hết TOÀN BỘ `ws_urls` mới rơi xuống
+/// `poll_txpool_pending` (HTTP qua `http_pool`, tự failover URL kế khi lỗi).
+/// Không nhánh nào halt bot (CLAUDE.md) — thất bại hết thì `pending_source`
+/// giữ nguyên `InjectOnly`, bot vẫn nhận `state/inject_tx.jsonl`.
+async fn subscribe_pending_txs(app_state: AppState, ws_urls: Vec<String>, http_pool: Arc<transport::RpcPool>, poll_interval: Duration) {
+    for url in &ws_urls {
+        let redacted = transport::redact_rpc_url(url);
+        let provider = match transport::connect_and_verify(url).await {
+            Ok(p) => p,
+            Err(e) => {
+                app_state.logger.log(
+                    "rpc.failover",
+                    serde_json::json!({ "transport": "ws", "url": redacted, "reason": e.to_string() }),
+                );
+                continue; // thu URL WSS ke trong danh sach
+            }
+        };
+        let sub = provider
+            .subscribe_full_pending_transactions()
+            .channel_size(transport::PENDING_WS_CHANNEL_SIZE)
+            .await;
+        let mut sub = match sub {
+            Ok(s) => s,
+            Err(e) => {
+                app_state.logger.log(
+                    "rpc.pending_unavailable",
+                    serde_json::json!({ "transport": "ws", "url": redacted, "reason": e.to_string() }),
+                );
+                continue; // thu URL WSS ke
+            }
+        };
+        *app_state.pending_source.write().await = transport::PendingSource::Ws;
+        app_state
+            .logger
+            .log("rpc.pending_subscribed", serde_json::json!({ "transport": "ws", "url": redacted }));
+        loop {
+            match sub.recv().await {
+                Ok(tx) => {
+                    let raw = transport::pending_tx_from_rpc(&tx);
+                    app_state.funnel.record_seen();
+                    // Cum A4 - gate (a) giong het poll_txpool_pending (xem doc-comment
+                    // o do): `to` khong nam trong 5 router Pancake da pin -> khong
+                    // log tx.seen tung dong, khong spawn, chi dem qua funnel.
+                    if !passes_router_gate(raw.to) {
+                        app_state.funnel.record_not_pancake_router();
+                    } else {
+                        log_tx_seen(&app_state.logger, "pending_ws", &raw);
+                        tokio::spawn(handle_paper_tx(app_state.clone(), raw));
+                    }
+                }
+                Err(e) => {
+                    app_state.logger.log(
+                        "rpc.pending_unavailable",
+                        serde_json::json!({ "transport": "ws", "url": redacted, "reason": format!("subscription rot: {e}") }),
+                    );
+                    break; // thu URL WSS ke trong danh sach (vong for ben ngoai)
+                }
+            }
+        }
+    }
+
+    // Het danh sach WSS (rong, hoac moi URL deu fail/rot) -> fallback poll txpool_content.
+    {
+        let mut src = app_state.pending_source.write().await;
+        if *src == transport::PendingSource::Ws {
+            *src = transport::PendingSource::InjectOnly;
+        }
+    }
+    poll_txpool_pending(app_state, http_pool, poll_interval).await;
+}
+
+/// Cụm `5.2` — kết quả tối thiểu của `txpool_content` (namespace `txpool`
+/// chuẩn Geth, xem https://geth.ethereum.org/docs/rpc/ns-txpool#txpool_content)
+/// chỉ đọc field `pending` (bỏ `queued` — tx chưa thể thực thi ngay do
+/// nonce-gap, không phải candidate sandwich tức thời). Tự định nghĩa struct
+/// này thay vì dùng `alloy::providers::ext::TxPoolApi`/`alloy-rpc-types-txpool`
+/// vì bản `alloy-provider 2.4.2` đang pin (`docs/STATE.md`) khai lệch version
+/// (`alloy-rpc-types-txpool = "2.4.2"`) — crate đó CHƯA có bản `2.4.2` trên
+/// crates.io (chỉ tới `2.4.1`), bật feature `rpc-types-txpool` làm
+/// `cargo build` fail resolve dependency ngay (đã verify lỗi thật, xem
+/// docs/STATE.md mục "5.2"). Dùng thẳng `Provider::raw_request` (đã có sẵn
+/// trong feature `provider-http` đang bật, không cần thêm feature nào) +
+/// kiểu tối giản tự viết để tránh phụ thuộc crate bị lệch version đó.
+#[derive(Debug, Default, serde::Deserialize)]
+struct TxpoolContentPendingOnly {
+    #[serde(default)]
+    pending: std::collections::BTreeMap<String, std::collections::BTreeMap<String, alloy::rpc::types::eth::Transaction>>,
+}
+
+/// Cụm `5.2`+`5.3` — fallback HTTP: poll `txpool_content` mỗi `pending_poll_ms`
+/// (config, ship `400`) qua `http_pool` (chain 56 đã xác nhận khi connect —
+/// "Sai chain ≠ 56 không watch" tự động đúng). Dùng `txpool_content` (không
+/// phải `txpool_inspect`) vì cần ĐỦ `input` calldata để
+/// `pipeline::decode_and_prefilter` giải mã — `txpool_inspect` chỉ trả tóm
+/// tắt dạng chuỗi, không có calldata.
+///
+/// KHÁC `5.2`: lỗi lần gọi (node không hỗ trợ namespace `txpool`, rate-limit,
+/// timeout...) KHÔNG còn dừng task hẳn — log `rpc.pending_unavailable` rồi
+/// `http_pool.advance_and_reconnect` sang URL HTTP KẾ trong pool (quay vòng,
+/// cập nhật `app_state.provider`), thử lại ở vòng poll SAU. Chỉ khi TOÀN BỘ
+/// pool không còn URL nào connect được (`advance_and_reconnect` trả `None`)
+/// mới coi là hết đường — vẫn KHÔNG dừng task (health-check task riêng có
+/// thể hồi phục pool sau), chỉ log rõ lý do — đúng "Không halt vì 1 node
+/// chết" (CLAUDE.md `5.3`).
+///
+/// `pending_txpool_max_per_poll` (config, ship `32`) giới hạn số hash MỚI
+/// (chưa `seen`) được xử lý mỗi vòng — `txpool_content` trả TOÀN BỘ pool
+/// đang chờ mỗi lần gọi, không giới hạn sẽ spawn hàng trăm/ngàn
+/// `handle_paper_tx` cùng lúc khi mempool đông (BAOCAO08:
+/// `decode_fail=856` trong ~10s). Hash bị bỏ qua vì vượt cap KHÔNG được
+/// đánh dấu `seen` — vẫn còn cơ hội được xử lý ở vòng poll sau nếu tx đó còn
+/// trong pool. `seen` (dedup theo tx hash) chặn xử lý lặp lại CÙNG 1 tx qua
+/// nhiều lần poll — cap kích thước để không phình vô hạn qua thời gian dài
+/// chạy, chấp nhận đánh đổi hiếm khi xử lý lại 1 tx cũ ngay sau khi cap bị
+/// xoá (KHÔNG sai logic, chỉ tốn thêm 1 lần `eth_call` hiếm gặp).
+async fn poll_txpool_pending(app_state: AppState, http_pool: Arc<transport::RpcPool>, poll_interval: Duration) {
+    use alloy::network::TransactionResponse;
+
+    // Cum A4 - nang SEEN_CAP 5_000 -> 50_000 + doi tu "clear sach khi day"
+    // sang "xoa theo tuoi" (VecDeque giu THU TU chen + HashSet tra cuu O(1)):
+    // clear sach cu lam mat dau vet MOI tx da xu ly gan day (kha nang xu ly
+    // lai tx cu tang dot bien ngay sau khi clear), xoa dan tu dau (tx CU
+    // NHAT) it gay xu ly lap hon voi cung 1 dung luong bo nho.
+    const SEEN_CAP: usize = 50_000;
+    let mut seen_set: HashSet<alloy::primitives::TxHash> = HashSet::new();
+    let mut seen_order: VecDeque<alloy::primitives::TxHash> = VecDeque::new();
+    let mut interval = tokio::time::interval(poll_interval);
+    loop {
+        interval.tick().await;
+        let provider = match http_pool.current().await {
+            Some(p) => p,
+            None => continue, // chua co URL HTTP nao trong pool connect duoc - cho health-check hoi phuc
+        };
+        let content: TxpoolContentPendingOnly =
+            match provider.raw_request("txpool_content".into(), alloy::rpc::client::NoParams::default()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    app_state.logger.log(
+                        "rpc.pending_unavailable",
+                        serde_json::json!({ "transport": "txpool_content", "reason": e.to_string() }),
+                    );
+                    match http_pool.advance_and_reconnect(&app_state.logger, "http").await {
+                        Some(new_provider) => {
+                            *app_state.provider.write().await = Some(new_provider);
+                        }
+                        None => {
+                            *app_state.provider.write().await = None;
+                            app_state.logger.log(
+                                "rpc.pending_unavailable",
+                                serde_json::json!({ "transport": "txpool_content", "reason": "toan bo pool HTTP khong URL nao connect duoc" }),
+                            );
+                        }
+                    }
+                    continue; // thu lai o vong poll sau, khong dung han task
+                }
+            };
+        {
+            let mut src = app_state.pending_source.write().await;
+            if *src != transport::PendingSource::Txpool {
+                *src = transport::PendingSource::Txpool;
+                app_state.logger.log("rpc.pending_subscribed", serde_json::json!({ "transport": "txpool_content" }));
+            }
+        }
+        let max_new = app_state.config.read().await.pending_txpool_max_per_poll as usize;
+        let mut new_count = 0usize;
+        'outer: for by_nonce in content.pending.values() {
+            for tx in by_nonce.values() {
+                let hash = tx.tx_hash();
+                if seen_set.contains(&hash) {
+                    continue;
+                }
+                seen_set.insert(hash);
+                seen_order.push_back(hash);
+                if seen_order.len() > SEEN_CAP {
+                    if let Some(oldest) = seen_order.pop_front() {
+                        seen_set.remove(&oldest);
+                    }
+                }
+                let raw = transport::pending_tx_from_rpc(tx);
+                app_state.funnel.record_seen();
+
+                // Cum A4 - gate (a) THUAN, 0 RPC, chay TRUOC decode: `to` khong
+                // nam trong 5 router Pancake da pin -> khong dang de spawn task
+                // nao (KHONG log tx.seen tung dong, chi dem qua funnel) - cap
+                // `pending_txpool_max_per_poll` CHI ap dung cho tx da qua loc
+                // nay (khong bi tieu ton boi rac khong lien quan Pancake).
+                if !passes_router_gate(raw.to) {
+                    app_state.funnel.record_not_pancake_router();
+                    continue;
+                }
+                if new_count >= max_new {
+                    break 'outer;
+                }
+                new_count += 1;
+                log_tx_seen(&app_state.logger, "txpool", &raw);
+                tokio::spawn(handle_paper_tx(app_state.clone(), raw));
+            }
+        }
+    }
+}
+
+/// Cụm `5.3` — health-check định kỳ (mỗi `interval`, KHÔNG phải ngưỡng chủ
+/// chỉnh trong `config.toml` — cadence nội bộ, cùng quy ước hằng số
+/// `watch_inject_file`/`watch_tax_inject_file` 2s) cho provider HTTP hiện tại
+/// trong `http_pool`: `get_block_number()` lỗi (node chết/timeout) hoặc chưa
+/// có provider nào -> `connect()`/`advance_and_reconnect()` sang URL kế
+/// trong pool (quay vòng), cập nhật `app_state.provider`/`last_block`. Bảo vệ
+/// MỌI nơi đọc `app_state.provider` (bao gồm `pipeline::resolve_v2_reserves`
+/// qua `handle_paper_tx`) mà KHÔNG cần đổi chữ ký `pipeline.rs` (giữ tách lõi
+/// thuần/RPC thật đúng quy ước `docs/STATE.md`) — đây là điểm DUY NHẤT trong
+/// cụm này chạm tới `eth_call getBlock` cho mọi consumer chung.
+async fn http_pool_health_check(app_state: AppState, http_pool: Arc<transport::RpcPool>, interval: Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let current = http_pool.current().await;
+        let alive_block = match &current {
+            Some(p) => p.get_block_number().await.ok(),
+            None => None,
+        };
+        if let Some(bn) = alive_block {
+            *app_state.last_block.write().await = Some(bn);
+            continue;
+        }
+        // Chua co provider (current=None) -> connect() tu idx hien tai. Da co
+        // provider nhung get_block_number loi (chet/timeout) -> advance_and_reconnect
+        // sang URL KE (khac connect() se thu lai chinh URL vua chet truoc).
+        let reconnected = if current.is_some() {
+            http_pool.advance_and_reconnect(&app_state.logger, "http").await
+        } else {
+            http_pool.connect(&app_state.logger, "http").await
+        };
+        match reconnected {
+            Some(new_provider) => {
+                if let Ok(bn) = new_provider.get_block_number().await {
+                    *app_state.last_block.write().await = Some(bn);
+                }
+                *app_state.provider.write().await = Some(new_provider);
+            }
+            None => {
+                *app_state.provider.write().await = None;
+            }
+        }
+    }
+}
+
+/// Cụm `5.1` — đọc `state/inject_tx.jsonl` (mỗi dòng `from,value_wei,input_hex`)
+/// để bơm tx giả lập vào ĐÚNG cùng `handle_paper_tx` như pending thật, dùng
+/// khi node không đẩy pending (không có `BSC_WS`, giống máy phiên này) hoặc
+/// để test theo ý chủ. Poll 2s/lần (không phải ngưỡng chủ chỉnh trong
+/// `config.toml` — đây là cadence đọc file test nội bộ, không phải
+/// `min_profit_bnb`/`max_front_bnb`/... nên không cần hot-reload qua
+/// `config_reload_sec`). Chỉ đọc dòng MỚI (theo số dòng đã xử lý lần trước)
+/// — file bị ghi đè ngắn hơn (chủ tạo lại file test) thì đọc lại từ đầu,
+/// không panic, không bỏ sót dòng.
+async fn watch_inject_file(app_state: AppState) {
+    let path = PathBuf::from("state").join("inject_tx.jsonl");
+    let mut last_len: usize = 0;
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        interval.tick().await;
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(_) => continue, // file chua ton tai - thu lai lan sau, khong panic
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.len() < last_len {
+            last_len = 0; // file bi ghi de ngan hon -> doc lai tu dau
+        }
+        for line in &lines[last_len..] {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match transport::parse_inject_line(line) {
+                Ok(raw) => {
+                    app_state.funnel.record_seen();
+                    log_tx_seen(&app_state.logger, "inject", &raw);
+                    tokio::spawn(handle_paper_tx(app_state.clone(), raw));
+                }
+                Err(e) => {
+                    app_state.logger.log(
+                        "inject.parse_error",
+                        serde_json::json!({ "error": e, "line": line }),
+                    );
+                }
+            }
+        }
+        last_len = lines.len();
+    }
+}
+
+/// Cụm tax-cache-inject — đọc `state/tax_inject.jsonl` (mỗi dòng
+/// `token,buy_bps,sell_bps`) để chủ/test điền `tax_cache` lúc bot đang chạy,
+/// KHÔNG cần sửa code/build lại. `cfg.allow_tax_inject=false` -> dòng bị BỎ
+/// QUA (log `tax.inject_skipped`, không ghi cache) — giữ nguyên luật "chưa đo
+/// thì `honeypot_or_tax`" khi chủ tắt cờ này. Đọc `allow_tax_inject` MỖI dòng
+/// (không cache 1 lần đầu vòng lặp) vì field này hot-reload qua
+/// `config_reload_sec`, có thể đổi giữa 2 lần poll 2s. Cùng khuôn
+/// `watch_inject_file` ở trên (poll 2s, chỉ đọc dòng MỚI, file ngắn hơn thì
+/// đọc lại từ đầu, không panic).
+async fn watch_tax_inject_file(app_state: AppState) {
+    let path = PathBuf::from("state").join("tax_inject.jsonl");
+    let mut last_len: usize = 0;
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        interval.tick().await;
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(_) => continue, // file chua ton tai - thu lai lan sau, khong panic
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.len() < last_len {
+            last_len = 0; // file bi ghi de ngan hon -> doc lai tu dau
+        }
+        for line in &lines[last_len..] {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match tax::parse_tax_inject_line(line) {
+                Ok((token, buy_bps, sell_bps)) => {
+                    let allow = app_state.config.read().await.allow_tax_inject;
+                    if !allow {
+                        app_state.logger.log(
+                            "tax.inject_skipped",
+                            serde_json::json!({ "reason": "allow_tax_inject=false", "token": format!("{:#x}", token) }),
+                        );
+                        continue;
+                    }
+                    let current_block = app_state.last_block.read().await.unwrap_or(0);
+                    {
+                        let mut cache = app_state.tax_cache.write().await;
+                        cache.inject_from_buy_sell_bps(token, buy_bps, sell_bps, current_block);
+                    }
+                    app_state.logger.log(
+                        "tax.inject",
+                        serde_json::json!({
+                            "token": format!("{:#x}", token),
+                            "buy_bps": buy_bps,
+                            "sell_bps": sell_bps,
+                            "measured_at_block": current_block,
+                            "source": "file",
+                        }),
+                    );
+                }
+                Err(e) => {
+                    app_state.logger.log(
+                        "tax.inject_parse_error",
+                        serde_json::json!({ "error": e, "line": line }),
+                    );
+                }
+            }
+        }
+        last_len = lines.len();
+    }
+}
+
+/// Cụm `foundation-fix-then-real-sim` (A6) — bucket TERMINAL cho 1
+/// `PipelineOutcome` cuối cùng (dù đến từ nhánh WBNB V2 hay nhánh USDT
+/// fallback) vào ĐÚNG 1 field của `web::FunnelCounters` (không tính
+/// `venue_v2`/`venue_v3`/`not_pancake_router`/`seen` — 4 field đó được ghi
+/// TRỰC TIẾP tại điểm biết được, xem `handle_paper_tx`/3 hàm nguồn tx).
+/// `NotQuotePair`/`SellDirection` (nhánh USDT-aware) gộp chung bucket
+/// `not_wbnb_pair` — không tách riêng phiên này (cùng ý nghĩa "sai hướng/sai
+/// cặp quote"). `NotInList` (lọc wallet/pairs.txt, không thuộc chuỗi
+/// decode->venue->thanh_khoan->tax->sim) KHÔNG có bucket riêng trong danh
+/// sách lệnh gốc — vẫn thấy đủ qua `/api/skips` (không đổi), chỉ không tính
+/// vào funnel mới này (ghi rõ, không bịa bucket ngoài danh sách lệnh).
+fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &PipelineOutcome) {
+    match outcome {
+        PipelineOutcome::Simulated(_) => funnel.record_simulated(),
+        PipelineOutcome::Skip(reason) => match reason {
+            pipeline::PipelineSkip::DecodeFail => funnel.record_decode_fail(),
+            pipeline::PipelineSkip::NotWbnbPair | pipeline::PipelineSkip::NotQuotePair | pipeline::PipelineSkip::SellDirection => {
+                funnel.record_not_wbnb_pair()
+            }
+            pipeline::PipelineSkip::VenueUnpinned => funnel.record_venue_v3(),
+            pipeline::PipelineSkip::NoPool => funnel.record_no_pool(),
+            pipeline::PipelineSkip::BelowMin => funnel.record_below_min(),
+            pipeline::PipelineSkip::ThinLiq => funnel.record_thin_liq(),
+            pipeline::PipelineSkip::HoneypotOrTax => funnel.record_honeypot_or_tax(),
+            // Cum `evm-validate-fixed-then-wire` (B3.2)
+            pipeline::PipelineSkip::SimError => funnel.record_sim_error(),
+            pipeline::PipelineSkip::Unprofitable => funnel.record_unprofitable(),
+            pipeline::PipelineSkip::VictimWouldRevert => funnel.record_victim_would_revert(),
+            // NotInList/NotPancakeRouter khong roi vao day (NotPancakeRouter
+            // bi chan truoc khi co PipelineOutcome nao duoc tao; NotInList
+            // khong co bucket rieng trong danh sach lenh goc A6).
+            pipeline::PipelineSkip::NotInList | pipeline::PipelineSkip::NotPancakeRouter => {}
+        },
+    }
+}
+
+/// Cụm A6 — task nền log 1 dòng `funnel.minute` mỗi `interval` (ship 60s)
+/// rồi RESET bộ đếm về 0 (`FunnelCounters::snapshot_and_reset`) — "cộng dồn
+/// trong phút đó", không phải tổng tích luỹ từ lúc boot.
+async fn funnel_report_task(app_state: AppState, interval: Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let snap = app_state.funnel.snapshot_and_reset();
+        app_state.logger.log("funnel.minute", snap);
+    }
+}
+
+/// Cụm `foundation-fix-then-real-sim` (A4) — gate rẻ tiền (0 RPC, chạy TRƯỚC
+/// decode): `to=None` (tx inject định dạng cũ, không có cột `to`) coi là
+/// "không rõ router" -> CHO QUA (không đủ dữ liệu để từ chối, giữ khả năng
+/// test bằng inject cũ không bị vỡ, xem doc-comment `PendingTxRaw::to`).
+/// `to=Some(addr)` -> phải khớp 1 trong 5 router Pancake đã pin
+/// (`venues::venue_for_router`), sai thì `false` (`not_pancake_router`).
+fn passes_router_gate(to: Option<Address>) -> bool {
+    match to {
+        None => true,
+        Some(addr) => venues::venue_for_router(addr).is_some(),
+    }
+}
+
+fn selector_hex_of(input: &[u8]) -> Option<String> {
+    input.get(0..4).map(|s| format!("0x{}", s.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+}
+
+/// Cụm A4 — dựng `TxLogMeta` (hash/to/venue-theo-router/selector) dùng chung
+/// cho `tx.seen` (log thô, `log_tx_seen` dưới) VÀ `tx.skip`/`sim.result`
+/// (`pipeline::log_outcome_v2`, gọi trong `handle_paper_tx`) — 1 nơi tính,
+/// tránh 2 log lệch nhau.
+fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
+    let router_venue = raw.to.and_then(venues::venue_for_router);
+    TxLogMeta {
+        hash: format!("{:#x}", raw.hash),
+        to: raw.to.map(|a| format!("{a:#x}")),
+        venue: router_venue.map(|v| v.as_str().to_string()),
+        selector: selector_hex_of(&raw.input),
+        fee: None,
+    }
+}
+
+fn log_tx_seen(logger: &BotLogger, source: &str, raw: &PendingTxRaw) {
+    let meta = build_tx_log_meta(raw);
+    logger.log(
+        "tx.seen",
+        serde_json::json!({
+            "source": source,
+            "from": format!("{:#x}", raw.from),
+            "to": meta.to,
+            "hash": meta.hash,
+            "venue": meta.venue,
+            "selector": meta.selector,
+        }),
+    );
+}
+
+/// Cụm `5.1` — lõi paper loop: nhận 1 tx thô (pending thật hoặc inject),
+/// resolve reserve pool V2 THẬT qua RPC (chỉ khi qua được precheck rẻ tiền,
+/// tránh tốn `eth_call` cho tx rõ ràng không phải candidate), gọi
+/// `pipeline::decide_paper`, log kết quả, tăng `skip_counts`. Bọc bằng
+/// `pending_semaphore` để giới hạn ≤ 4 tx xử lý đồng thời (CLAUDE.md lệnh
+/// `5.1`) — mỗi lệnh gọi giữ ĐÚNG 1 permit tới khi xong (RAII qua
+/// `OwnedSemaphorePermit`, tự trả khi hàm return ở bất kỳ nhánh nào).
+///
+/// Cụm `quote-live-wiring-funnel-diagnostics` (BAOCAO30) — Phase 1 nối
+/// `decide_paper_quote` (BAOCAO29, trước đây có sẵn nhưng CHƯA nối) vào live
+/// loop, cho CẢ WBNB lẫn USDT, KHÔNG đổi 1 dòng hành vi nhánh WBNB hiện có:
+/// nhánh WBNB (`precheck_token_only` -> `resolve_v2_reserves` ->
+/// `decide_and_build_paper_v2`, wallet|pair|universal) chạy Y HỆT TRƯỚC —
+/// chỉ khi nhánh đó trả `NotWbnbPair` (tx không khớp WBNB ở path) VÀ
+/// `cfg.scan_quote_usdt=true`, mới thử NHÁNH THỨ 2 (song song, không thay
+/// thế): `precheck_quote_only` (thử lại WBNB rồi USDT) -> nếu nhận diện
+/// đúng USDT (chiều MUA) -> `resolve_reserves_for_quote` -> `decide_paper_quote`.
+/// `scan_quote_usdt=false` (ship mặc định) -> nhánh 2 không bao giờ chạy ->
+/// hành vi tổng thể KHÔNG đổi 1 bit so với trước phiên này.
+async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
+    // Cum A4 - funnel.record_seen() da chuyen ra 3 ham goi (subscribe_pending_txs/
+    // poll_txpool_pending/watch_inject_file) NGAY khi quan sat duoc raw tx, TRUOC
+    // gate (a) - "seen" dem MOI tx quan sat duoc, khong phu thuoc co spawn task
+    // nay hay khong (xem doc-comment cac ham do).
+    let _permit = match app_state.pending_semaphore.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => return, // semaphore dong (shutdown) - khong con gi de lam
+    };
+
+    let cfg = app_state.config.read().await.clone();
+    if !cfg.dry_run {
+        // "Paper loop (dry_run only)" - CLAUDE.md cam moi hanh vi ngoai
+        // dry_run o cum nay (khong co logic gui tx that o day de tat, chi
+        // dam bao khong chay nham logic paper khi chu da chuyen sang live).
+        return;
+    }
+    let current_block = app_state.last_block.read().await.unwrap_or(0);
+    let mut meta = build_tx_log_meta(&raw);
+
+    // Cum pair-mode - precheck CHI decode + xac dinh chieu (KHONG loc theo
+    // victims.txt som nhu 5.1, vi pair-mode khong quan tam dia chi `from` -
+    // moi tx decode duoc deu can resolve pair_addr THAT truoc khi biet la
+    // wallet-mode hay pair-mode, xem doc-comment pipeline::precheck_token_only).
+    // Cum A4 - doi sang `precheck_token_and_venue` de biet THEM
+    // `decoder::SwapVenue` that (V2 hay V3+fee) - gate (c) ngay duoi day chan
+    // V3 KHONG duoc dua vao `resolve_v2_reserves` (bug cu: V3 bi sim nham
+    // bang pool V2).
+    let precheck = pipeline::precheck_token_and_venue(&raw.input, raw.value);
+    // Cum "usdt-quote-asset" - FIX LOGGER (BAOCAO29): truoc phien nay
+    // `log_outcome_v2` luon nhan `None` cho token_hint o day, du `precheck`
+    // da tra `Ok(token)` (decode + resolve pool THANH CONG, chi bi skip o
+    // buoc SAU nhu no_pool/honeypot_or_tax/thin_liq) - `tx.skip.token` vi vay
+    // luon `null` sai (xem docs/TASKS.md/BAOCAO28 muc no). Sua: giu token
+    // THAT ngay khi `precheck` tra `Ok`, CHI `None` khi chinh buoc decode nay
+    // that bai (`decode_fail`/`not_wbnb_pair` - token chua tung biet duoc).
+    let mut token_hint = token_hint_from_precheck(precheck.map(|(t, _)| t));
+
+    let (outcome, source) = match precheck {
+        Err(skip) => (PipelineOutcome::Skip(skip), "none"),
+        // Cum A4, gate (c) - venue V3 (exactInputSingle/exactInput/UR
+        // V3_SWAP_EXACT_IN, ke ca khi router la SmartRouter/UR dang bat
+        // gate a) chua co quoter/sim pin o TANG PIPELINE nay -> venue_unpinned,
+        // KHONG goi resolve_v2_reserves (thay vi bi sim nham bang pool V2 nhu
+        // truoc).
+        Ok((_token, SwapVenue::V3 { fee })) => {
+            meta.fee = Some(fee);
+            app_state.funnel.record_venue_v3();
+            (PipelineOutcome::Skip(pipeline::PipelineSkip::VenueUnpinned), "none")
+        }
+        Ok((token, SwapVenue::V2)) => {
+            app_state.funnel.record_venue_v2();
+            let provider_guard = app_state.provider.read().await;
+            match provider_guard.as_ref() {
+                None => (PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool), "none"),
+                Some(provider) => match pipeline::resolve_v2_reserves(provider, token).await {
+                    Err(skip) => (PipelineOutcome::Skip(skip), "none"),
+                    Ok((pair_addr, reserves)) => {
+                        let victims = app_state.victims.read().await;
+                        let pairbook = app_state.pairbook.read().await;
+                        let tax_cache = app_state.tax_cache.read().await;
+                        let risk = app_state.risk_guard.read().await;
+                        let input = pipeline::PaperDecisionV2 {
+                            from: raw.from,
+                            calldata: &raw.input,
+                            tx_value: raw.value,
+                            reserves,
+                            pair_addr,
+                            current_block,
+                        };
+                        pipeline::decide_and_build_paper_v2(&victims, &pairbook, &tax_cache, &cfg, &risk, &app_state.logger, &input)
+                    }
+                },
+            }
+        }
+    };
+
+    // Cum `quote-live-wiring-funnel-diagnostics` - nhanh 2 (USDT fallback),
+    // CHI chay khi nhanh WBNB tren xac nhan "khong phai WBNB pair" VA co bat
+    // scan_quote_usdt - khong dung lai nhanh nay cho moi tx (tranh ton them
+    // eth_call/log cho tx da co ket qua ro rang tu nhanh WBNB, vd decode_fail/
+    // victim dang mua bang WBNB da xu ly xong o tren).
+    let (outcome, source) = if matches!(outcome, PipelineOutcome::Skip(pipeline::PipelineSkip::NotWbnbPair)) && cfg.scan_quote_usdt {
+        match pipeline::precheck_quote_only(&raw.input, raw.value, true) {
+            Ok((token, pipeline::QuoteAsset::Usdt)) => {
+                token_hint = Some(token); // biet token THAT du buoc sau co skip vi ly do gi
+                let provider_guard = app_state.provider.read().await;
+                let usdt_outcome = match provider_guard.as_ref() {
+                    None => PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool),
+                    Some(provider) => {
+                        match pipeline::resolve_reserves_for_quote(provider, token, pipeline::QuoteAsset::Usdt).await {
+                            Err(skip) => PipelineOutcome::Skip(skip),
+                            Ok((_pair_addr, reserves)) => {
+                                let tax_cache = app_state.tax_cache.read().await;
+                                let (o, _tag) =
+                                    pipeline::decide_paper_quote(&tax_cache, &cfg, &raw.input, raw.value, reserves, current_block);
+                                o
+                            }
+                        }
+                    }
+                };
+                (usdt_outcome, "usdt")
+            }
+            // WBNB da duoc nhanh 1 xu ly rieng (khong bao gio thuc su roi vao
+            // day trong thuc te, giu day du kieu). Khong khop ca WBNB lan
+            // USDT (hoac sell_direction) -> decode_and_classify_quote da tra
+            // dung ly do (not_quote_pair/sell_direction), CHINH XAC HON
+            // not_wbnb_pair cu khi da biet chac USDT dang duoc quet.
+            Ok((_, pipeline::QuoteAsset::Wbnb)) => (PipelineOutcome::Skip(pipeline::PipelineSkip::NotWbnbPair), "none"),
+            Err(skip) => (PipelineOutcome::Skip(skip), "none"),
+        }
+    } else {
+        (outcome, source)
+    };
+
+    // ===== Cụm `evm-validate-fixed-then-wire` (C3 + B3.2) — QUYẾT ĐỊNH LẠI
+    // bằng EVM THẬT khi `sim_engine="evm"`. Chỉ chạy khi bước sim công thức
+    // đóng đã ra `Simulated` (số candidate tới đây rất ít sau các gate rẻ),
+    // và ta biết `(token, quote)`. `decide_paper_v2` (công thức đóng) giờ chỉ
+    // còn vai trò ƯỚC LƯỢNG KHOẢNG `front_in` (đúng CLAUDE.md).
+    let (outcome, source) = if cfg.sim_engine_is_evm() {
+        if let (PipelineOutcome::Simulated(_), Some(token)) = (&outcome, token_hint) {
+            let quote = if source == "usdt" { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };
+            let evm_final = run_evm_decision(&app_state, &cfg, token, quote, &raw, current_block, outcome.clone()).await;
+            (evm_final, source)
+        } else {
+            (outcome, source)
+        }
+    } else {
+        (outcome, source)
+    };
+
+    record_funnel_terminal(&app_state.funnel, &outcome);
+    pipeline::log_outcome_v2(&app_state.logger, raw.from, token_hint, source, &meta, &outcome);
+    if let PipelineOutcome::Skip(skip) = &outcome {
+        let mut counts = app_state.skip_counts.write().await;
+        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+    }
+}
+
+/// Cụm `evm-validate-fixed-then-wire` (C3 + B3.2) — mở fork EVM tại block hiện
+/// tại, ĐO TAX bằng EVM (C3, trừ khi token nằm allowlist zero-tax), rồi QUYẾT
+/// ĐỊNH LẠI `Simulated`/`victim_would_revert`/`unprofitable`/`sim_error` bằng
+/// EVM thật (B3.2). Trả về outcome cuối.
+///
+/// **Ràng buộc `!Send` (ghi rõ)**: `BlockForkCache` chứa `revm::Evm` (`!Send`),
+/// nên KHÔNG được giữ qua bất kỳ `.await` nào trong task đã `spawn`. Vì vậy:
+/// (1) mở fork bằng `.await` rồi làm TOÀN BỘ việc EVM trong 1 block đồng bộ
+/// (revm tự `block_on` fetch remote qua `WrapDatabaseAsync` — chặn 1 worker
+/// thread, chấp nhận được vì semaphore giới hạn 4), (2) trích ra các giá trị
+/// `Send` (outcome, số đo tax), (3) DROP fork TRƯỚC khi `.await` tiếp theo (ghi
+/// cache/log). Fork mở lại mỗi candidate (rất ít sau gate) — chia sẻ xuyên tx
+/// cần worker-thread riêng, ghi CÒN NỢ.
+async fn run_evm_decision(
+    app_state: &AppState,
+    cfg: &Config,
+    token: Address,
+    quote: pipeline::QuoteAsset,
+    raw: &PendingTxRaw,
+    current_block: u64,
+    prior: PipelineOutcome,
+) -> PipelineOutcome {
+    let provider = match app_state.provider.read().await.as_ref() {
+        Some(p) => p.clone(),
+        None => return PipelineOutcome::Skip(pipeline::PipelineSkip::SimError),
+    };
+    let quote_addr = match quote {
+        pipeline::QuoteAsset::Wbnb => venues::wbnb_addr(),
+        pipeline::QuoteAsset::Usdt => venues::usdt_addr(),
+    };
+
+    // C3 — TAX GATE: token allowlist zero-tax thì bỏ đo; ngược lại cache miss
+    // (theo TTL) thì đo NGAY bằng EVM. Kết quả (Send) lấy ra khỏi khối fork.
+    let is_allowlisted = venues::is_zero_tax_allowlisted(token);
+    let cached = app_state.tax_cache.read().await.get_fresh_ttl(token, quote_addr, cfg.tax_cache_ttl());
+    let max_tax_bps = cfg.max_roundtrip_tax_bps();
+
+    // Toàn bộ EVM (đo tax + refine) nằm trong 1 khối đồng bộ, KHÔNG await, fork
+    // drop cuối khối. Trả ra: (outcome_evm, tax_để_ghi_cache, số_liệu_validate).
+    struct EvmProducts {
+        outcome: PipelineOutcome,
+        tax_to_cache: Option<bsc_sandwich::sim_evm::EvmTaxMeasurement>,
+        evm_decision: pipeline::EvmDecision,
+    }
+    // Fork EVM (!Send) mở trực tiếp làm scrutinee của `match` — KHÔNG bind vào
+    // 1 `let` riêng: nếu bind, state machine async coi binding đó "có thể còn
+    // sống" tới `.await` ghi cache bên dưới -> future !Send (dù logic đã drop).
+    // Là scrutinee, temporary bị drop ngay cuối `match`, trước mọi `.await`.
+    let products: Result<EvmProducts, String> = match bsc_sandwich::sim_evm::BlockForkCache::open(provider, current_block).await {
+        Err(e) => Err(e.to_string()),
+        Ok(mut fork) => {
+            // (a) tax
+            let (tax_gate_skip, tax_to_cache) = if is_allowlisted || cached.is_some() {
+                let tax = cached.map(|m| m.roundtrip_tax_bps).unwrap_or(0);
+                (tax > max_tax_bps, None)
+            } else {
+                let (res, _ms) = fork.measure_tax_cached(token, quote_addr, probe_in_for_quote(quote));  // U256
+                match res {
+                    Ok(m) => {
+                        let bps = bsc_sandwich::tax::combine_roundtrip_bps(m.buy_bps, m.sell_bps);
+                        (m.honeypot || bps > max_tax_bps, Some(m))
+                    }
+                    // Khong do duoc tax bang EVM -> coi nhu honeypot_or_tax
+                    // (an toan: chua chung minh duoc an toan thi khong sim).
+                    Err(_) => (true, None),
+                }
+            };
+            if tax_gate_skip {
+                Ok(EvmProducts {
+                    outcome: PipelineOutcome::Skip(pipeline::PipelineSkip::HoneypotOrTax),
+                    tax_to_cache,
+                    evm_decision: pipeline::EvmDecision { outcome: PipelineOutcome::Skip(pipeline::PipelineSkip::HoneypotOrTax), evm: None, tried: 0, total_ms: 0.0 },
+                })
+            } else {
+                // (b) B3.2 — quyet dinh bang EVM that
+                let d = pipeline::decide_with_evm(&mut fork, cfg, token, raw, prior, quote);
+                Ok(EvmProducts { outcome: d.outcome.clone(), tax_to_cache, evm_decision: d })
+            }
+        }
+    };
+
+    match products {
+        Err(_) => PipelineOutcome::Skip(pipeline::PipelineSkip::SimError),
+        Ok(p) => {
+            // Ghi cache tax (neu vua do duoc bang EVM) - await SAU khi fork da drop.
+            if let Some(m) = p.tax_to_cache {
+                let mut cache = app_state.tax_cache.write().await;
+                cache.insert_for_quote(token, quote_addr, bsc_sandwich::tax::TaxMeasurement::from_evm(m, current_block));
+            }
+            pipeline::log_sim_evm(&app_state.logger, raw.from, token, current_block, &p.evm_decision, quote);
+            // B3.4 - validator nhung: chi cho quote WBNB (predict_victim_swap_out
+            // hien dung cho pool V2 WBNB; USDT ghi CON NO). Spawn khi EVM da
+            // chay that (evm_decision co so lieu), de do do chinh xac song.
+            if matches!(quote, pipeline::QuoteAsset::Wbnb) && p.evm_decision.evm.is_some() {
+                spawn_victim_validator(app_state.clone(), raw.clone(), token);
+            }
+            p.outcome
+        }
+    }
+}
+
+/// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG: theo dõi 1
+/// victim đã có `sim.evm`, chờ nó lên block (≤5 block), so `victim_out` DỰ
+/// ĐOÁN (EVM replay tại block cha) với `victim_out` THẬT trong receipt, kiểm
+/// tra cô lập (pair chỉ có đúng 1 Swap của tx đó trong block). Ghi
+/// `validate.victim` + cập nhật `/api/validate`. Đây là bản THAY THẾ LÂU DÀI
+/// cho gate B4''.3(b) (dùng CHÍNH cơ chế đã đạt 0% lệch ở B4''.2), chạy ở CẢ
+/// paper lẫn live. Chỉ spawn cho quote WBNB (đường predict_victim_swap_out
+/// hiện dựng cho pool V2 WBNB; USDT ghi CÒN NỢ).
+fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Address) {
+    tokio::spawn(async move {
+        use bsc_sandwich::sim_evm::{decode_v2_swap_amount_out, predict_victim_swap_out, swap_topic0};
+        let provider = match app_state.provider.read().await.as_ref() {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        let factory = match Address::from_str(V2_FACTORY_ADDRESS) {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        let pair = match bsc_sandwich::pool::resolve_v2_pair(&provider, factory, token).await {
+            Ok(Ok(p)) => p,
+            _ => return,
+        };
+        let (token0, _r0, _r1) = match bsc_sandwich::pool::get_raw_reserves_and_token0(&provider, pair).await {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let token_is_token0 = token0 == token;
+        let swap_topic = swap_topic0();
+
+        // Cho toi da ~5 block (~5s BSC) de victim len block.
+        let mut mined_block = None;
+        for _ in 0..8u32 {
+            if let Ok(Some(r)) = provider.get_transaction_receipt(victim.hash).await {
+                mined_block = r.block_number;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+        let Some(block_n) = mined_block else { return };
+        if block_n == 0 {
+            return;
+        }
+
+        // victim_out_real tu receipt cua chinh victim.
+        let receipt = match provider.get_transaction_receipt(victim.hash).await {
+            Ok(Some(r)) => r,
+            _ => return,
+        };
+        let mut victim_out_real = None;
+        for log in receipt.inner.logs() {
+            if log.address() == pair && log.topics().first() == Some(&swap_topic) {
+                victim_out_real = decode_v2_swap_amount_out(log.data().data.as_ref(), token_is_token0);
+                break;
+            }
+        }
+        let Some(victim_out_real) = victim_out_real else { return };
+
+        // Kiem tra co lap: DUNG 1 loi goi eth_getLogs.
+        use alloy::rpc::types::eth::Filter;
+        let filter = Filter::new().address(pair).event_signature(swap_topic).from_block(block_n).to_block(block_n);
+        let isolated = match provider.get_logs(&filter).await {
+            Ok(logs) => logs.len() == 1 && logs[0].transaction_hash == Some(victim.hash),
+            Err(_) => return,
+        };
+
+        // Du doan bang EVM tai block cha.
+        let pred = match predict_victim_swap_out(provider.clone(), block_n - 1, &victim, token, pair, token_is_token0).await {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let Some(pred_out) = pred.swap_out else { return };
+
+        let diff = if pred_out > victim_out_real { pred_out - victim_out_real } else { victim_out_real - pred_out };
+        let base = victim_out_real.max(alloy::primitives::U256::from(1u64));
+        let pct = (u128::try_from(diff).unwrap_or(u128::MAX) as f64) / (u128::try_from(base).unwrap_or(1) as f64) * 100.0;
+        let ok = isolated && pct <= 1.0;
+
+        let row = serde_json::json!({
+            "hash": format!("{:#x}", victim.hash),
+            "pair": format!("{:#x}", pair),
+            "block": block_n,
+            "pred": pred_out.to_string(),
+            "real": victim_out_real.to_string(),
+            "lech_pct": (pct * 10000.0).round() / 10000.0,
+            "isolated": isolated,
+            "block_delta": block_n.saturating_sub(0),
+        });
+        app_state.logger.log("validate.victim", row.clone());
+        app_state.validate_log.write().await.push(row, ok);
+    });
+}
+
+/// C1/C3 — `probe_in` để đo tax: 0.05 BNB cho quote WBNB, 50 USDT cho quote
+/// USDT (đủ lớn để đo tax ổn định, đủ nhỏ để không kẹt thanh khoản pool nhỏ).
+fn probe_in_for_quote(quote: pipeline::QuoteAsset) -> alloy::primitives::U256 {
+    match quote {
+        pipeline::QuoteAsset::Wbnb => alloy::primitives::U256::from(50_000_000_000_000_000u128), // 0.05 BNB
+        pipeline::QuoteAsset::Usdt => alloy::primitives::U256::from(50_000_000_000_000_000_000u128), // 50 USDT (18 dp)
+    }
+}
+
+/// Cụm "usdt-quote-asset" (BAOCAO29) — hàm THUẦN tách riêng để unit-test
+/// được (không cần dựng cả `handle_paper_tx`/`AppState`): `Ok(token)` từ
+/// `precheck_token_only` nghĩa là decode + xác định chiều MUA thành công
+/// (`token_a == WBNB`) — token đã BIẾT THẬT, dù bước SAU (resolve pool/tax
+/// cache/sim) có skip vì lý do gì (`no_pool`/`honeypot_or_tax`/`thin_liq`/...)
+/// thì vẫn nên log đúng token đó, không phải `null`. Chỉ giữ `None` khi
+/// CHÍNH bước decode này thất bại (`decode_fail`/`not_wbnb_pair` — địa chỉ
+/// token chưa từng xác định được).
+fn token_hint_from_precheck(precheck: Result<Address, pipeline::PipelineSkip>) -> Option<Address> {
+    precheck.ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ĐẠT CẦN DÁN (lệnh usdt-quote-asset, mục 6 FIX LOGGER): token KHÔNG
+    /// còn `null` sai khi decode/precheck đã biết token thật.
+    #[test]
+    fn token_hint_from_precheck_keeps_token_when_decode_succeeded() {
+        let token = Address::from_str("0xcccccccccccccccccccccccccccccccccccccccc").unwrap();
+        assert_eq!(token_hint_from_precheck(Ok(token)), Some(token));
+    }
+
+    /// Chỉ `None` khi CHÍNH bước decode thất bại — token chưa từng biết được.
+    #[test]
+    fn token_hint_from_precheck_is_none_only_when_decode_itself_failed() {
+        assert_eq!(token_hint_from_precheck(Err(pipeline::PipelineSkip::DecodeFail)), None);
+        assert_eq!(token_hint_from_precheck(Err(pipeline::PipelineSkip::NotWbnbPair)), None);
+    }
+
+    // ===== Cụm `foundation-fix-then-real-sim` (A4/A6) — `passes_router_gate`/
+    // `record_funnel_terminal` =====
+
+    fn addr(hex: &str) -> Address {
+        Address::from_str(hex).unwrap()
+    }
+
+    #[test]
+    fn passes_router_gate_true_for_none_unknown_source() {
+        // tx inject dinh dang cu (khong co cot `to`) - khong du du lieu de tu
+        // choi, cho qua de decode tu quyet dinh (giu inject cu khong bi vo).
+        assert!(passes_router_gate(None));
+    }
+
+    #[test]
+    fn passes_router_gate_true_for_pinned_router_false_for_others() {
+        assert!(passes_router_gate(Some(addr(bsc_sandwich::venues::V2_ROUTER_ADDRESS))));
+        let biswap_like = addr("0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8");
+        assert!(!passes_router_gate(Some(biswap_like)));
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh A4, test bắt buộc) — tx tới router giả (không nằm
+    /// trong 5 router Pancake đã pin) mang selector `swapExactETHForTokens`
+    /// (`0x7ff36ab5`) thật vẫn phải bị gate (a) chặn — chứng minh gate CHỈ
+    /// nhìn `to`, không quan tâm selector trông "hợp lệ" tới đâu.
+    #[test]
+    fn passes_router_gate_rejects_fake_router_even_with_real_v2_selector() {
+        let fake_router = addr("0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8"); // Biswap-style, chua pin
+        assert!(!passes_router_gate(Some(fake_router)));
+    }
+
+    /// ĐẠT CẦN DÁN — 1000 tx giả, đúng 5 tới V2 Router đã pin, phần còn lại
+    /// tới địa chỉ random không thuộc registry -> ĐÚNG 5 tx "đáng spawn"
+    /// (qua gate (a)) — dùng CHÍNH `passes_router_gate` mà
+    /// `poll_txpool_pending`/`subscribe_pending_txs` gọi thật, nên kết quả
+    /// đúng bằng số tx thực sự được `tokio::spawn(handle_paper_tx(...))`.
+    #[test]
+    fn poll_prefilter_1000_fake_tx_5_to_v2_router_exactly_5_pass_gate() {
+        let v2_router = addr(bsc_sandwich::venues::V2_ROUTER_ADDRESS);
+        let mut tos: Vec<Option<Address>> = Vec::with_capacity(1000);
+        for i in 0..1000u32 {
+            if i % 200 == 0 {
+                // 0, 200, 400, 600, 800 -> dung 5 phan tu
+                tos.push(Some(v2_router));
+            } else {
+                // dia chi gia, khong nam trong PANCAKE_ROUTERS (thay 1 byte
+                // theo i de moi dia chi khac nhau, van chac chan khong trung
+                // 5 router da pin).
+                let hex = format!("0x{:040x}", 0x1000_0000u64 + i as u64);
+                tos.push(Some(Address::from_str(&hex).unwrap()));
+            }
+        }
+        let passed = tos.into_iter().filter(|to| passes_router_gate(*to)).count();
+        assert_eq!(passed, 5);
+    }
+
+    #[test]
+    fn record_funnel_terminal_simulated_increments_simulated_bucket() {
+        let funnel = bsc_sandwich::web::FunnelCounters::new();
+        let quote = bsc_sandwich::sim_v2::SandwichQuote {
+            front_in: alloy::primitives::U256::from(1u64),
+            front_out: alloy::primitives::U256::ZERO,
+            victim_out: alloy::primitives::U256::ZERO,
+            back_out: alloy::primitives::U256::from(2u64),
+            profit_wei: 1,
+        };
+        record_funnel_terminal(&funnel, &PipelineOutcome::Simulated(quote));
+        let snap = funnel.snapshot();
+        assert_eq!(snap["simulated"], 1);
+        assert_eq!(snap["decode_fail"], 0);
+    }
+
+    #[test]
+    fn record_funnel_terminal_venue_unpinned_increments_venue_v3() {
+        let funnel = bsc_sandwich::web::FunnelCounters::new();
+        record_funnel_terminal(&funnel, &PipelineOutcome::Skip(pipeline::PipelineSkip::VenueUnpinned));
+        assert_eq!(funnel.snapshot()["venue_v3"], 1);
+    }
+
+    #[test]
+    fn record_funnel_terminal_maps_each_terminal_skip_to_its_own_bucket() {
+        let cases: &[(pipeline::PipelineSkip, &str)] = &[
+            (pipeline::PipelineSkip::DecodeFail, "decode_fail"),
+            (pipeline::PipelineSkip::NotWbnbPair, "not_wbnb_pair"),
+            (pipeline::PipelineSkip::NotQuotePair, "not_wbnb_pair"),
+            (pipeline::PipelineSkip::SellDirection, "not_wbnb_pair"),
+            (pipeline::PipelineSkip::NoPool, "no_pool"),
+            (pipeline::PipelineSkip::BelowMin, "below_min"),
+            (pipeline::PipelineSkip::ThinLiq, "thin_liq"),
+            (pipeline::PipelineSkip::HoneypotOrTax, "honeypot_or_tax"),
+            (pipeline::PipelineSkip::Unprofitable, "unprofitable"),
+            (pipeline::PipelineSkip::VictimWouldRevert, "victim_would_revert"),
+        ];
+        for (reason, bucket) in cases {
+            let funnel = bsc_sandwich::web::FunnelCounters::new();
+            record_funnel_terminal(&funnel, &PipelineOutcome::Skip(*reason));
+            assert_eq!(funnel.snapshot()[*bucket], 1, "{reason:?} phai roi dung bucket {bucket}");
+        }
+    }
+}

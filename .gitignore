@@ -1,0 +1,6 @@
+.env
+state/
+logs/
+target/
+artifacts/
+key/

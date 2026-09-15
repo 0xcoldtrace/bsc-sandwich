@@ -1,0 +1,117 @@
+# BSC Sandwich Bot — config.toml
+# Thiếu field bất kỳ = fail load (xem src/config.rs).
+# Ship mặc định: dry_run, không live, không gửi tx thật.
+
+chain_id = 56
+dry_run = true
+allow_live = false
+bot_armed = false
+
+scan_v2 = true
+scan_v3 = true
+scan_v4 = true
+
+live_v2 = false
+live_v3 = false
+live_v4 = false
+
+min_profit_bnb = 0.002
+max_front_bnb = 5
+min_reserve_wbnb = 20
+
+victims_path = "victims.txt"
+victims_reload_sec = 15
+config_reload_sec = 15
+
+# Cụm 5.2: cadence (ms) fallback poll txpool_content khi BSC_WS trễ/rớt kết
+# nối (không liên quan victims_reload_sec/config_reload_sec, đó là
+# ngưỡng hot-reload, đây là cadence đọc mempool qua HTTP).
+pending_poll_ms = 400
+
+# Cụm 5.3: số hash pending-tx MỚI (chưa xử lý) tối đa mỗi vòng poll
+# txpool_content — chặn 1 vòng poll spawn quá nhiều handle_paper_tx khi
+# mempool đông.
+pending_txpool_max_per_poll = 32
+
+gas_reserve_bnb_wei = 5000000000000000
+front_max_gas_bnb_wei = 3000000000000000
+back_max_gas_bnb_wei = 3000000000000000
+
+tx_timeout_sec = 30
+ws_silence_sec = 60
+max_consecutive_loss = 3
+max_exposure_bnb = 5
+
+web_bind = "127.0.0.1"
+web_port = 8787
+
+max_roundtrip_tax = 0.005
+tax_cache_blocks = 30
+
+# Cụm tax-cache-inject: cho phép POST /api/tax + state/tax_inject.jsonl ghi
+# TaxCache lúc bot đang chạy (KHÔNG liên quan cổng live). false = API/file bị
+# bỏ qua, giữ nguyên luật "chưa đo -> honeypot_or_tax".
+allow_tax_inject = true
+
+# Cụm 7.3 (BAOCAO16): build calldata paper (front-buy/back-sell) từ SandwichQuote.
+# deadline = wall-clock hiện tại + buffer này (giây) — KHÔNG phải block.timestamp
+# on-chain thật (executor.rs không có Provider). slippage_bps áp vào amount_out_min
+# = expected * (10000-bps) / 10000. Cả 2 field CHỈ dùng để build/log calldata paper,
+# không liên quan cổng live/dry_run.
+executor_deadline_buffer_sec = 120
+executor_slippage_bps = 50
+
+# Cụm pair-mode: PairBook theo dõi POOL (token/WBNB) chỉ định trực tiếp qua
+# pairs.txt, khác victims.txt (theo dõi ĐỊA CHỈ VÍ). min_swap là NGƯỠNG
+# GLOBAL áp dụng cho MỌI pool trong pairs.txt (không có min riêng từng pool).
+pairs_path = "pairs.txt"
+pairs_reload_sec = 30
+pairs_min_swap_bnb = 0.05
+
+# Cụm universal-pair-scan: true = quét MỌI pool WBNB (không chỉ pool khai
+# trong pairs.txt), dùng LẠI ngưỡng pairs_min_swap_bnb (không thêm ngưỡng
+# riêng). Default false = AN TOÀN, giữ nguyên hành vi cũ (not_in_list) — Chủ
+# phải tự bật, tăng tải RPC/CPU (mọi pool WBNB đều thành candidate sim).
+pair_scan_universal = false
+
+# Cụm explicit-mode-flags: cờ TƯỜNG MINH bật/tắt từng nhánh candidate trong
+# decide_paper_v2 (wallet=victims.txt, pair=pairs.txt, universal=mọi pool WBNB
+# ở trên). Default CẢ HAI = true — đây là hành vi GỐC đang chạy thật, KHÔNG
+# được đổi thành false (sẽ vô tình TẮT bot đang vận hành). Muốn chỉ dùng ĐÚNG
+# 1 mode: đặt 2 field còn lại (kể cả pair_scan_universal) = false trong file
+# này — hot-reload theo config_reload_sec, không cần build/restart. Thứ tự ưu
+# tiên khi nhiều hơn 1 mode bật cùng lúc GIỮ NGUYÊN: wallet > pair > universal
+# > not_in_list. Code KHÔNG ép buộc chỉ-1-mode — Chủ tự quản lý tổ hợp.
+wallet_scan_enabled = true
+pair_scan_enabled = true
+
+# Cụm usdt-quote-asset (BAOCAO29): quote asset thứ 2 ngang hàng WBNB (theo
+# giao dịch của NẠN NHÂN - victim mua bằng USDT thì front-run bằng USDT,
+# không quy đổi/không trộn với WBNB trong 1 đường sim). scan_quote_usdt=false
+# là mặc định AN TOÀN - hành vi WBNB (V2/V3/V4, victims.txt, pairs.txt) KHÔNG
+# đổi gì khi tắt cờ này. 3 ngưỡng dưới là SỐ KHỞI TẠO THÔ do Code chọn (KHÔNG
+# price oracle, KHÔNG quy đổi từ *_bnb) - Chủ tự chỉnh tự do trong file này,
+# hot-reload theo config_reload_sec giống mọi ngưỡng khác.
+scan_quote_usdt = false
+min_profit_usdt = 3.0
+max_front_usdt = 3000.0
+min_reserve_usdt = 15000.0
+
+# Cụm evm-validate-fixed-then-wire (B3.1): động cơ quyết định Simulated/
+# victim_would_revert/lợi nhuận. "evm" = fork block hiện tại qua revm + chạy
+# calldata router THẬT (thấy fee-on-transfer/honeypot thật). "v2" = giữ nguyên
+# công thức đóng sim_v2 như các phiên trước (đường lùi nếu RPC quá tải).
+# Giá trị khác 2 chuỗi này = FAIL LOAD (không âm thầm rơi về mặc định).
+sim_engine = "evm"
+
+# Cụm evm-validate-fixed-then-wire (C2): TTL (giây) cho TaxCache đo tự động
+# bằng revm. tax_cache_blocks ở trên VẪN đọc được (không phá config cũ) nhưng
+# KHÔNG còn quyết định tươi/cũ — TTL theo thời gian thực mới là ngưỡng thật.
+tax_cache_ttl_sec = 600
+
+# Cụm evm-validate-fixed-then-wire (D1): slippage tách riêng 2 chân sandwich.
+# front-buy chạy TRƯỚC victim (giá gần như chắc chắn) nên siết chặt; back-sell
+# chạy SAU victim (giá đã dịch + có thể dính tax bán) nên nới rộng hơn.
+# executor_slippage_bps ở trên vẫn đọc được, giữ cho tương thích.
+front_slippage_bps = 10
+back_slippage_bps = 50

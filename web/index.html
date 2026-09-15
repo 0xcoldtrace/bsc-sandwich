@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BSC Sandwich Bot — Dashboard</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<h1>BSC Sandwich Bot <span id="mode-badge" class="badge">...</span></h1>
+
+<section id="bot">
+  <h2>1. Bot</h2>
+  <table class="kv" id="bot-kv"></table>
+</section>
+
+<section id="gate">
+  <h2>2. Cổng live</h2>
+  <ul id="gate-list"></ul>
+</section>
+
+<section id="venues">
+  <h2>3. Venue</h2>
+  <table>
+    <thead><tr><th>Family</th><th>Contract</th><th>Address</th><th>Pinned</th><th>Scan</th><th>Live</th><th>getCode (len)</th><th>Trạng thái</th><th>Nguồn</th></tr></thead>
+    <tbody id="venues-body"></tbody>
+  </table>
+</section>
+
+<section id="victims">
+  <h2>4. Victims</h2>
+  <p id="victims-meta"></p>
+  <table>
+    <thead><tr><th>Address</th><th>min_swap_bnb</th></tr></thead>
+    <tbody id="victims-body"></tbody>
+  </table>
+</section>
+
+<section id="pairs">
+  <h2>Pairs (pair-mode)</h2>
+  <p id="pairs-meta"></p>
+  <table>
+    <thead><tr><th>pair_addr</th><th>source_line</th><th>resolved_from</th></tr></thead>
+    <tbody id="pairs-body"></tbody>
+  </table>
+  <p>pairs.txt — sửa file, hot-reload sau <code>pairs_reload_sec</code> giây. Không sửa trên web.</p>
+</section>
+
+<section id="hits">
+  <h2>5. Hit sống (mới nhất trước)</h2>
+  <table>
+    <thead><tr><th>ts</th><th>event</th><th>chi tiết</th></tr></thead>
+    <tbody id="hits-body"></tbody>
+  </table>
+</section>
+
+<section id="skips">
+  <h2>6. Đếm skip</h2>
+  <table>
+    <thead><tr><th>reason</th><th>count</th></tr></thead>
+    <tbody id="skips-body"></tbody>
+  </table>
+</section>
+
+<section id="funnel">
+  <h2>Funnel (gate order thật, reset lại đầu mỗi phút — xem <code>logs/bot.jsonl</code> event <code>funnel.minute</code> cho số phút trước)</h2>
+  <table>
+    <thead><tr><th>stage</th><th>count (phút hiện tại)</th></tr></thead>
+    <tbody id="funnel-body"></tbody>
+  </table>
+</section>
+
+<section id="tax-cache">
+  <h2>Tax cache (đo tự động EVM + inject thủ công)</h2>
+  <p id="tax-cache-meta"></p>
+  <table>
+    <thead><tr><th>token</th><th>quote</th><th>roundtrip_bps</th><th>buy/sell bps</th><th>honeypot</th><th>fresh?</th></tr></thead>
+    <tbody id="tax-cache-body"></tbody>
+  </table>
+  <p>Đo tự động bằng revm (cụm evm-validate-fixed-then-wire, C1) — mỗi dòng có <code>buy_bps</code>/<code>sell_bps</code> đo 2 chiều + cờ <code>honeypot</code>. Vẫn inject được qua <code>POST /api/tax</code> (đơn vị bps) hoặc <code>state/tax_inject.jsonl</code>. TTL theo <code>tax_cache_ttl_sec</code>. Không sửa trên web.</p>
+</section>
+
+<section id="validate">
+  <h2>Validator nhúng (B3.4 — độ chính xác sim SỐNG)</h2>
+  <p id="validate-meta"></p>
+  <table>
+    <thead><tr><th>victim hash</th><th>block</th><th>lệch %</th><th>cô lập?</th></tr></thead>
+    <tbody id="validate-body"></tbody>
+  </table>
+  <p>Mỗi tx có <code>sim.evm</code> được so <code>victim_out</code> dự đoán (EVM replay block cha) với thật (receipt). <code>within_1pct_ratio</code> là thước đo độ chính xác sim — chạy cả paper lẫn live (<code>GET /api/validate</code>).</p>
+</section>
+
+<section id="builder">
+  <h2>8. Builder</h2>
+  <p id="builder-note">PRIVATE_TX_URL_* chưa nối trong phiên này — public mempool (dry-run).</p>
+</section>
+
+<section id="docs">
+  <h2>9. Docs</h2>
+  <p>Xem trong repo (đường dẫn tương đối gốc repo, không phục vụ qua web này):</p>
+  <ul>
+    <li><code>DEX_REGISTRY.md</code></li>
+    <li><code>docs/STATE.md</code></li>
+    <li><code>docs/TASKS.md</code></li>
+    <li id="baocao-latest">baocao/ (số lớn nhất): <code>xem thư mục baocao/</code></li>
+  </ul>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
