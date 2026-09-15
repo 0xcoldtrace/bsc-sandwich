@@ -1,132 +1,122 @@
-# pairs.txt — cum pair-mode. Theo doi POOL (token/WBNB) truc tiep, khac
-# victims.txt (theo doi DIA CHI VI). Dong bat dau bang # la comment.
+# pairs.txt — cum pair-mode (MODE 2 ONLY, Chu chot 2026-09-15).
+# Dong bat dau bang # la comment. Dinh dang 1 dong:
+#   0xTokenAddress # SYMBOL | vetted YYYY-MM-DD | tax b/s | owner ... | note
+# Bot CHI doc "vetted YYYY-MM-DD". Thieu ngay -> CHUA VET -> khong sim.
+# Bot van tu do lai tax bang revm (pairs_vet_task, moi 600s) va loai dong nao
+# tax>0/honeypot (log pair.vet_fail) - day la luoi an toan, KHONG thay vet tay.
 #
-# Dinh dang 1 dong, CHON 1 TRONG 2:
-#   0xAddress            (tran, khong dau phay) - chua ro la TOKEN hay PAIR,
-#                        bot tu goi Factory.getPair(addr, WBNB) de xac dinh:
-#                        != 0x0 -> addr la TOKEN (pair = ket qua getPair);
-#                        == 0x0 -> addr TU NO la pair address.
-#   0xTokenAddress,0xWBNB  (dia chi thu 2 PHAI dung WBNB da pin
-#                        0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c, sai =
-#                        loi dong, bi bo qua).
+# NHOM A - dien "vetted" san: token lon, Binance-Peg hoac du an lau nam, khong
+# tax/honeypot/cooldown theo hieu biet cong khai. Chu van nen mo DexScreener
+# xem volume pool V2 truoc khi len live (nhieu token lon volume nam o V3).
+# NHOM B - de trong "vetted": GoPlus REVIEW hoac token meme/four.meme (duoi
+# 4444) - Chu tu doc source BscScan roi dien.
+# NHOM C - da XOA khoi file: GoPlus FAIL (pausable/cooldown/take-back-owner)
+# hoac token co reflection/tax lich su. Ghi lai o cuoi file de doi chieu.
 #
-# min_swap ap dung cho MOI pool o day la GLOBAL, chinh trong config.toml
-# (pairs_min_swap_bnb), KHONG khai bao rieng tung dong o file nay.
+# ===== NHOM A: dien san vetted 2026-09-16 =====
+0x55d398326f99059fF775485246999027B3197955 # USDT | vetted 2026-09-16 | tax 0/0 | owner Binance (proxy) | reserve_wbnb~=52619 BNB, quote asset
+0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82 # CAKE | vetted 2026-09-16 | tax 0/0 | owner Pancake (mintable, MasterChef) | reserve_wbnb~=14002 BNB, volume phan lon o V3
+0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56 # BUSD | vetted 2026-09-16 | tax 0/0 | owner Binance | reserve_wbnb~=6245 BNB, BUSD dang bi thu hoi - volume thap, can nhac bo
+0x2170Ed0880ac9A755fd29B2688956BD959F933F8 # ETH | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=2190 BNB, volume phan lon o V3
+0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c # BTCB | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=2162 BNB, volume phan lon o V3
+0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d # USDC | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=294 BNB
+0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d # USD1 | vetted 2026-09-16 | tax 0/0 | owner WLFI (proxy) | reserve_wbnb~=125 BNB
+0xbA2aE424d960c26247Dd6c32edC70B295c744C43 # DOGE | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=638 BNB
+0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE # XRP | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=535 BNB
+0xF8A0BF9cF54Bb92F17374d9e9A321E6a111a51bD # LINK | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=366 BNB
+0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47 # ADA | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=343 BNB
+0x4B0F1812e5Df2A09796481Ff14017e6005508003 # TWT | vetted 2026-09-16 | tax 0/0 | owner Trust Wallet | reserve_wbnb~=246 BNB
+0x85EAC5Ac2F758618dFa09bDbe0cf174e7d574D5B # TRX | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=241 BNB
+0xBf5140A22578168FD562DCcF235E5D43A02ce9B1 # UNI | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=241 BNB
+0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402 # DOT | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=162 BNB
+0x1CE0c2827e2eF14D5C4f29a091d735A204794041 # AVAX | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=125 BNB
+0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63 # NEAR | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=87 BNB
+0x4338665CBB7B2485A8855A139b75D5e34AB0DB94 # LTC | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=54 BNB
+0x2859e4544C4bB03966803b044A93563Bd2D0DD4D # SHIB | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=39 BNB
+0xa2B726B1145A4773F68593CF171187d8EBe4d495 # INJ | vetted 2026-09-16 | tax 0/0 | owner Binance-Peg | reserve_wbnb~=135 BNB
+0xD41FDb03Ba84762dD66a0af1a6C8540FF1ba5dfb # SFP | vetted 2026-09-16 | tax 0/0 | owner SafePal | reserve_wbnb~=199 BNB
+0xaEC945e04baF28b135Fa7c640f624f8D90F1C3a6 # C98 | vetted 2026-09-16 | tax 0/0 | owner Coin98 | reserve_wbnb~=192 BNB
+0xcF6BB5389c92Bdda8a3747Ddb454cB7a64626C63 # XVS | vetted 2026-09-16 | tax 0/0 | owner Venus | reserve_wbnb~=77 BNB
+0x3203c9E46cA618C8C1cE5dC67e7e9D75f5da2377 # MBOX | vetted 2026-09-16 | tax 0/0 | owner Mobox | reserve_wbnb~=153 BNB
+0xAC51066d7bEC65Dc4589368da368b212745d63E8 # ALICE | vetted 2026-09-16 | tax 0/0 | owner MyNeighborAlice | reserve_wbnb~=35 BNB
+0x78F5d389F5CDCcFc41594aBaB4B0Ed02F31398b3 # APX | vetted 2026-09-16 | tax 0/0 | owner ApolloX | reserve_wbnb~=35 BNB
+0x9f589e3eabe42ebC94A44727b3f3531C0c877809 # TKO | vetted 2026-09-16 | tax 0/0 | owner Tokocrypto | reserve_wbnb~=48 BNB
+0xA8c2B8eec3d368C0253ad3dae65a5F2BBB89c929 # CTK | vetted 2026-09-16 | tax 0/0 | owner CertiK/Shentu | reserve_wbnb~=48 BNB
+0xf7DE7E8A6bd59ED41a4b5fe50278b3B7f31384dF # RDNT | vetted 2026-09-16 | tax 0/0 | owner Radiant | reserve_wbnb~=65 BNB
+0xA7f552078dcC247C2684336020c03648500C6d9F # EPS | vetted 2026-09-16 | tax 0/0 | owner Ellipsis | reserve_wbnb~=57 BNB, du an cu - kiem volume
+0x43a8cab15D06d3a5fE5854D714C37E7E9246F170 # ORBS | vetted 2026-09-16 | tax 0/0 | owner Orbs | reserve_wbnb~=105 BNB
+0x23CE9e926048273eF83be0A3A8Ba9Cb6D45cd978 # DAR | vetted 2026-09-16 | tax 0/0 | owner Mines of Dalarnia | reserve_wbnb~=164 BNB
+0x5A3010d4d8D3B5fB49f8B6E57FB9E48063f16700 # BSCPAD | vetted 2026-09-16 | tax 0/0 | owner BSCPad | reserve_wbnb~=234 BNB
+0xECa41281c24451168a37211F0bc2b8645AF45092 # TPT | vetted 2026-09-16 | tax 0/0 | owner TokenPocket | reserve_wbnb~=267 BNB
+0xE0e514c71282b6f4e823703a39374Cf58dc3eA4f # BELT | vetted 2026-09-16 | tax 0/0 | owner Belt | reserve_wbnb~=162 BNB, du an cu - kiem volume
+0x12BB890508c125661E03b09EC06E404bc9289040 # RACA | vetted 2026-09-16 | tax 0/0 | owner Radio Caca | reserve_wbnb~=33 BNB
+0x1633b7157e7638C4d6593436111Bf125Ee74703F # SPS | vetted 2026-09-16 | tax 0/0 | owner Splinterlands | reserve_wbnb~=35 BNB
+0xB2BD0749DBE21f623d9BABa856D3B0f0e1BFEc9C # DUSK | vetted 2026-09-16 | tax 0/0 | owner Dusk (Binance-Peg) | reserve_wbnb~=41 BNB
+0x05aD6E30A855BE07AfA57e08a4f30d00810a402e # TINC | vetted 2026-09-16 | tax 0/0 | owner Tiny World | reserve_wbnb~=40 BNB
+0xb4404DaB7C0eC48b428Cf37DeC7fb628bcC41B36 # GEAR | vetted 2026-09-16 | tax 0/0 | owner MetaGear | reserve_wbnb~=43 BNB
+0x00e1656e45f18ec6747F5a8496Fd39B50b38396D # BCOIN | vetted 2026-09-16 | tax 0/0 | owner Bomb Crypto | reserve_wbnb~=166 BNB
+0xe6DF05CE8C8301223373CF5B969AFCb1498c5528 # KOGE | vetted 2026-09-16 | tax 0/0 | owner 48 Club | reserve_wbnb~=51 BNB
+0x000Ae314E2A2172a039B26378814C252734f556A # ASTER | vetted 2026-09-16 | tax 0/0 | owner Aster DEX | reserve_wbnb~=58 BNB, token moi 2025 - Chu xac nhan lai owner
+0xA64455a4553C9034236734FadDAddbb64aCE4Cc7 # SANTOS | vetted 2026-09-16 | tax 0/0 | owner Binance fan token | reserve_wbnb~=69 BNB
 #
-# Cum `strategy-lock-mode2` (Chu chot 2026-09-15) - MOI dong con mang 1
-# comment VET TAY sau '#', dinh dang:
-#   SYMBOL | vetted YYYY-MM-DD | tax b/s | owner renounced|active | note
-# Bot CHI doc field "vetted YYYY-MM-DD" (cac field con lai chi de Chu tu doi
-# chieu bang mat, khong parse). Dong KHONG co "vetted YYYY-MM-DD" hop le (thieu
-# han, hoac co chu "vetted" nhung khong kem ngay - dung y "de trong") -> bot
-# coi la CHUA VET, KHONG thanh candidate khi `pairs_require_vetted=true`
-# (config.toml, ship mac dinh). Toan bo 100 dong duoi day dang "vetted" DE
-# TRONG (Code KHONG tu vet) - Chu tu vet tay (loc tho bang
-# scripts/vet_goplus.sh, tu soat bang mat) roi dien ngay vao dung field nay.
+# ===== NHOM B: CHUA VET - Chu doc source BscScan (GoPlus REVIEW hoac meme) =====
+0xfb5B838b6cfEEdC2873aB27866079AC55363D37E # FLOKI | vetted | tax ? | owner active | reserve_wbnb~=6227 BNB, tung co tax 3%, kiem setTax hien tai
+0xD40bEDb44C081D2935eebA6eF5a3c8A31A1bBE13 # HERO | vetted | tax ? | owner ? | reserve_wbnb~=5120 BNB
+0x92aa03137385F18539301349dcfC9EbC923fFb10 # SKYAI | vetted | tax ? | owner ? | reserve_wbnb~=4375 BNB, GoPlus PASS
+0x6894CDe390a3f51155ea41Ed24a33A4827d3063D # CAT | vetted | tax ? | owner ? | reserve_wbnb~=3799 BNB
+0x6bdcCe4A559076e37755a78Ce0c06214E59e4444 # B | vetted | tax ? | owner ? | reserve_wbnb~=2072 BNB, four.meme
+0xd5eaAaC47bD1993d661bc087E15dfb079a7f3C19 # KOMA | vetted | tax ? | owner ? | reserve_wbnb~=1823 BNB
+0x82Ec31D69b3c289E541b50E30681FD1ACAd24444 # 哈基米 | vetted | tax ? | owner ? | reserve_wbnb~=1493 BNB, four.meme
+0x0A43fC31a73013089DF59194872Ecae4cAe14444 # 4 | vetted | tax ? | owner ? | reserve_wbnb~=1095 BNB, four.meme
+0x51363F073b1E4920fdA7AA9E9d84BA97EdE1560e # BOB | vetted | tax ? | owner ? | reserve_wbnb~=950 BNB
+0xc51A9250795c0186a6FB4A7D20A90330651e4444 # 我踏马来了 | vetted | tax ? | owner ? | reserve_wbnb~=730 BNB, four.meme
+0x74836cC0E821A6bE18e407E6388E430B689C66e9 # Jager | vetted | tax ? | owner ? | reserve_wbnb~=586 BNB
+0x20d6015660b3fe52e6690a889b5C51F69902cE0e # GIGGLE | vetted | tax ? | owner ? | reserve_wbnb~=551 BNB
+0x6d5AD1592ed9D6D1dF9b93c793AB759573Ed6714 # Broccoli | vetted | tax ? | owner ? | reserve_wbnb~=450 BNB
+0x3aC8e2c113D5D7824aC6ebe82a3c60b1B9D64444 # 客服小何 | vetted | tax ? | owner ? | reserve_wbnb~=382 BNB, four.meme
+0x44443dd87EC4d1bEa3425AcC118Adb023f07F91b # 修仙 | vetted | tax ? | owner ? | reserve_wbnb~=331 BNB, four.meme
+0x02e75d28A8AA2a0033b8cf866fCf0bB0E1eE4444 # PALU | vetted | tax ? | owner ? | reserve_wbnb~=314 BNB, four.meme
+0xe92F7Fe3EAf61DF28b7B75f3FaAB199333c42302 # MAME | vetted | tax ? | owner ? | reserve_wbnb~=301 BNB
+0x44440f83419DE123d7d411187aDb9962db017d03 # BNBHolder | vetted | tax ? | owner ? | reserve_wbnb~=289 BNB, four.meme
+0x671ECbCb89EE3F85E2199294E723D309d98C4444 # 哭哭马 | vetted | tax ? | owner ? | reserve_wbnb~=273 BNB, four.meme
+0x36F2FD027F5f27C59B8C6d64dF64bcC8E8C97777 # 雪球 | vetted | tax ? | owner ? | reserve_wbnb~=259 BNB
+0x232FB065D9d24c34708eeDbF03724f2e95ABE768 # SHEESHA | vetted | tax ? | owner ? | reserve_wbnb~=253 BNB
+0x1a1E69F1e6182e2F8b9e8987E83C016ac9444444 # 人生K线 | vetted | tax ? | owner ? | reserve_wbnb~=231 BNB, four.meme
+0x59E69094398AfbEA632F8Bd63033BdD2443a3Be1 # MONKY | vetted | tax ? | owner ? | reserve_wbnb~=179 BNB
+0x1a5F9d77CA46646cD4937fD8d093F460B66F4444 # 老子 | vetted | tax ? | owner ? | reserve_wbnb~=178 BNB, four.meme
+0x86Bb94DdD16Efc8bc58e6b056e8df71D9e666429 # TST | vetted | tax ? | owner ? | reserve_wbnb~=156 BNB
+0xf9C6e80e9A5807A1214a79449009b48104F94444 # 黑马 | vetted | tax ? | owner ? | reserve_wbnb~=148 BNB, four.meme
+0xD48474E7444727bF500a32D5AbE01943f3A59A64 # BBT | vetted | tax ? | owner ? | reserve_wbnb~=143 BNB
+0xcE24439F2D9C6a2289F741120FE202248B666666 # U | vetted | tax ? | owner ? | reserve_wbnb~=114 BNB
+0x73b84F7E3901F39FC29F3704a03126D317Ab4444 # PUP | vetted | tax ? | owner ? | reserve_wbnb~=113 BNB, four.meme
+0xA49fA5E8106E2d6d6a69E78df9B6A20AaB9c4444 # DONKEY | vetted | tax ? | owner ? | reserve_wbnb~=113 BNB, four.meme
+0x4444B1e4De34Df52cF91E30cc7c0336Ee03D7c1B # meme rush | vetted | tax ? | owner ? | reserve_wbnb~=112 BNB, four.meme
+0x925c8Ab7A9a8a148E87CD7f1EC7ECc3625864444 # DOYR | vetted | tax ? | owner ? | reserve_wbnb~=110 BNB, four.meme
+0x44448aCa77cc60e77c90B6A60851b1BB843CC2ee # 奶龙 | vetted | tax ? | owner ? | reserve_wbnb~=87 BNB, four.meme
+0x932Fb7f52adBC34ff81B4342b8C036b7b8Ac4444 # Dust | vetted | tax ? | owner ? | reserve_wbnb~=81 BNB, four.meme
+0x4AD663403df2F0E7987bC9C74561687472e1611C # FROG | vetted | tax ? | owner ? | reserve_wbnb~=75 BNB
+0x205812CdBed920aFf76C6580abD681a46D11efc7 # QQQB | vetted | tax ? | owner ? | reserve_wbnb~=73 BNB
+0x6a0b66710567b6beb81A71F7e9466450a91a384b # PEX | vetted | tax ? | owner ? | reserve_wbnb~=71 BNB
+0xcF640FDF9b3d9E45cbd69fDA91D7e22579c14444 # gorilla | vetted | tax ? | owner ? | reserve_wbnb~=69 BNB, four.meme
+0xC9849E6fdB743d08fAeE3E34dd2D1bc69EA11a51 # BUNNY | vetted | tax ? | owner ? | reserve_wbnb~=66 BNB, du an cu (PancakeBunny) - kiem volume
+0x037838b556d9c9d654148a284682C55bB5f56eF4 # LIGHT | vetted | tax ? | owner ? | reserve_wbnb~=66 BNB
+0x444416A582466fDAE0f2Fcdf0A859675f8fF6e9f # MarsCoin | vetted | tax ? | owner ? | reserve_wbnb~=62 BNB, four.meme
+0x837A130aED114300Bab4f9f1F4f500682f7efd48 # WSI | vetted | tax ? | owner ? | reserve_wbnb~=58 BNB
+0xE1E93E92C0c2Aff2dC4D7d4A8b250d973cAd4444 # 恶俗企鹅 | vetted | tax ? | owner ? | reserve_wbnb~=53 BNB, four.meme
+0x1eE098cBaF1f846d5Df1993f7e2d10AFb35A878d # SABLE | vetted | tax ? | owner ? | reserve_wbnb~=46 BNB
+0xb77a1BD00D9C7FF5e15D70C7f78e4b80E18E4444 # 財務自由 | vetted | tax ? | owner ? | reserve_wbnb~=44 BNB, four.meme
+0x4444Bd221671F322671Bfdb3F33A653D2B7605c8 # 0x4444 | vetted | tax ? | owner ? | reserve_wbnb~=43 BNB, four.meme
+0xA524B11473b7Ce7EB1dc883A585e64471A734444 # JobIess | vetted | tax ? | owner ? | reserve_wbnb~=39 BNB, four.meme
+0x640C04CA09c5C5140E62FEf42c59E3aFdBbd4444 # 我的刀盾 | vetted | tax ? | owner ? | reserve_wbnb~=39 BNB, four.meme
+0x2789033DFE80593f69d689f65892a75aFA491111 # WM | vetted | tax ? | owner ? | reserve_wbnb~=33 BNB
 #
-# Nguon: PancakeSwap official token list (tokens.pancakeswap.finance/pancakeswap-extended.json),
-# loc chain 56, verify TUNG token qua pipeline::resolve_v2_reserves that (V2 Factory
-# da pin) qua RPC that. Giu token co pool V2/WBNB that VA reserve_wbnb >= 20 BNB
-# (dung nguong min_reserve_wbnb hien tai trong config.toml). 120 token pass / 981 ung vien
-# tong, sap giam dan theo reserve_wbnb, lay toi da 100 dong dau. (phien pairs-discovery)
-#
-0x55d398326f99059fF775485246999027B3197955 # USDT | vetted | tax  | owner  | reserve_wbnb~=52619 BNB
-0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82 # CAKE | vetted | tax  | owner  | reserve_wbnb~=14002 BNB
-0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56 # BUSD | vetted | tax  | owner  | reserve_wbnb~=6245 BNB
-0xfb5B838b6cfEEdC2873aB27866079AC55363D37E # FLOKI | vetted | tax  | owner  | reserve_wbnb~=6227 BNB
-0xc748673057861a797275CD8A068AbB95A902e8de # BabyDoge | vetted | tax  | owner  | reserve_wbnb~=6094 BNB
-0x924fa68a0FC644485b8df8AbfA0A41C2e7744444 # 币安人生 | vetted | tax  | owner  | reserve_wbnb~=5301 BNB
-0xD40bEDb44C081D2935eebA6eF5a3c8A31A1bBE13 # HERO | vetted | tax  | owner  | reserve_wbnb~=5120 BNB
-0x92aa03137385F18539301349dcfC9EbC923fFb10 # SKYAI | vetted | tax  | owner  | reserve_wbnb~=4375 BNB
-0x6894CDe390a3f51155ea41Ed24a33A4827d3063D # CAT | vetted | tax  | owner  | reserve_wbnb~=3799 BNB
-0x2170Ed0880ac9A755fd29B2688956BD959F933F8 # ETH | vetted | tax  | owner  | reserve_wbnb~=2190 BNB
-0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c # BTCB | vetted | tax  | owner  | reserve_wbnb~=2162 BNB
-0x6bdcCe4A559076e37755a78Ce0c06214E59e4444 # B | vetted | tax  | owner  | reserve_wbnb~=2072 BNB
-0xd5eaAaC47bD1993d661bc087E15dfb079a7f3C19 # KOMA | vetted | tax  | owner  | reserve_wbnb~=1823 BNB
-0x82Ec31D69b3c289E541b50E30681FD1ACAd24444 # 哈基米 | vetted | tax  | owner  | reserve_wbnb~=1493 BNB
-0x0DF0587216a4a1bB7d5082fdc491d93d2dD4B413 # Cheems | vetted | tax  | owner  | reserve_wbnb~=1207 BNB
-0x0A43fC31a73013089DF59194872Ecae4cAe14444 # 4 | vetted | tax  | owner  | reserve_wbnb~=1095 BNB
-0x51363F073b1E4920fdA7AA9E9d84BA97EdE1560e # BOB | vetted | tax  | owner  | reserve_wbnb~=950 BNB
-0xdB8D30b74bf098aF214e862C90E647bbB1fcC58c # BABYCAKE | vetted | tax  | owner  | reserve_wbnb~=735 BNB
-0xc51A9250795c0186a6FB4A7D20A90330651e4444 # 我踏马来了 | vetted | tax  | owner  | reserve_wbnb~=730 BNB
-0xbA2aE424d960c26247Dd6c32edC70B295c744C43 # DOGE | vetted | tax  | owner  | reserve_wbnb~=638 BNB
-0x74836cC0E821A6bE18e407E6388E430B689C66e9 # Jager | vetted | tax  | owner  | reserve_wbnb~=586 BNB
-0x20d6015660b3fe52e6690a889b5C51F69902cE0e # GIGGLE | vetted | tax  | owner  | reserve_wbnb~=551 BNB
-0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBE # XRP | vetted | tax  | owner  | reserve_wbnb~=535 BNB
-0x6d5AD1592ed9D6D1dF9b93c793AB759573Ed6714 # Broccoli | vetted | tax  | owner  | reserve_wbnb~=450 BNB
-0x3aC8e2c113D5D7824aC6ebe82a3c60b1B9D64444 # 客服小何 | vetted | tax  | owner  | reserve_wbnb~=382 BNB
-0xF8A0BF9cF54Bb92F17374d9e9A321E6a111a51bD # LINK | vetted | tax  | owner  | reserve_wbnb~=366 BNB
-0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47 # ADA | vetted | tax  | owner  | reserve_wbnb~=343 BNB
-0x44443dd87EC4d1bEa3425AcC118Adb023f07F91b # 修仙 | vetted | tax  | owner  | reserve_wbnb~=331 BNB
-0x02e75d28A8AA2a0033b8cf866fCf0bB0E1eE4444 # PALU | vetted | tax  | owner  | reserve_wbnb~=314 BNB
-0xe92F7Fe3EAf61DF28b7B75f3FaAB199333c42302 # MAME | vetted | tax  | owner  | reserve_wbnb~=301 BNB
-0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d # USDC | vetted | tax  | owner  | reserve_wbnb~=294 BNB
-0x44440f83419DE123d7d411187aDb9962db017d03 # BNBHolder | vetted | tax  | owner  | reserve_wbnb~=289 BNB
-0x671ECbCb89EE3F85E2199294E723D309d98C4444 # 哭哭马 | vetted | tax  | owner  | reserve_wbnb~=273 BNB
-0xECa41281c24451168a37211F0bc2b8645AF45092 # TPT | vetted | tax  | owner  | reserve_wbnb~=267 BNB
-0x36F2FD027F5f27C59B8C6d64dF64bcC8E8C97777 # 雪球 | vetted | tax  | owner  | reserve_wbnb~=259 BNB
-0x232FB065D9d24c34708eeDbF03724f2e95ABE768 # SHEESHA | vetted | tax  | owner  | reserve_wbnb~=253 BNB
-0x4B0F1812e5Df2A09796481Ff14017e6005508003 # TWT | vetted | tax  | owner  | reserve_wbnb~=246 BNB
-0x85EAC5Ac2F758618dFa09bDbe0cf174e7d574D5B # TRX | vetted | tax  | owner  | reserve_wbnb~=241 BNB
-0xBf5140A22578168FD562DCcF235E5D43A02ce9B1 # UNI | vetted | tax  | owner  | reserve_wbnb~=241 BNB
-0x5A3010d4d8D3B5fB49f8B6E57FB9E48063f16700 # BSCPAD | vetted | tax  | owner  | reserve_wbnb~=234 BNB
-0x1a1E69F1e6182e2F8b9e8987E83C016ac9444444 # 人生K线 | vetted | tax  | owner  | reserve_wbnb~=231 BNB
-0xD41FDb03Ba84762dD66a0af1a6C8540FF1ba5dfb # SFP | vetted | tax  | owner  | reserve_wbnb~=199 BNB
-0xaEC945e04baF28b135Fa7c640f624f8D90F1C3a6 # C98 | vetted | tax  | owner  | reserve_wbnb~=192 BNB
-0x59E69094398AfbEA632F8Bd63033BdD2443a3Be1 # MONKY | vetted | tax  | owner  | reserve_wbnb~=179 BNB
-0x1a5F9d77CA46646cD4937fD8d093F460B66F4444 # 老子 | vetted | tax  | owner  | reserve_wbnb~=178 BNB
-0x00e1656e45f18ec6747F5a8496Fd39B50b38396D # BCOIN | vetted | tax  | owner  | reserve_wbnb~=166 BNB
-0x23CE9e926048273eF83be0A3A8Ba9Cb6D45cd978 # DAR | vetted | tax  | owner  | reserve_wbnb~=164 BNB
-0x7083609fCE4d1d8Dc0C979AAb8c869Ea2C873402 # DOT | vetted | tax  | owner  | reserve_wbnb~=162 BNB
-0xE0e514c71282b6f4e823703a39374Cf58dc3eA4f # BELT | vetted | tax  | owner  | reserve_wbnb~=162 BNB
-0x86Bb94DdD16Efc8bc58e6b056e8df71D9e666429 # TST | vetted | tax  | owner  | reserve_wbnb~=156 BNB
-0x3203c9E46cA618C8C1cE5dC67e7e9D75f5da2377 # MBOX | vetted | tax  | owner  | reserve_wbnb~=153 BNB
-0xf9C6e80e9A5807A1214a79449009b48104F94444 # 黑马 | vetted | tax  | owner  | reserve_wbnb~=148 BNB
-0xD48474E7444727bF500a32D5AbE01943f3A59A64 # BBT | vetted | tax  | owner  | reserve_wbnb~=143 BNB
-0xa2B726B1145A4773F68593CF171187d8EBe4d495 # INJ | vetted | tax  | owner  | reserve_wbnb~=135 BNB
-0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d # USD1 | vetted | tax  | owner  | reserve_wbnb~=125 BNB
-0x1CE0c2827e2eF14D5C4f29a091d735A204794041 # AVAX | vetted | tax  | owner  | reserve_wbnb~=125 BNB
-0x32B407ee915432Be6D3F168bc1EfF2a6F8b2034C # HODL | vetted | tax  | owner  | reserve_wbnb~=122 BNB
-0xcE24439F2D9C6a2289F741120FE202248B666666 # U | vetted | tax  | owner  | reserve_wbnb~=114 BNB
-0x73b84F7E3901F39FC29F3704a03126D317Ab4444 # PUP | vetted | tax  | owner  | reserve_wbnb~=113 BNB
-0xA49fA5E8106E2d6d6a69E78df9B6A20AaB9c4444 # DONKEY | vetted | tax  | owner  | reserve_wbnb~=113 BNB
-0x4444B1e4De34Df52cF91E30cc7c0336Ee03D7c1B # meme | vetted | tax  | owner  | rush reserve_wbnb~=112 BNB
-0x925c8Ab7A9a8a148E87CD7f1EC7ECc3625864444 # DOYR | vetted | tax  | owner  | reserve_wbnb~=110 BNB
-0x43a8cab15D06d3a5fE5854D714C37E7E9246F170 # ORBS | vetted | tax  | owner  | reserve_wbnb~=105 BNB
-0x44448aCa77cc60e77c90B6A60851b1BB843CC2ee # 奶龙 | vetted | tax  | owner  | reserve_wbnb~=87 BNB
-0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63 # NEAR | vetted | tax  | owner  | reserve_wbnb~=87 BNB
-0x932Fb7f52adBC34ff81B4342b8C036b7b8Ac4444 # Dust | vetted | tax  | owner  | reserve_wbnb~=81 BNB
-0xcF6BB5389c92Bdda8a3747Ddb454cB7a64626C63 # XVS | vetted | tax  | owner  | reserve_wbnb~=77 BNB
-0x4AD663403df2F0E7987bC9C74561687472e1611C # FROG | vetted | tax  | owner  | reserve_wbnb~=75 BNB
-0x205812CdBed920aFf76C6580abD681a46D11efc7 # QQQB | vetted | tax  | owner  | reserve_wbnb~=73 BNB
-0x6a0b66710567b6beb81A71F7e9466450a91a384b # PEX | vetted | tax  | owner  | reserve_wbnb~=71 BNB
-0xcF640FDF9b3d9E45cbd69fDA91D7e22579c14444 # gorilla | vetted | tax  | owner  | reserve_wbnb~=69 BNB
-0xA64455a4553C9034236734FadDAddbb64aCE4Cc7 # SANTOS | vetted | tax  | owner  | reserve_wbnb~=69 BNB
-0xC9849E6fdB743d08fAeE3E34dd2D1bc69EA11a51 # BUNNY | vetted | tax  | owner  | reserve_wbnb~=66 BNB
-0x037838b556d9c9d654148a284682C55bB5f56eF4 # LIGHT | vetted | tax  | owner  | reserve_wbnb~=66 BNB
-0xf7DE7E8A6bd59ED41a4b5fe50278b3B7f31384dF # RDNT | vetted | tax  | owner  | reserve_wbnb~=65 BNB
-0x444416A582466fDAE0f2Fcdf0A859675f8fF6e9f # MarsCoin | vetted | tax  | owner  | reserve_wbnb~=62 BNB
-0x837A130aED114300Bab4f9f1F4f500682f7efd48 # WSI | vetted | tax  | owner  | reserve_wbnb~=58 BNB
-0x000Ae314E2A2172a039B26378814C252734f556A # ASTER | vetted | tax  | owner  | reserve_wbnb~=58 BNB
-0xA7f552078dcC247C2684336020c03648500C6d9F # EPS | vetted | tax  | owner  | reserve_wbnb~=57 BNB
-0x4338665CBB7B2485A8855A139b75D5e34AB0DB94 # LTC | vetted | tax  | owner  | reserve_wbnb~=54 BNB
-0xE1E93E92C0c2Aff2dC4D7d4A8b250d973cAd4444 # 恶俗企鹅 | vetted | tax  | owner  | reserve_wbnb~=53 BNB
-0xe6DF05CE8C8301223373CF5B969AFCb1498c5528 # KOGE | vetted | tax  | owner  | reserve_wbnb~=51 BNB
-0x9f589e3eabe42ebC94A44727b3f3531C0c877809 # TKO | vetted | tax  | owner  | reserve_wbnb~=48 BNB
-0xA8c2B8eec3d368C0253ad3dae65a5F2BBB89c929 # CTK | vetted | tax  | owner  | reserve_wbnb~=48 BNB
-0x1eE098cBaF1f846d5Df1993f7e2d10AFb35A878d # SABLE | vetted | tax  | owner  | reserve_wbnb~=46 BNB
-0xb77a1BD00D9C7FF5e15D70C7f78e4b80E18E4444 # 財務自由 | vetted | tax  | owner  | reserve_wbnb~=44 BNB
-0x4444Bd221671F322671Bfdb3F33A653D2B7605c8 # 0x4444 | vetted | tax  | owner  | reserve_wbnb~=43 BNB
-0xb4404DaB7C0eC48b428Cf37DeC7fb628bcC41B36 # GEAR | vetted | tax  | owner  | reserve_wbnb~=43 BNB
-0xB2BD0749DBE21f623d9BABa856D3B0f0e1BFEc9C # DUSK | vetted | tax  | owner  | reserve_wbnb~=41 BNB
-0x05aD6E30A855BE07AfA57e08a4f30d00810a402e # TINC | vetted | tax  | owner  | reserve_wbnb~=40 BNB
-0x2859e4544C4bB03966803b044A93563Bd2D0DD4D # SHIB | vetted | tax  | owner  | reserve_wbnb~=39 BNB
-0xA524B11473b7Ce7EB1dc883A585e64471A734444 # JobIess | vetted | tax  | owner  | reserve_wbnb~=39 BNB
-0x640C04CA09c5C5140E62FEf42c59E3aFdBbd4444 # 我的刀盾 | vetted | tax  | owner  | reserve_wbnb~=39 BNB
-0xAC51066d7bEC65Dc4589368da368b212745d63E8 # ALICE | vetted | tax  | owner  | reserve_wbnb~=35 BNB
-0x08ba0619b1e7A582E0BCe5BBE9843322C954C340 # BMON | vetted | tax  | owner  | reserve_wbnb~=35 BNB
-0x78F5d389F5CDCcFc41594aBaB4B0Ed02F31398b3 # APX | vetted | tax  | owner  | reserve_wbnb~=35 BNB
-0x1633b7157e7638C4d6593436111Bf125Ee74703F # SPS | vetted | tax  | owner  | reserve_wbnb~=35 BNB
-0x5Ac52EE5b2a633895292Ff6d8A89bB9190451587 # BSCX | vetted | tax  | owner  | reserve_wbnb~=34 BNB
-0x12BB890508c125661E03b09EC06E404bc9289040 # RACA | vetted | tax  | owner  | reserve_wbnb~=33 BNB
-0x2789033DFE80593f69d689f65892a75aFA491111 # WM | vetted | tax  | owner  | reserve_wbnb~=33 BNB
+# ===== NHOM C: DA XOA (khong phai dong du lieu, chi ghi nho) =====
+# 0x924fa68a0FC644485b8df8AbfA0A41C2e7744444  币安人生   GoPlus FAIL transfer_pausable
+# 0x08ba0619b1e7A582E0BCe5BBE9843322C954C340  BMON       GoPlus FAIL trading_cooldown (anti-MEV)
+# 0x5Ac52EE5b2a633895292Ff6d8A89bB9190451587  BSCX       GoPlus FAIL can_take_back_ownership, hidden_owner
+# 0xc748673057861a797275CD8A068AbB95A902e8de  BabyDoge   tax/anti_whale (reflection)
+# 0xdB8D30b74bf098aF214e862C90E647bbB1fcC58c  BABYCAKE   reflection token, tax
+# 0x0DF0587216a4a1bB7d5082fdc491d93d2dD4B413  Cheems     tung co tax, owner active
+# 0x32B407ee915432Be6D3F168bc1EfF2a6F8b2034C  HODL       reflection token, tax
+# (17 dong FAIL con lai trong bang vet_goplus.sh cua Code: Chu doi chieu
+#  state/pairs_goplus.tsv va xoa them neu thuoc nhom B o tren)
