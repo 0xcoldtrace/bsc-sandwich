@@ -80,6 +80,17 @@
   <p>Đo tự động bằng revm (cụm evm-validate-fixed-then-wire, C1) — mỗi dòng có <code>buy_bps</code>/<code>sell_bps</code> đo 2 chiều + cờ <code>honeypot</code>. Vẫn inject được qua <code>POST /api/tax</code> (đơn vị bps) hoặc <code>state/tax_inject.jsonl</code>. TTL theo <code>tax_cache_ttl_sec</code>. Không sửa trên web.</p>
 </section>
 
+<section id="econ">
+  <h2>Kinh tế (cụm real-economics-mode2 — đọc <code>logs/bot.jsonl</code>)</h2>
+  <p id="econ-summary"></p>
+  <table>
+    <thead><tr><th>bucket (BNB)</th><th>count</th><th>gross_pos</th><th>net_pos</th><th>sum_net_pos_bnb</th><th>best_net_bnb</th><th>median_gas_cost_bnb</th></tr></thead>
+    <tbody id="econ-buckets-body"></tbody>
+  </table>
+  <p id="econ-decode-fail"></p>
+  <p>Bucket <code>victim_in</code> CHỈ áp dụng cho quote WBNB (không quy đổi USDT sang BNB — CLAUDE.md cấm price oracle). <code>gross_pos</code>/<code>net_pos</code> chỉ đếm được từ dòng <code>sim.result</code> (candidate đã tới bước sim). Xem đầy đủ qua <code>GET /api/econ</code>.</p>
+</section>
+
 <section id="validate">
   <h2>Validator nhúng (B3.4 — độ chính xác sim SỐNG)</h2>
   <p id="validate-meta"></p>

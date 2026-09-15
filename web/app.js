@@ -141,6 +141,39 @@ function renderTaxCache(data) {
     .join("");
 }
 
+// Cụm real-economics-mode2 (mục 3) — GET /api/econ.
+function fmtBnbMaybe(v) {
+  return v === null || v === undefined ? "-" : Number(v).toFixed(6);
+}
+
+function renderEcon(data) {
+  const summary = document.getElementById("econ-summary");
+  if (summary) {
+    summary.textContent = data.summary_line || "";
+  }
+  const body = document.getElementById("econ-buckets-body");
+  if (body) {
+    body.innerHTML = (data.buckets_bnb || [])
+      .map(
+        (b) =>
+          `<tr><td>${b.bucket}</td><td>${b.count}</td><td>${b.gross_pos}</td><td>${b.net_pos}</td><td>${fmtBnbMaybe(b.sum_net_pos_bnb)}</td><td>${fmtBnbMaybe(b.best_net_bnb)}</td><td>${fmtBnbMaybe(b.median_gas_cost_bnb)}</td></tr>`
+      )
+      .join("");
+  }
+  const decodeFailEl = document.getElementById("econ-decode-fail");
+  if (decodeFailEl) {
+    const byRouter = data.decode_fail_by_router || {};
+    const parts = Object.entries(byRouter)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => `${name}=${count}`)
+      .join(", ");
+    const byQuote = Object.entries(data.by_quote || {})
+      .map(([q, c]) => `${q}=${c}`)
+      .join(", ");
+    decodeFailEl.textContent = `decode_fail theo router: ${parts || "(chưa có)"} | by_quote: ${byQuote || "(chưa có)"}`;
+  }
+}
+
 // Cụm evm-validate-fixed-then-wire (B3.4) — validator nhung song.
 // Cụm real-economics-mode2 (F-27) — tach isolated/non_isolated (fix bug audit:
 // within_1pct cu chi dem dong isolated:true).
@@ -213,6 +246,11 @@ async function refresh() {
     renderFunnel(await getJSON("/api/funnel"));
   } catch (e) {
     console.error("funnel fetch failed", e);
+  }
+  try {
+    renderEcon(await getJSON("/api/econ"));
+  } catch (e) {
+    console.error("econ fetch failed", e);
   }
   try {
     renderValidate(await getJSON("/api/validate"));
