@@ -212,12 +212,28 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             let resolver = RpcPairResolver { provider, factory };
+            // Cum `strategy-lock-mode2` - doc `pairs_require_vetted` THAT tu
+            // config hien hanh (hot-reload duoc, khong hardcode) truoc moi
+            // lan reload - gate vet nam trong PairBook::reload chinh no.
+            let require_vetted = pair_reload_state.config.read().await.pairs_require_vetted;
             let mut book = pair_reload_state.pairbook.write().await;
             let _ = book
-                .reload_if_due(&pairs_path, &resolver, &pair_reload_state.logger, pairs_reload_interval, now)
+                .reload_if_due(
+                    &pairs_path,
+                    &resolver,
+                    &pair_reload_state.logger,
+                    pairs_reload_interval,
+                    now,
+                    require_vetted,
+                )
                 .await;
         }
     });
+
+    // Cum `strategy-lock-mode2` - vet NEN dinh ky (revm that, KHONG chan
+    // duong nong) cho moi entry `pairs.txt` da co `vetted` - xem
+    // `pairs_vet_task` duoi day.
+    tokio::spawn(pairs_vet_task(app_state.clone()));
 
     // Cum A6 - bo dem funnel gio nam trong `app_state.funnel`
     // (AppStateInner, src/web.rs) - moi ham spawn tx doc/ghi truc tiep qua
@@ -813,6 +829,99 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
             // khong co bucket rieng trong danh sach lenh goc A6).
             pipeline::PipelineSkip::NotInList | pipeline::PipelineSkip::NotPancakeRouter => {}
         },
+    }
+}
+
+/// Cụm `strategy-lock-mode2` — task nền VET (revm THẬT, ĐỘC LẬP với đường
+/// nóng `handle_paper_tx` — không giữ khoá/không chặn bất kỳ tx nào). Chạy 1
+/// vòng NGAY lúc gọi (lúc boot) rồi lặp lại mỗi `pairs_vet_interval_sec`: với
+/// MỌI entry `pairs.txt` đã có `vetted` (`PairBook::tokens_to_vet`), gọi
+/// `sim_evm::measure_tax_evm` TUẦN TỰ (sleep 200ms giữa 2 token — tránh dồn
+/// RPC vào 1 nhịp), ghi kết quả vào `PairBook::set_vet_result` (tax > ngưỡng
+/// `max_roundtrip_tax` HOẶC honeypot -> loại khỏi candidate ngay, log
+/// `pair.vet_fail`, KHÔNG đụng `pairs.txt`) + đè `state/pairs_vetted.json`
+/// (mảng đầy đủ, dùng cho Chủ/Grok đọc nhanh không cần đọc `logs/bot.jsonl`).
+/// Bỏ qua cả vòng nếu chưa có provider HTTP hoặc chưa có `last_block` (boot
+/// chưa xong) — thử lại ở vòng kế tiếp, không panic/không giả số block.
+async fn pairs_vet_task(app_state: AppState) {
+    loop {
+        let (interval_sec, max_tax_bps) = {
+            let cfg = app_state.config.read().await;
+            (cfg.pairs_vet_interval_sec.max(1), cfg.max_roundtrip_tax_bps())
+        };
+
+        let provider_opt = app_state.provider.read().await.clone();
+        let current_block = app_state.last_block.read().await.unwrap_or(0);
+        if let (Some(provider), true) = (provider_opt, current_block > 0) {
+            let targets = app_state.pairbook.read().await.tokens_to_vet();
+            let mut results = Vec::with_capacity(targets.len());
+            let quote = venues::wbnb_addr();
+            let probe_in = probe_in_for_quote(pipeline::QuoteAsset::Wbnb);
+            for (pair_addr, token) in targets {
+                match bsc_sandwich::sim_evm::measure_tax_evm(provider.clone(), current_block, token, quote, probe_in)
+                    .await
+                {
+                    Ok(m) => {
+                        let bps = tax::combine_roundtrip_bps(m.buy_bps, m.sell_bps);
+                        let ok = !m.honeypot && bps <= max_tax_bps;
+                        if !ok {
+                            app_state.logger.log(
+                                "pair.vet_fail",
+                                serde_json::json!({
+                                    "pair": format!("{pair_addr:#x}"),
+                                    "token": format!("{token:#x}"),
+                                    "buy_bps": m.buy_bps,
+                                    "sell_bps": m.sell_bps,
+                                    "honeypot": m.honeypot,
+                                    "block": current_block,
+                                }),
+                            );
+                        }
+                        app_state.pairbook.write().await.set_vet_result(
+                            pair_addr,
+                            bsc_sandwich::pairbook::VetResult {
+                                buy_bps: m.buy_bps,
+                                sell_bps: m.sell_bps,
+                                honeypot: m.honeypot,
+                                block: current_block,
+                            },
+                            ok,
+                        );
+                        results.push(serde_json::json!({
+                            "pair": format!("{pair_addr:#x}"),
+                            "token": format!("{token:#x}"),
+                            "quote": format!("{quote:#x}"),
+                            "buy_bps": m.buy_bps,
+                            "sell_bps": m.sell_bps,
+                            "honeypot": m.honeypot,
+                            "block": current_block,
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                        }));
+                    }
+                    Err(e) => {
+                        app_state.logger.log(
+                            "pair.vet_error",
+                            serde_json::json!({
+                                "pair": format!("{pair_addr:#x}"),
+                                "token": format!("{token:#x}"),
+                                "error": e.to_string(),
+                            }),
+                        );
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            if !results.is_empty() {
+                let _ = tokio::fs::create_dir_all("state").await;
+                let _ = tokio::fs::write(
+                    "state/pairs_vetted.json",
+                    serde_json::to_string_pretty(&results).unwrap_or_default(),
+                )
+                .await;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(interval_sec)).await;
     }
 }
 
@@ -1423,6 +1532,26 @@ mod tests {
     fn halt_transition_unchanged_is_none() {
         assert_eq!(halt_transition(false, false), HaltTransition::None);
         assert_eq!(halt_transition(true, true), HaltTransition::None);
+    }
+
+    // ===== Cụm `strategy-lock-mode2` — đường nóng KHÔNG đo tax bằng EVM khi
+    // sim_engine="v2" =====
+
+    /// ĐẠT CẦN DÁN (lệnh `strategy-lock-mode2`, mục 4) — ship `config.toml`
+    /// PHẢI có `sim_engine="v2"`. Đây là gate DUY NHẤT trong `handle_paper_tx`
+    /// quyết định có gọi `run_evm_decision` hay không
+    /// (`if cfg.sim_engine_is_evm() { ... run_evm_decision(...).await ... }`,
+    /// xem trên) — `run_evm_decision` là nơi DUY NHẤT trên đường nóng có thể
+    /// dẫn tới đo tax bằng EVM (`fork.measure_tax_cached`). `sim_engine="v2"`
+    /// -> nhánh đó KHÔNG BAO GIỜ chạy -> số lần gọi đo-tax-bằng-EVM trên
+    /// đường nóng = 0 một cách CẤU TRÚC (không phụ thuộc dữ liệu/tx nào tới),
+    /// khác hẳn `measure_tax_evm` (hàm độc lập) chỉ còn 2 call site: test và
+    /// `pairs_vet_task` (nền, không phải đường nóng `handle_paper_tx`).
+    #[test]
+    fn ship_config_sim_engine_v2_means_hot_path_never_opens_evm_fork() {
+        let cfg = Config::from_str(include_str!("../config.toml")).unwrap();
+        assert_eq!(cfg.sim_engine, "v2", "cum strategy-lock-mode2: ship PHAI la \"v2\"");
+        assert!(!cfg.sim_engine_is_evm(), "sim_engine_is_evm() la gate DUY NHAT truoc run_evm_decision trong handle_paper_tx");
     }
 
     /// ĐẠT CẦN DÁN (lệnh exec-path-traps, mục 12/V-06): `halt_watch_task`

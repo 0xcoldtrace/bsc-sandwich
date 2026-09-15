@@ -78,12 +78,18 @@ mkdir -p state logs
 rm -f state/halt.lock state/disarm.req state/reset.req
 echo "da xoa state/halt.lock (neu co)"
 
-# ---- config TAM: nguong 0, universal, USDT, sim_engine=evm ----
+# ---- config TAM: CHI nguong ve 0 + doi port ----
+# Cum `strategy-lock-mode2` (Chu chot 2026-09-15): KHONG con ep
+# pair_scan_universal=true / scan_quote_usdt=true / sim_engine="evm" nua -
+# 3 field do GIU NGUYEN gia tri ship trong config.toml that (mode 2 only,
+# sim_engine="v2") de paper run phan anh DUNG hanh vi san pham that dang
+# chay, khong phai 1 che do do rieng khac voi production. Chi override NGUONG
+# KINH TE ve 0 (khong loc mat candidate nao o tang do) + doi web_port (khong
+# dung chung cong voi bot that dang chay).
 CFG="$(mktemp -t paperrun.XXXXXX.toml)"
 trap 'rm -f "$CFG"' EXIT
 # Lay config.toml that lam nen roi override cac field can thiet.
 cp config.toml "$CFG"
-# override bang sed (chi cac field can): nguong 0 + bat universal + USDT + evm.
 apply() { # apply <key> <value>
   local k="$1" v="$2"
   if grep -qE "^$k[[:space:]]*=" "$CFG"; then
@@ -98,11 +104,18 @@ apply max_roundtrip_tax 0
 apply pairs_min_swap_bnb 0
 apply min_profit_usdt 0
 apply min_reserve_usdt 0
-apply pair_scan_universal true
-apply scan_quote_usdt true
-apply sim_engine '"evm"'
 apply web_port "$PORT"
-echo "== config TAM (nguong 0 + universal + USDT + sim_engine=evm), port $PORT =="
+echo "== config TAM (chi nguong ve 0 + web_port, GIU NGUYEN sim_engine/pair_scan_universal/scan_quote_usdt tu config.toml that), port $PORT =="
+
+# ---- cum `strategy-lock-mode2`: dem nhanh pairs.txt truoc khi chay (tong /
+# co "vetted YYYY-MM-DD" hop le / con lai chua vet) - grep tho, KHONG phai
+# nguon su that (nguon su that la PairBook::reload luc bot chay that, dong
+# nay chi de Chu/Grok nhin nhanh khong can doi bot boot) ----
+PAIRS_TOTAL=$( { grep -cE '^0x' pairs.txt 2>/dev/null || true; } )
+PAIRS_TOTAL="${PAIRS_TOTAL:-0}"
+PAIRS_VETTED=$( { grep -E '^0x' pairs.txt 2>/dev/null | { grep -cE '\|[[:space:]]*vetted[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}' || true; }; } )
+PAIRS_VETTED="${PAIRS_VETTED:-0}"
+echo "== pairs.txt (grep tho, xem sim.evm/pair.unvetted trong log de co so that): tong=$PAIRS_TOTAL vetted=$PAIRS_VETTED chua_vet=$((PAIRS_TOTAL - PAIRS_VETTED)) =="
 
 # ---- chay bot NGAM voi config tam ----
 # Binary nhan duong dan config lam THAM SO VI TRI THU 1 (src/main.rs:28), KHONG

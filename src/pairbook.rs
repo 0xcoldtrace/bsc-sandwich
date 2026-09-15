@@ -15,9 +15,18 @@
 //! Global `min_swap` (`config.toml::pairs_min_swap_bnb`) áp dụng cho MỌI
 //! entry — không có `min_swap` riêng theo từng pool (khác `victims.txt`, nơi
 //! mỗi ví có ngưỡng riêng).
+//!
+//! Cụm `strategy-lock-mode2` (Chủ chốt 2026-09-15) — mỗi dòng còn mang 1
+//! comment VET TAY sau `#`: `SYMBOL | vetted YYYY-MM-DD | tax b/s | owner
+//! renounced|active | note`. Field `vetted YYYY-MM-DD` là điều kiện DUY NHẤT
+//! `PairBook` đọc (các field còn lại chỉ để Chủ tự đối chiếu bằng mắt, không
+//! parse). Thiếu `vetted`/ngày không hợp lệ -> `vetted_at = None` -> khi
+//! `pairs_require_vetted=true` (ship) entry đó KHÔNG vào map, không bao giờ
+//! thành candidate (`not_in_list`), xem `reload`.
 
 use alloy::primitives::Address;
 use alloy::providers::DynProvider;
+use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
@@ -59,11 +68,56 @@ pub struct PairEntry {
     pub pair_addr: Address,
     pub source_line: String,
     pub resolved_from: ResolvedFrom,
+    /// Cụm `strategy-lock-mode2` — ngày Chủ vet tay (`vetted YYYY-MM-DD`
+    /// trong comment), `None` = CHƯA VET. Xem doc-comment đầu file.
+    pub vetted_at: Option<NaiveDate>,
+}
+
+/// Cụm `strategy-lock-mode2` — tách field `vetted YYYY-MM-DD` khỏi comment
+/// cuối dòng `pairs.txt` (sau dấu `#`), định dạng `SYMBOL | vetted
+/// YYYY-MM-DD | tax b/s | owner ... | note` (các field khác `|` không được
+/// parse, chỉ để Chủ đối chiếu bằng mắt). Không có field bắt đầu bằng
+/// "vetted", hoặc có nhưng KHÔNG kèm ngày hợp lệ (`vetted` để trống, hoặc gõ
+/// sai định dạng ngày) -> `None`, đúng nghĩa "CHƯA VET" (an toàn, không đoán).
+fn parse_vetted_from_comment(comment: &str) -> Option<NaiveDate> {
+    for field in comment.split('|') {
+        let field = field.trim();
+        if let Some(rest) = field.strip_prefix("vetted") {
+            let date_str = rest.trim();
+            if date_str.is_empty() {
+                return None;
+            }
+            return NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok();
+        }
+    }
+    None
+}
+
+/// Cụm `strategy-lock-mode2` — kết quả đo lại bằng `sim_evm::measure_tax_evm`
+/// (task nền `pairs_vet_task`, `src/main.rs`), KHÁC `vetted_at` (ngày Chủ tự
+/// vet tay ghi trong `pairs.txt`). Đây là lớp XÁC NHẬN THỨ 2, độc lập —
+/// `vetted_at` cho phép entry vào map, `VetResult` (qua `set_vet_result`) có
+/// thể loại nó khỏi candidate LẠI nếu revm đo ra tax/honeypot thật, KHÔNG
+/// đụng `pairs.txt` của Chủ.
+#[derive(Debug, Clone, Copy)]
+pub struct VetResult {
+    pub buy_bps: u32,
+    pub sell_bps: u32,
+    pub honeypot: bool,
+    pub block: u64,
 }
 
 #[derive(Debug, Default)]
 pub struct PairBook {
     pairs: HashMap<Address, PairEntry>,
+    /// Cụm `strategy-lock-mode2` — kết quả vet nền gần nhất/thời điểm đo,
+    /// khoá theo `pair_addr` (cùng khoá với `pairs`).
+    vet_results: HashMap<Address, (VetResult, Instant)>,
+    /// Cụm `strategy-lock-mode2` — tập `pair_addr` bị `pairs_vet_task` loại
+    /// khỏi candidate (tax > ngưỡng hoặc honeypot đo bằng EVM thật). Entry
+    /// vẫn nằm trong `pairs` (vẫn hiện trên `/api/pairs`) nhưng `contains()`
+    /// trả `false` — không thành candidate cho tới lần vet PASS kế tiếp.
+    vet_failed: std::collections::HashSet<Address>,
     pub error_lines: u64,
     pub last_reload: Option<Instant>,
 }
@@ -138,9 +192,52 @@ impl PairBook {
     }
 
     /// Tra O(1) trên hot path (`pipeline::decide_paper_v2`) — tx chạm đúng
-    /// pool nào trong danh sách này là candidate "pair mode".
+    /// pool nào trong danh sách này là candidate "pair mode". Cụm
+    /// `strategy-lock-mode2` — entry bị `pairs_vet_task` đánh dấu
+    /// `vet_failed` (tax/honeypot đo lại bằng EVM thật) KHÔNG còn là
+    /// candidate cho tới lần vet PASS kế tiếp, dù vẫn còn trong `pairs.txt`.
     pub fn contains(&self, pair: &Address) -> bool {
-        self.pairs.contains_key(pair)
+        self.pairs.contains_key(pair) && !self.vet_failed.contains(pair)
+    }
+
+    /// Cụm `strategy-lock-mode2` — kết quả vet nền gần nhất cho 1 pool
+    /// (`buy_bps`/`sell_bps`/`honeypot`/`block`) + số giây từ lúc đo, dùng cho
+    /// `GET /api/pairs`. `None` = chưa từng vet nền lần nào.
+    pub fn vet_result(&self, pair: &Address) -> Option<(VetResult, u64)> {
+        self.vet_results.get(pair).map(|(r, t)| (*r, t.elapsed().as_secs()))
+    }
+
+    /// Cụm `strategy-lock-mode2` — ghi kết quả `pairs_vet_task` vừa đo được
+    /// cho 1 pool. `ok=false` (tax > ngưỡng HOẶC honeypot) -> thêm vào
+    /// `vet_failed` (loại khỏi candidate ngay từ lần đọc `contains()` kế
+    /// tiếp); `ok=true` -> xoá khỏi `vet_failed` nếu trước đó có (cho phép
+    /// quay lại candidate ở lần vet sau nếu đã hết vấn đề).
+    pub fn set_vet_result(&mut self, pair_addr: Address, result: VetResult, ok: bool) {
+        self.vet_results.insert(pair_addr, (result, Instant::now()));
+        if ok {
+            self.vet_failed.remove(&pair_addr);
+        } else {
+            self.vet_failed.insert(pair_addr);
+        }
+    }
+
+    /// Cụm `strategy-lock-mode2` — danh sách `(pair_addr, token_addr)` cần
+    /// `pairs_vet_task` đo lại: MỌI entry đã có `vetted_at` (Chủ đã vet tay)
+    /// VÀ biết được địa chỉ TOKEN riêng (`resolved_from=Token` — dòng gốc là
+    /// `tokenAddr` hoặc `tokenAddr,WBNB`, `source_line` bắt đầu bằng đúng địa
+    /// chỉ token đó). Entry `resolved_from=Direct` (dòng gốc TỰ NÓ là địa chỉ
+    /// PAIR, không phải token) bị bỏ qua ở đây — không đủ thông tin để gọi
+    /// `measure_tax_evm(token, ...)` mà không thêm 1 `eth_call`
+    /// `token0()/token1()` (ngoài phạm vi cụm này, ghi rõ thay vì đoán).
+    pub fn tokens_to_vet(&self) -> Vec<(Address, Address)> {
+        self.pairs
+            .values()
+            .filter(|e| e.vetted_at.is_some() && e.resolved_from == ResolvedFrom::Token)
+            .filter_map(|e| {
+                let token_str = e.source_line.split(',').next().unwrap_or("").trim();
+                Address::from_str(token_str).ok().map(|t| (e.pair_addr, t))
+            })
+            .collect()
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &PairEntry> {
@@ -157,10 +254,26 @@ impl PairBook {
     /// lifetime), timeout `RESOLVE_TIMEOUT`/dòng. Lỗi resolve (timeout/RPC
     /// lỗi) -> log `pair.resolve_fail`, BỎ QUA dòng đó, KHÔNG crash. `now`
     /// truyền từ ngoài để test được (cùng quy ước `VictimBook`/`Config`).
-    pub async fn reload<R: PairResolver>(&mut self, content: &str, resolver: &R, logger: &BotLogger, now: Instant) {
+    ///
+    /// Cụm `strategy-lock-mode2` — `require_vetted` (từ
+    /// `config.toml::pairs_require_vetted`): `true` -> dòng KHÔNG có `vetted
+    /// YYYY-MM-DD` hợp lệ trong comment bị loại NGAY (không tốn 1 lần resolve
+    /// RPC nào), đếm gộp, log `pair.unvetted` ĐÚNG 1 LẦN/reload (không phải
+    /// 1 lần/dòng — tránh spam log khi `pairs.txt` có hàng trăm dòng chưa
+    /// vet). `false` -> giữ hành vi cũ (mọi dòng resolve được đều thành
+    /// candidate, bất kể `vetted_at`).
+    pub async fn reload<R: PairResolver>(
+        &mut self,
+        content: &str,
+        resolver: &R,
+        logger: &BotLogger,
+        now: Instant,
+        require_vetted: bool,
+    ) {
         let started = Instant::now();
-        let mut parsed_lines: Vec<(String, ParsedLine)> = Vec::new();
+        let mut parsed_lines: Vec<(String, ParsedLine, Option<NaiveDate>)> = Vec::new();
         let mut errors = 0u64;
+        let mut unvetted = 0u64;
         for raw_line in content.lines() {
             // Cum `foundation-fix-then-real-sim` (A5) - FIX BUG: file that
             // (`pairs.txt`, phien `pairs-discovery`) dung dinh dang
@@ -174,18 +287,31 @@ impl PairBook {
             if line.is_empty() {
                 continue;
             }
+            // Cum `strategy-lock-mode2` - phan COMMENT (sau '#') mang field
+            // `vetted YYYY-MM-DD` rieng, tach doc lap voi phan dia chi.
+            let comment = raw_line.splitn(2, '#').nth(1).unwrap_or("");
+            let vetted_at = parse_vetted_from_comment(comment);
             match parse_pairs_line(line) {
-                Ok(p) => parsed_lines.push((line.to_string(), p)),
+                Ok(p) => {
+                    if require_vetted && vetted_at.is_none() {
+                        unvetted += 1;
+                        continue;
+                    }
+                    parsed_lines.push((line.to_string(), p, vetted_at));
+                }
                 Err(e) => {
                     errors += 1;
                     logger.log("pair.parse_error", serde_json::json!({ "error": e, "line": line }));
                 }
             }
         }
+        if unvetted > 0 {
+            logger.log("pair.unvetted", serde_json::json!({ "count": unvetted, "require_vetted": require_vetted }));
+        }
 
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RESOLVE));
         let mut handles = Vec::new();
-        for (line, parsed) in parsed_lines {
+        for (line, parsed, vetted_at) in parsed_lines {
             let sem = semaphore.clone();
             let resolver = resolver.clone();
             handles.push(tokio::spawn(async move {
@@ -205,7 +331,12 @@ impl PairBook {
                         }
                     }
                 };
-                resolved.map(|(pair_addr, resolved_from)| PairEntry { pair_addr, source_line: line, resolved_from })
+                resolved.map(|(pair_addr, resolved_from)| PairEntry {
+                    pair_addr,
+                    source_line: line,
+                    resolved_from,
+                    vetted_at,
+                })
             }));
         }
 
@@ -231,7 +362,7 @@ impl PairBook {
         self.last_reload = Some(now);
         logger.log(
             "pair.reload",
-            serde_json::json!({ "count": count, "error_lines": errors, "elapsed_ms": started.elapsed().as_millis() as u64 }),
+            serde_json::json!({ "count": count, "error_lines": errors, "unvetted": unvetted, "elapsed_ms": started.elapsed().as_millis() as u64 }),
         );
     }
 
@@ -245,6 +376,7 @@ impl PairBook {
         logger: &BotLogger,
         reload_interval: Duration,
         now: Instant,
+        require_vetted: bool,
     ) -> bool {
         let due = match self.last_reload {
             None => true,
@@ -252,7 +384,7 @@ impl PairBook {
         };
         if due {
             match tokio::fs::read_to_string(path).await {
-                Ok(content) => self.reload(&content, resolver, logger, now).await,
+                Ok(content) => self.reload(&content, resolver, logger, now, require_vetted).await,
                 Err(e) => {
                     logger.log("pair.reload_error", serde_json::json!({ "error": e.to_string() }));
                     self.last_reload = Some(now);
@@ -266,12 +398,15 @@ impl PairBook {
 /// Helper CHỈ DÙNG TRONG TEST (cả trong crate này lẫn `pipeline.rs`) — chèn
 /// thẳng 1 entry đã resolve sẵn, tránh phải dựng `PairResolver` giả lập ở
 /// những nơi chỉ cần `PairBook` đã có sẵn dữ liệu để test `decide_paper_v2`.
+/// `vetted_at` luôn `None` ở đây (các test dùng helper này KHÔNG kiểm tra
+/// gate vet — gate đó nằm trong `reload`, bị bỏ qua hoàn toàn bởi helper
+/// insert thẳng này, đúng ý "helper chèn sẵn dữ liệu").
 #[cfg(test)]
 impl PairBook {
     pub fn insert_test_entry(&mut self, pair_addr: Address, source_line: &str, resolved_from: ResolvedFrom) {
         self.pairs.insert(
             pair_addr,
-            PairEntry { pair_addr, source_line: source_line.to_string(), resolved_from },
+            PairEntry { pair_addr, source_line: source_line.to_string(), resolved_from, vetted_at: None },
         );
         self.last_reload = Some(Instant::now());
     }
@@ -324,6 +459,7 @@ mod tests {
             &resolver,
             &logger,
             Instant::now(),
+            false,
         )
         .await;
         assert_eq!(book.error_lines, 0);
@@ -352,7 +488,7 @@ mod tests {
 
         let content = format!("{token_bare:#x}\n{token_csv:#x},{WBNB_ADDRESS}\n");
         let mut book = PairBook::new();
-        book.reload(&content, &resolver, &logger, Instant::now()).await;
+        book.reload(&content, &resolver, &logger, Instant::now(), false).await;
 
         assert_eq!(book.error_lines, 0);
         assert_eq!(book.len(), 2);
@@ -371,7 +507,7 @@ mod tests {
         let content = format!("{token:#x},{not_wbnb:#x}\n");
         let resolver = MockResolver::default();
         let mut book = PairBook::new();
-        book.reload(&content, &resolver, &logger, Instant::now()).await;
+        book.reload(&content, &resolver, &logger, Instant::now(), false).await;
         assert_eq!(book.len(), 0);
         assert_eq!(book.error_lines, 1);
     }
@@ -382,7 +518,7 @@ mod tests {
         let token = addr("0x2222222222222222222222222222222222222222");
         let resolver = MockResolver { map: HashMap::new(), err_for: vec![token] };
         let mut book = PairBook::new();
-        book.reload(&format!("{token:#x}\n"), &resolver, &logger, Instant::now()).await;
+        book.reload(&format!("{token:#x}\n"), &resolver, &logger, Instant::now(), false).await;
         assert_eq!(book.len(), 0);
         assert_eq!(book.error_lines, 1);
     }
@@ -404,7 +540,7 @@ mod tests {
             "# pairs.txt header comment\n{token:#x} # CAKE reserve_wbnb~=14002 BNB\n\n# blank/comment lines xen ke\n"
         );
         let mut book = PairBook::new();
-        book.reload(&content, &resolver, &logger, Instant::now()).await;
+        book.reload(&content, &resolver, &logger, Instant::now(), false).await;
 
         assert_eq!(book.error_lines, 0, "dinh dang that (comment cuoi dong) khong duoc tinh la loi");
         assert_eq!(book.len(), 1);
@@ -417,7 +553,7 @@ mod tests {
         let content = "# comment\nnot_an_address\n\n";
         let resolver = MockResolver::default();
         let mut book = PairBook::new();
-        book.reload(content, &resolver, &logger, Instant::now()).await;
+        book.reload(content, &resolver, &logger, Instant::now(), false).await;
         assert_eq!(book.len(), 0);
         assert_eq!(book.error_lines, 1); // chi "not_an_address" tinh loi, comment/blank bi bo qua truoc
     }
@@ -434,20 +570,138 @@ mod tests {
         let resolver = MockResolver::default();
         let mut book = PairBook::new();
         let t0 = Instant::now();
-        assert!(book.reload_if_due(&path, &resolver, &logger, Duration::from_secs(15), t0).await);
+        assert!(book.reload_if_due(&path, &resolver, &logger, Duration::from_secs(15), t0, false).await);
         assert_eq!(book.len(), 1);
 
         // Ghi file khac ngay (chua du interval) -> khong reload lai.
         let pair_other = addr(&format!("0x{}", "4".repeat(40)));
         std::fs::write(&path, format!("{pair_other:#x}\n")).unwrap();
         let t1 = t0 + Duration::from_secs(5);
-        assert!(!book.reload_if_due(&path, &resolver, &logger, Duration::from_secs(15), t1).await);
+        assert!(!book.reload_if_due(&path, &resolver, &logger, Duration::from_secs(15), t1, false).await);
         assert!(book.contains(&pair_itself));
 
         // Du interval -> doc lai file moi.
         let t2 = t0 + Duration::from_secs(16);
-        assert!(book.reload_if_due(&path, &resolver, &logger, Duration::from_secs(15), t2).await);
+        assert!(book.reload_if_due(&path, &resolver, &logger, Duration::from_secs(15), t2, false).await);
         assert!(book.contains(&pair_other));
         assert!(!book.contains(&pair_itself));
+    }
+
+    // ===== Cụm `strategy-lock-mode2` — parse `vetted YYYY-MM-DD` + gate =====
+
+    #[test]
+    fn parse_vetted_from_comment_valid_date() {
+        let d = parse_vetted_from_comment(" CAKE | vetted 2026-09-15 | tax 0/0 | owner renounced | note ");
+        assert_eq!(d, Some(NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()));
+    }
+
+    #[test]
+    fn parse_vetted_from_comment_empty_vetted_field_is_none() {
+        // "vetted" co mat nhung KHONG kem ngay (template chua dien) -> None.
+        assert_eq!(parse_vetted_from_comment(" CAKE | vetted | tax  | owner  | "), None);
+    }
+
+    #[test]
+    fn parse_vetted_from_comment_old_format_no_pipe_is_none() {
+        // Dinh dang cu (BAOCAO25/27): "# SYMBOL reserve_wbnb~=X BNB", khong
+        // co "|", khong co "vetted" -> None (CHUA VET), khong panic/khong loi.
+        assert_eq!(parse_vetted_from_comment(" CAKE reserve_wbnb~=14002 BNB"), None);
+    }
+
+    #[test]
+    fn parse_vetted_from_comment_bad_date_format_is_none() {
+        assert_eq!(parse_vetted_from_comment(" CAKE | vetted 15/09/2026 | "), None);
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh `strategy-lock-mode2`, mục 3): 3 dòng (vetted /
+    /// không vetted / comment cũ) -> ĐÚNG 1 candidate khi `require_vetted=true`.
+    #[tokio::test]
+    async fn reload_require_vetted_true_keeps_only_dated_entry() {
+        let (_dir, logger) = test_logger();
+        let vetted_token = addr("0x1111111111111111111111111111111111111111");
+        let unvetted_token = addr("0x2222222222222222222222222222222222222222");
+        let old_format_token = addr("0x3333333333333333333333333333333333333333");
+        let pair_vetted = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let pair_unvetted = addr("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let pair_old = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let mut map = HashMap::new();
+        map.insert(vetted_token, pair_vetted);
+        map.insert(unvetted_token, pair_unvetted);
+        map.insert(old_format_token, pair_old);
+        let resolver = MockResolver { map, err_for: vec![] };
+
+        let content = format!(
+            "{vetted_token:#x} # VET | vetted 2026-09-15 | tax 0/0 | owner renounced | ok\n\
+             {unvetted_token:#x} # NOVET | vetted | tax  | owner  | chua dien\n\
+             {old_format_token:#x} # OLD reserve_wbnb~=100 BNB\n"
+        );
+        let mut book = PairBook::new();
+        book.reload(&content, &resolver, &logger, Instant::now(), true).await;
+
+        assert_eq!(book.len(), 1, "chi dong co vetted YYYY-MM-DD hop le duoc vao map");
+        assert!(book.contains(&pair_vetted));
+        assert!(!book.contains(&pair_unvetted));
+        assert!(!book.contains(&pair_old));
+        assert_eq!(book.error_lines, 0, "2 dong con lai la UNVETTED, khong phai loi parse dia chi");
+        let entry = book.entries().next().unwrap();
+        assert_eq!(entry.vetted_at, Some(NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()));
+    }
+
+    /// Cùng 3 dòng trên nhưng `require_vetted=false` -> giữ hành vi cũ, cả 3
+    /// đều thành candidate (không phân biệt đã vet hay chưa).
+    #[tokio::test]
+    async fn reload_require_vetted_false_keeps_all_resolved_entries() {
+        let (_dir, logger) = test_logger();
+        let vetted_token = addr("0x4444444444444444444444444444444444444444");
+        let unvetted_token = addr("0x5555555555555555555555555555555555555555");
+        let pair_vetted = addr("0xdddddddddddddddddddddddddddddddddddddddd");
+        let pair_unvetted = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let mut map = HashMap::new();
+        map.insert(vetted_token, pair_vetted);
+        map.insert(unvetted_token, pair_unvetted);
+        let resolver = MockResolver { map, err_for: vec![] };
+
+        let content =
+            format!("{vetted_token:#x} # VET | vetted 2026-09-15 |\n{unvetted_token:#x} # NOVET | vetted |\n");
+        let mut book = PairBook::new();
+        book.reload(&content, &resolver, &logger, Instant::now(), false).await;
+
+        assert_eq!(book.len(), 2);
+        assert!(book.contains(&pair_vetted));
+        assert!(book.contains(&pair_unvetted));
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh `strategy-lock-mode2`, mục 4) — `set_vet_result`
+    /// `ok=false` (tax/honeypot đo bằng EVM thật) loại pool khỏi `contains()`
+    /// NGAY, dù entry vẫn còn trong `pairs.txt`/`entries()`; `ok=true` sau đó
+    /// trả candidate về lại.
+    #[test]
+    fn set_vet_result_false_removes_from_contains_true_restores() {
+        let mut book = PairBook::new();
+        let pair = addr("0x6666666666666666666666666666666666666666");
+        book.insert_test_entry(pair, "0xtoken", ResolvedFrom::Token);
+        assert!(book.contains(&pair));
+
+        book.set_vet_result(pair, VetResult { buy_bps: 0, sell_bps: 2000, honeypot: false, block: 100 }, false);
+        assert!(!book.contains(&pair), "tax cao phai loai khoi candidate");
+        assert!(book.entries().any(|e| e.pair_addr == pair), "entry van con trong pairs.txt/list");
+
+        book.set_vet_result(pair, VetResult { buy_bps: 0, sell_bps: 0, honeypot: false, block: 101 }, true);
+        assert!(book.contains(&pair), "vet PASS lan sau phai tra lai candidate");
+    }
+
+    #[test]
+    fn tokens_to_vet_only_includes_vetted_token_entries_not_direct() {
+        let (_dir, _logger) = test_logger();
+        let mut book = PairBook::new();
+        let token = addr("0x7777777777777777777777777777777777777777");
+        let pair_token = addr("0x8888888888888888888888888888888888888888");
+        let pair_direct = addr("0x9999999999999999999999999999999999999999");
+        book.insert_test_entry(pair_token, &format!("{token:#x}"), ResolvedFrom::Token);
+        book.insert_test_entry(pair_direct, &format!("{pair_direct:#x}"), ResolvedFrom::Direct);
+        // insert_test_entry luon dat vetted_at=None -> khong entry nao vao
+        // tokens_to_vet(), dung du de test filter resolved_from hoat dong khi
+        // ket hop voi mot entry co vetted_at (kiem qua reload() o test tren).
+        assert!(book.tokens_to_vet().is_empty());
     }
 }

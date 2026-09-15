@@ -3387,3 +3387,104 @@ mọi biến gán trong khối `source`) trước dòng `. ./.env`, `set +a` nga
 Verify: lần chạy SAU khi sửa, `seen=~20000` tx thật/phút, `venue_v2=~100+`,
 và quan trọng nhất — `nonce_stale` quan sát dương thật (xem mục 7 trên),
 chứng minh cả đường RPC lẫn gate nonce mới đều hoạt động trên dữ liệu sống.
+
+## `strategy-lock-mode2` — Chủ chốt chiến lược (2026-09-15, BAOCAO36)
+
+Chủ ra lệnh CHỐT chiến lược sau khi đọc kết quả các phiên trước (đặc biệt
+`foundation-fix-then-real-sim`/`evm-validate-wire-tax`/`evm-validate-fixed-then-wire`).
+4 quyết định chép nguyên văn trong `CLAUDE.md` mục "Chiến lược đã chốt
+(2026-09-15)". Mục này ghi HỆ QUẢ KỸ THUẬT — vì sao các quyết định đó ĐÚNG dựa
+trên số liệu đã có, không phải chỉ chép lại lệnh.
+
+### Vì sao V2 math + gas thật ĐỦ cho token đã vet (không cần EVM mỗi tx)
+
+`sim_evm.rs` (cụm `foundation-fix-then-real-sim` B2, BAOCAO31) đã CHỨNG MINH
+bằng dữ liệu sống: 1 lần chạy `real_rpc_sim_evm_matches_sim_v2_when_zero_tax`
+trên token zero-tax thật cho kết quả **EVM khớp CHÍNH XÁC 0% lệch** với công
+thức đóng `sim_v2` (xem mục `foundation-fix-then-real-sim` phần B1/B2 ở trên,
+"1 lần khớp CHÍNH XÁC 0% với `sim_v2` cho token zero-tax thật"). Lý do toán
+học: `sim_v2::get_amount_out` LÀ chính xác công thức constant-product 0.25%
+fee mà router V2 dùng — sai lệch giữa EVM thật và công thức đóng CHỈ xuất
+hiện khi token có logic NGOÀI constant-product chuẩn (fee-on-transfer,
+honeypot, rebase, cơ chế nội bộ phi chuẩn — đã quan sát thật ở B4'.4,
+"nghi ngờ token có cơ chế nội bộ phi chuẩn (reflection/anti-bot) làm lệch
+state"). Vì vậy: NẾU token đã được xác nhận KHÔNG có các cơ chế đó (vet tay +
+`measure_tax_evm` nền xác nhận `buy_bps=sell_bps=0`, không honeypot) TRƯỚC
+khi vào `pairs.txt`, thì công thức đóng V2 + gas thật (`eth_gasPrice` × gas
+đo, cụm `real-economics-mode2` sửa) là ĐỦ CHÍNH XÁC cho quyết định
+`Simulated`/lợi nhuận trên đường nóng — không cần trả giá mở 1 fork EVM
+(hàng chục `eth_call`/candidate, đã đo tốn thời gian đáng kể ở B4'.4) cho MỖI
+tx khi rủi ro sai lệch đã được loại trừ TRƯỚC bằng vet.
+
+Đây là lý do kỹ thuật cho quyết định 3+4 trong "Chiến lược đã chốt": tách
+"đo tax 1 lần lúc vet + định kỳ nền" ra khỏi "quyết định lãi/lỗ mỗi tx" —
+2 việc có tần suất và mục đích khác nhau, gộp chung (như kiến trúc cũ
+`evm-validate-fixed-then-wire`) là trả giá EVM cho MỌI tx dù xác suất token
+có vấn đề đã gần 0 sau vet.
+
+### Kiến trúc `pairs_vet_task` (main.rs) — 3 việc revm còn giữ
+
+`src/main.rs::pairs_vet_task` (task nền, `tokio::spawn` lúc boot, KHÔNG nằm
+trong `handle_paper_tx`) — chạy ngay khi có provider + `last_block`, sau đó
+lặp mỗi `pairs_vet_interval_sec`:
+
+1. `PairBook::tokens_to_vet()` (pairbook.rs) — liệt kê `(pair_addr, token)`
+   của MỌI entry đã có `vetted_at` (parse từ `pairs.txt`, xem
+   `parse_vetted_from_comment`) VÀ `resolved_from=Token` (biết được địa chỉ
+   token riêng — entry `Direct` [dòng gốc TỰ NÓ là địa chỉ pair] bị bỏ qua ở
+   đây, ghi CÒN NỢ trong doc-comment `tokens_to_vet`, không giả token).
+2. Gọi `sim_evm::measure_tax_evm` TUẦN TỰ (sleep 200ms/token, không dồn RPC),
+   quote WBNB, `probe_in=0.05 BNB` (cùng hằng số `probe_in_for_quote` dùng ở
+   validator/tax-gate cũ).
+3. Ghi `PairBook::set_vet_result(pair_addr, VetResult{...}, ok)` —
+   `ok=false` (honeypot HOẶC `combine_roundtrip_bps > max_roundtrip_tax_bps`)
+   thêm `pair_addr` vào `PairBook::vet_failed` (HashSet nội bộ mới) —
+   `PairBook::contains()` (điểm tra CÓ SẴN trong `pipeline::decide_and_build_paper_v2`,
+   KHÔNG sửa pipeline.rs) trả `false` cho pool đó NGAY LẬP TỨC, loại khỏi
+   candidate cho tới lần vet PASS kế tiếp — KHÔNG đụng `pairs.txt` của Chủ.
+   Log `pair.vet_fail` + đè `state/pairs_vetted.json` (mảng đầy đủ, đọc
+   nhanh không cần `logs/bot.jsonl`).
+
+Thiết kế "loại candidate qua `PairBook::contains()`" (thay vì sửa
+`pipeline.rs`) là lựa chọn CÓ CHỦ ĐÍCH: cụm này ĐƯỢC ĐỤNG `pairbook.rs`
+nhưng KHÔNG được đụng `pipeline.rs` (đúng lệnh "không đổi thuật toán") —
+`PairBook::contains` đã là API DUY NHẤT `pipeline.rs` gọi để biết 1 pool có
+là candidate hay không, nên thêm gate vet NGAY TRONG hàm đó (thay vì thêm
+tham số mới cho `decide_and_build_paper_v2`) giữ nguyên 100% chữ ký/logic
+`pipeline.rs` trong khi vẫn chặn được pool có vấn đề.
+
+### Gate `pairs_require_vetted` nằm ở `PairBook::reload`, không phải `pipeline.rs`
+
+Field `vetted_at: Option<NaiveDate>` (parse từ comment `pairs.txt`, định
+dạng `SYMBOL | vetted YYYY-MM-DD | tax b/s | owner ... | note` — chỉ field
+`vetted YYYY-MM-DD` được đọc, còn lại là chú thích cho Chủ tự đối chiếu bằng
+mắt, KHÔNG parse) quyết định entry có được ĐƯA VÀO map `PairBook.pairs` hay
+không khi `pairs_require_vetted=true` (ship) — lọc NGAY TỪ BƯỚC RELOAD, trước
+cả khi tốn 1 `eth_call resolve_v2_pair` cho token chưa vet (tiết kiệm RPC so
+với lọc ở bước sau). `pairs.txt` hiện tại (100 dòng, phiên `pairs-discovery`
+cũ) đã đổi toàn bộ comment sang định dạng mới với `vetted` ĐỂ TRỐNG — nghĩa
+là NGAY SAU cụm này, bot KHÔNG sim bất kỳ pool nào (`candidate=0`) cho tới
+khi Chủ tự vet tay + điền ngày — ĐÚNG Ý LỆNH, không phải bug.
+
+### `scripts/vet_goplus.sh` — 2 phát hiện hạ tầng thật (KHÔNG đoán trước)
+
+Viết mới (Chủ chưa kịp copy file có sẵn vào repo phiên này, xác nhận qua
+`AskUserQuestion` giữa phiên — Code tự viết, không phải bản Chủ đưa). Gọi
+GoPlus Security `token_security/56` API công khai. Chạy THẬT trên `pairs.txt`
+100 token (WSL, xem BAOCAO36 ô 5) phát hiện 2 giới hạn hạ tầng THẬT của
+GoPlus, không có trong tài liệu API:
+
+1. **Không hỗ trợ batch thật** — truyền nhiều `contract_addresses` phẩy-cách
+   trong 1 URL, response `.result` LUÔN chỉ có ĐÚNG 1 khoá (địa chỉ ĐẦU
+   TIÊN); các địa chỉ còn lại bị bỏ qua ÂM THẦM (không lỗi, không cảnh báo).
+   Verify bằng cách gọi 2-3 địa chỉ đã biết dữ liệu, đối chiếu `result.keys()`.
+   → script gọi TUẦN TỰ, 1 request/token.
+2. **Rate-limit rất chặt theo burst, HTTP status KHÔNG phản ánh** — response
+   vẫn trả `HTTP 200` nhưng body `{"code":4029,...}` (rỗng, không phải lỗi
+   mạng) khi vượt quá ~7-8 request liên tiếp trong vài giây. Cửa sổ hồi phục
+   quan sát được dao động (có lúc ~10s, có lúc lâu hơn nếu IP đã bị dồn tải
+   từ trước — xem BAOCAO36 ô 5 cho log chạy thật). → script PHẢI kiểm field
+   `.code` trong JSON body (không chỉ HTTP status), retry-backoff (5s/10s/20s,
+   tối đa 3 lần), và khi vẫn thất bại → ghi `ERROR`/`REVIEW`, TUYỆT ĐỐI KHÔNG
+   coi thiếu dữ liệu là "không có cờ đỏ" rồi tính `PASS` (sẽ ẩn token rủi ro
+   thật dưới lớp dữ liệu rỗng do rate-limit, không phải do token sạch).

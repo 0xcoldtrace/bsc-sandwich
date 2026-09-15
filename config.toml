@@ -74,13 +74,16 @@ pair_scan_universal = false
 
 # Cụm explicit-mode-flags: cờ TƯỜNG MINH bật/tắt từng nhánh candidate trong
 # decide_paper_v2 (wallet=victims.txt, pair=pairs.txt, universal=mọi pool WBNB
-# ở trên). Default CẢ HAI = true — đây là hành vi GỐC đang chạy thật, KHÔNG
-# được đổi thành false (sẽ vô tình TẮT bot đang vận hành). Muốn chỉ dùng ĐÚNG
-# 1 mode: đặt 2 field còn lại (kể cả pair_scan_universal) = false trong file
-# này — hot-reload theo config_reload_sec, không cần build/restart. Thứ tự ưu
-# tiên khi nhiều hơn 1 mode bật cùng lúc GIỮ NGUYÊN: wallet > pair > universal
-# > not_in_list. Code KHÔNG ép buộc chỉ-1-mode — Chủ tự quản lý tổ hợp.
-wallet_scan_enabled = true
+# ở trên). Thứ tự ưu tiên khi nhiều hơn 1 mode bật cùng lúc GIỮ NGUYÊN:
+# wallet > pair > universal > not_in_list. Code KHÔNG ép buộc chỉ-1-mode —
+# Chủ tự quản lý tổ hợp, hot-reload theo config_reload_sec.
+#
+# Cụm `strategy-lock-mode2` (Chủ chốt 2026-09-15): CHỈ mode 2 (pair-mode).
+# `wallet_scan_enabled=false` (mode 1 TẮT, KHÔNG xoá code — victims.txt vẫn
+# đọc được, chỉ không dùng làm candidate). `pair_scan_enabled=true` (mode 2,
+# NGUỒN CANDIDATE DUY NHẤT). `pair_scan_universal` ở trên GIỮ `false` (mode 3
+# TẮT). Đổi lại `true` nếu Chủ ra lệnh quay về đa-mode.
+wallet_scan_enabled = false
 pair_scan_enabled = true
 
 # Cụm usdt-quote-asset (BAOCAO29): quote asset thứ 2 ngang hàng WBNB (theo
@@ -97,10 +100,30 @@ min_reserve_usdt = 15000.0
 
 # Cụm evm-validate-fixed-then-wire (B3.1): động cơ quyết định Simulated/
 # victim_would_revert/lợi nhuận. "evm" = fork block hiện tại qua revm + chạy
-# calldata router THẬT (thấy fee-on-transfer/honeypot thật). "v2" = giữ nguyên
-# công thức đóng sim_v2 như các phiên trước (đường lùi nếu RPC quá tải).
-# Giá trị khác 2 chuỗi này = FAIL LOAD (không âm thầm rơi về mặc định).
-sim_engine = "evm"
+# calldata router THẬT (thấy fee-on-transfer/honeypot thật). "v2" = công thức
+# đóng sim_v2 (không mở fork mỗi tx). Giá trị khác 2 chuỗi này = FAIL LOAD
+# (không âm thầm rơi về mặc định).
+#
+# Cụm `strategy-lock-mode2` (Chủ chốt 2026-09-15): SHIP = "v2" — đường nóng
+# (pairs.txt đã vet tay) KHÔNG cần mở fork EVM mỗi tx nữa, vì token đã xác
+# nhận không tax/honeypot TRƯỚC khi vào pairs.txt (xem CLAUDE.md mục
+# "Chiến lược đã chốt"). "evm" vẫn dùng được (đổi tay field này) cho vet
+# nền/đo lại trước ký live/validator — 3 việc đó KHÔNG đi qua field này, xem
+# `pairs_vet_task`/`spawn_victim_validator`.
+sim_engine = "v2"
+
+# Cụm `strategy-lock-mode2`: task nền `pairs_vet_task` chạy `measure_tax_evm`
+# (revm) cho MỌI entry `pairs.txt` đã có `vetted` mỗi khoảng này (giây), độc
+# lập với đường nóng. KHÔNG liên quan `config_reload_sec` (đó là hot-reload
+# ngưỡng, đây là cadence vet nền).
+pairs_vet_interval_sec = 600
+
+# Cụm `strategy-lock-mode2`: true = entry `pairs.txt` KHÔNG có `vetted
+# YYYY-MM-DD` hợp lệ bị loại khỏi candidate (log `pair.unvetted`, KHÔNG sim).
+# false = giữ hành vi cũ (mọi entry resolve được đều thành candidate, bất kể
+# đã vet hay chưa) — CHỈ dùng khi Chủ chủ động tắt gate vet (không phải mặc
+# định an toàn).
+pairs_require_vetted = true
 
 # Cụm evm-validate-fixed-then-wire (C2): TTL (giây) cho TaxCache đo tự động
 # bằng revm. tax_cache_blocks ở trên VẪN đọc được (không phá config cũ) nhưng

@@ -30,7 +30,8 @@ Hết phiên không có `baocao/BAOCAO{NN}.md` = FAIL.
 
 - BSC `56`. Dry-run mặc định.
 - Stack **Rust** + tokio. RPC: **alloy hoặc ethers-rs, đúng 1** — ghi `docs/STATE.md` khi khởi tạo. Cấm npm app / viem / ethers.js / Python runtime.
-- `victims.txt`: `0xAbc...,0.01` (`address,min_swap_bnb`).
+- `victims.txt`: `0xAbc...,0.01` (`address,min_swap_bnb`) — **mode 1, TẮT mặc định** (`wallet_scan_enabled=false`, xem "Chiến lược đã chốt").
+- `pairs.txt` là nguồn candidate DUY NHẤT đang bật (**mode 2, pair-mode**) — token do Chủ vet tay, xem "Chiến lược đã chốt" + định dạng dòng bên dưới.
 - Pair: token/WBNB hoặc token/USDT — quote asset xác định THEO GIAO DỊCH
   NẠN NHÂN: victim mua bằng WBNB/BNB → front-run bằng WBNB/BNB; victim mua
   bằng USDT → front-run bằng USDT (không trộn quote trong 1 path). USDT
@@ -52,6 +53,20 @@ Hết phiên không có `baocao/BAOCAO{NN}.md` = FAIL.
 
 Min của **đúng ví** → wei (`0.01` = `10^16`). Dòng lỗi log + bỏ. Trùng address: dòng sau thắng. Hot-reload theo config. Code không bịa ví.
 
+### pairs.txt (cụm `strategy-lock-mode2` — nguồn candidate DUY NHẤT đang bật)
+
+Định dạng 1 dòng:
+
+```
+0xToken # SYMBOL | vetted YYYY-MM-DD | tax b/s | owner renounced|active | note
+```
+
+Dòng KHÔNG có `vetted YYYY-MM-DD` hợp lệ (thiếu hẳn, hoặc có chữ `vetted`
+nhưng không kèm ngày) → bot coi là **CHƯA VET**, không thành candidate
+(`pairs_require_vetted=true` mặc định). Chủ tự điền ngày sau khi vet tay
+(`scripts/vet_goplus.sh` lọc thô + tự soát bằng mắt). Địa chỉ/format phần
+trước `#` GIỮ NGUYÊN như trước (`0xAddress` hoặc `0xToken,0xWBNB`).
+
 ### Decode được phép
 
 - **Gate đầu tiên, trước decode:** `tx.to` phải là 1 trong 5 router Pancake đã pin (V2 Router, V3 SwapRouter, SmartRouter, UR v3, UR Infinity — `venues::PANCAKE_ROUTERS`). Khác → `not_pancake_router`, 0 RPC. `tx.to = None` chỉ được qua khi nguồn là `inject`. Venue suy từ `tx.to` phải khớp venue suy từ selector; lệch → `decode_fail{venue_mismatch}`.
@@ -71,11 +86,19 @@ V2 (0.25%):
 amountOut = (amountIn * 9975 * reserveOut) / (reserveIn * 10000 + amountIn * 9975)
 ```
 
-Cụm `foundation-fix-then-real-sim`: công thức đóng ở trên (và quoter V3/V4
-bên dưới) chỉ dùng để ƯỚC LƯỢNG KHOẢNG `front_in` (thu hẹp không gian search)
-— quyết định cuối cùng `Simulated`/lợi nhuận/tax dùng EVM THẬT (fork block
-hiện tại qua revm, xem cụm B `docs/STATE.md`), vì công thức đóng không thấy
-được fee-on-transfer/honeypot thật (đã chứng minh toán học ở `src/tax.rs`).
+Cụm `strategy-lock-mode2` (chủ chốt 2026-09-15, xem "Chiến lược đã chốt"):
+đường nóng (mọi tx đi qua `pairs.txt`) dùng THẲNG công thức đóng V2 ở trên +
+gas thật (F-03) để quyết định `Simulated`/lợi nhuận — KHÔNG mở fork EVM mỗi
+tx nữa, vì token trong `pairs.txt` đã được Chủ VET TAY (không tax, không
+honeypot) trước khi vào danh sách. `sim_engine` ship = `"v2"`. `revm` KHÔNG
+biến mất — vẫn giữ đúng 3 việc: (a) vet nền định kỳ cho `pairs.txt`
+(`pairs_vet_task`), (b) đo lại token ngay trước khi ký ở live (`7.x`), (c)
+validator `validate.victim` (đối chiếu dự đoán vs thật). Quyết định cũ
+"EVM THẬT mỗi tx trên đường nóng" (cụm `foundation-fix-then-real-sim`/
+`evm-validate-fixed-then-wire`) ĐÃ THAY THẾ bởi quyết định này — không phải
+song song. F-03 (gas hiện lấy từ trần cấu hình, cao hơn thực tế) VẪN CHƯA
+sửa (cụm `real-economics-mode2` sửa), số `unprofitable`/`profit` trên đường
+nóng V2 vẫn chưa dùng để kết luận kinh tế chính xác cho tới khi đó.
 
 V3 / V4 / Infinity / bản mới: `eth_call` quoter/router/pool-manager đã pin. Không đoán tick/hooks.
 
@@ -102,6 +125,34 @@ Nhiều pool WBNB: sim version `scan_*=true` đã pin, chọn **1 profit max**.
 
 Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error`
 (`nonce_stale`/`nonce_future` thêm ở cụm 1. `deadline` phải có code path sinh ra thật, không chỉ khai báo.)
+
+---
+
+## Chiến lược đã chốt (2026-09-15)
+
+Chủ CHỐT chiến lược (cụm `strategy-lock-mode2`), áp dụng cho mọi phiên sau:
+
+1. **CHỈ mode 2 (pair-mode, `pairs.txt`).** Mode 1 (`victims.txt`) và mode 3
+   (universal) TẮT bằng cờ (`wallet_scan_enabled=false`,
+   `pair_scan_universal=false`), KHÔNG xoá code — có thể bật lại sau bằng
+   cờ nếu Chủ đổi ý.
+2. **Token trong `pairs.txt` do CHỦ VET TAY**: verified, không tax, không
+   honeypot, không blacklist, không cooldown/anti-MEV, không pausable,
+   không rebase, có pool V2 với WBNB hoặc USDT reserve ≥ 20 BNB (hoặc
+   ≥ 10.000 USDT). Bước lọc thô: `scripts/vet_goplus.sh` (GoPlus Security
+   API, lọc nhanh trước khi Chủ tự soát tay). Bước xác nhận: bot đo
+   `measure_tax_evm` NỀN (không chặn đường nóng). Token CHƯA VET → bot
+   KHÔNG được sim (`pairs_require_vetted=true`).
+3. **Đường nóng KHÔNG đo tax/honeypot mỗi tx.** Sim đường nóng =
+   lãi/lỗ theo công thức V2 (phí pool 0.25%) + gas thật. `sim_engine`
+   ship = `"v2"` (thay `"evm"` — đường nóng không mở fork EVM mỗi tx nữa,
+   vì token đã qua vet ở mục 2).
+4. **`revm` giữ lại đúng 3 việc**: (a) vet NỀN định kỳ cho `pairs.txt`
+   (`pairs_vet_task`, mỗi `pairs_vet_interval_sec`), (b) đo lại token NGAY
+   TRƯỚC KHI KÝ ở live (`7.x`, chưa làm ở cụm này), (c) validator
+   `validate.victim` (so dự đoán vs thật). KHÔNG fork per-tx trong đường
+   nóng — đây là điểm khác biệt cốt lõi so với chiến lược cũ
+   (`evm-validate-fixed-then-wire`/`foundation-fix-then-real-sim`).
 
 ---
 
@@ -160,13 +211,13 @@ Grok ĐẠT khi có ô 5. Code không viết ĐẠT.
 
 ## Config — thiếu field = fail load
 
-`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps`
+`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted`
 
 Đã bỏ (cụm 1): `executor_slippage_bps` → còn trong file = fail load với thông báo "đã đổi tên thành front_slippage_bps/back_slippage_bps". `tax_cache_blocks` giữ để không fail load nhưng KHÔNG dùng (TTL theo `tax_cache_ttl_sec`).
 
 `.env` `BSC_HTTP`/`BSC_WS` cho phép nhiều URL (đa URL `_2`..`_16`, `_LIST` phẩy, hoặc chuỗi phẩy ngay trong biến gốc) — HTTP/WSS đều failover sang URL kế trong danh sách khi 1 node chết, không halt bot.
 
-Ship (khớp `config.toml` trong repo — file đó là nguồn sự thật, mục này chỉ nêu các cờ quan trọng): `chain_id=56`, `dry_run=true`, `allow_live=false`, `bot_armed=false`, **`scan_v2=true scan_v3=true scan_v4=true`** (v4 = Infinity + bucket bản mới hơn), mọi `live_*=false`, `sim_engine="evm"`, `min_profit_bnb=0.002` (paper), `max_front_bnb=5`, `max_exposure_bnb=5`, `min_reserve_wbnb=20`, `max_roundtrip_tax=0.005`, `tax_cache_ttl_sec=600`, `front_slippage_bps=10`, `back_slippage_bps=50`, `allow_tax_inject=true`, `wallet_scan_enabled=true`, `pair_scan_enabled=true`, `pair_scan_universal=false`, `scan_quote_usdt=false`. Paper run (`scripts/paper_run.sh`) tự override ngưỡng về 0 + universal + USDT trong config TẠM, không sửa file ship. Zero-tax only: chủ đặt `max_roundtrip_tax=0`.
+Ship (khớp `config.toml` trong repo — file đó là nguồn sự thật, mục này chỉ nêu các cờ quan trọng): `chain_id=56`, `dry_run=true`, `allow_live=false`, `bot_armed=false`, **`scan_v2=true scan_v3=true scan_v4=true`** (v4 = Infinity + bucket bản mới hơn), mọi `live_*=false`, `sim_engine="v2"` (cụm `strategy-lock-mode2` — đường nóng KHÔNG mở fork EVM mỗi tx, xem "Chiến lược đã chốt"), `min_profit_bnb=0.002` (paper), `max_front_bnb=5`, `max_exposure_bnb=5`, `min_reserve_wbnb=20`, `max_roundtrip_tax=0.005`, `tax_cache_ttl_sec=600`, `front_slippage_bps=10`, `back_slippage_bps=50`, `allow_tax_inject=true`, **`wallet_scan_enabled=false`** (mode 1 TẮT), `pair_scan_enabled=true` (mode 2 BẬT — nguồn candidate duy nhất), `pair_scan_universal=false` (mode 3 TẮT), `scan_quote_usdt=false`, `pairs_vet_interval_sec=600`, `pairs_require_vetted=true` (token chưa có `vetted` trong `pairs.txt` → không sim). Paper run (`scripts/paper_run.sh`) chỉ override NGƯỠNG về 0 + đổi port trong config TẠM (KHÔNG còn ép `pair_scan_universal=true`/`scan_quote_usdt=true`/`sim_engine="evm"` — 3 field đó giữ nguyên giá trị ship, đúng chiến lược mode 2 only), không sửa file ship. Zero-tax only: chủ đặt `max_roundtrip_tax=0`.
 
 `min_profit_bnb max_front_bnb min_reserve_wbnb max_roundtrip_tax max_exposure_bnb` là ngưỡng chủ chỉnh tự do trong `config.toml`, KHÔNG hardcode trong Rust — sửa file, đợi tối đa `config_reload_sec` giây (hot-reload giống `victims_reload_sec`) là bot dùng số mới, không cần build/restart. Fail load CHỈ khi: thiếu field, `chain_id != 56`, 1 trong 5 field trên là số âm hoặc không hữu hạn (NaN/Infinity), hoặc parse lỗi — `min_profit_bnb=0`/`max_roundtrip_tax=0` và `max_front_bnb` rất lớn đều hợp lệ, không bị chặn biên trên.
 
@@ -245,7 +296,7 @@ Web làm cùng phiên với `0.3` (logger/state) hoặc ngay sau Gói A — **kh
 
 ## Cây file — phiên đầu ĐƯỢC TẠO nếu thiếu
 
-`CLAUDE.md Cargo.toml config.toml vps.json .env.example .gitignore .gitattributes README.md DEX_REGISTRY.md docs/STATE.md docs/TASKS.md docs/DOC_MAP.md docs/VPS_RUN.md baocao/ README victims.txt victims.example.txt pairs.txt src/ web/ scripts/ key/ (gitignored)`
+`CLAUDE.md Cargo.toml config.toml vps.json .env.example .gitignore .gitattributes README.md DEX_REGISTRY.md docs/STATE.md docs/TASKS.md docs/DOC_MAP.md docs/RUN.md baocao/ README victims.txt victims.example.txt pairs.txt src/ web/ scripts/ key/ (gitignored)`
 
 `vps.json`: `chain_id=56`, RPC placeholder. Boot `eth_chainId==0x38`.
 
@@ -281,12 +332,13 @@ Mã F-xx/V-xx trỏ tới bảng phát hiện trong file audit. Mỗi cụm = 1 
 
 - **Cụm 0** `wsl-env-rules-paperrun` — XONG (BAOCAO34, commit `e24a834`).
 - **Cụm 1** `exec-path-traps` — F-26 tx.build sau EVM, F-06 từ chối `to=0x0`, F-07 back-sell theo balanceOf, F-04 record_result, F-05 version_pinned, F-08 slippage 2 field, F-13 nonce, F-14 deadline, F-15 to=None, F-16 venue cross-check, F-20 checked_add, V-06 halt dừng paper.
-- **Cụm 2** `real-economics` — F-03 gas thật, F-10 EVM độc lập với công thức đóng, F-27 bộ đếm validate, log `amount_in`, histogram `victim_in`, validator non-isolated. **Kết quả cụm này quyết định chiến lược (sandwich vs backrun) trước khi làm cụm 6.**
-- **Cụm 3** `fork-actor-perf` — F-11 fork actor theo block (thread riêng, reset slot-level), F-12 backpressure, RPC riêng cho fork, timeout 500 ms, phân loại `sim_error`. Mục tiêu p50 < 50 ms, p95 < 500 ms, `sim_error` < 5%.
-- **Cụm 4** `decoder-coverage` — F-09 multicall, SmartRouter không deadline, UR đa lệnh, sentinel CONTRACT_BALANCE, payerIsUser. Mục tiêu `venue_v3 > 0`, `decode_fail < 2%`.
+- **`strategy-lock-mode2`** — XONG (BAOCAO36) — Chủ CHỐT mode 2 only + vet tay + `sim_engine="v2"`, xem "Chiến lược đã chốt". Đổi tên/thứ tự 2 cụm dưới đây theo quyết định này.
+- **Cụm 2** `real-economics-mode2` (ĐỔI TÊN từ `real-economics` — lý do: chiến lược đã chốt là V2 math + gas thật trên `pairs.txt` đã vet, không phải "EVM mỗi tx") — F-03 gas thật (`eth_gasPrice` × gas đo), histogram `victim_in` trên pair-mode, validator (đối chiếu dự đoán V2 vs thật), vet nền định kỳ (`pairs_vet_task`, đã có khung ở `strategy-lock-mode2`, cụm này đo/tinh chỉnh thật). **Kết quả cụm này quyết định chiến lược thực thi (sandwich vs backrun) trước khi làm cụm 6.**
+- **Cụm 3** `fork-actor-perf` — **HẠ ƯU TIÊN xuống SAU cụm 6** (đổi từ vị trí cũ ngay sau cụm 2) — lý do: đường nóng mode 2 KHÔNG còn fork EVM mỗi tx (`strategy-lock-mode2` mục 3+4), nên fork-actor/backpressure chỉ còn phục vụ 3 việc nền/live (vet định kỳ, đo lại trước ký, validator) — không còn nghẽn hot path để tối ưu gấp. F-11 fork actor theo block (thread riêng, reset slot-level), F-12 backpressure, RPC riêng cho fork, timeout 500 ms, phân loại `sim_error`. Mục tiêu p50 < 50 ms, p95 < 500 ms, `sim_error` < 5% — áp dụng cho 3 việc nền/live đó, không phải đường nóng.
+- **Cụm 4** `decoder-coverage` — GIỮ NGUYÊN vị trí — F-09 multicall, SmartRouter không deadline, UR đa lệnh, sentinel CONTRACT_BALANCE, payerIsUser. Mục tiêu `venue_v3 > 0`, `decode_fail < 2%`.
 - **Cụm 5** `test-hygiene` — F-17 `real_rpc_*` không pass rỗng, F-22/F-23/F-25 dead code & doc, F-21 redact subdomain.
-- **Cụm 6** `strategy-exec` — F-01 bundle `[front, victim, back]`, F-02 mô hình gas-price/bribe, executor contract nguyên tử (nếu chọn sandwich) HOẶC backrun-only (bỏ front leg). Chỉ bắt đầu sau khi Chủ chốt chiến lược bằng số liệu cụm 2.
-- **Deploy VPS**: theo commit hash, `sha256sum` binary ghi vào BAOCAO; VPS chạy unit systemd thật `Restart=always`, logrotate, SSH key-only, ufw chỉ 22. Chi tiết `docs/VPS_RUN.md`.
+- **Cụm 6** `strategy-exec` — F-01 bundle `[front, victim, back]`, F-02 mô hình gas-price/bribe, executor contract nguyên tử (nếu chọn sandwich) HOẶC backrun-only (bỏ front leg). Chỉ bắt đầu sau khi Chủ chốt chiến lược bằng số liệu cụm 2. `fork-actor-perf` (cụm 3 cũ) làm SAU cụm này.
+- **Deploy VPS**: theo commit hash, `sha256sum` binary ghi vào BAOCAO; VPS chạy unit systemd thật `Restart=always`, logrotate, SSH key-only, ufw chỉ 22. Chi tiết `docs/RUN.md` (đổi tên từ `docs/VPS_RUN.md`, cụm `strategy-lock-mode2`).
 
 ### Cùng phiên — khỏi nợ
 
@@ -355,3 +407,4 @@ BSC 56. RUST. GROK ĐIỀU HÀNH. CODE PHIÊN TRẮNG. DEV = WSL, PROD = VPS, C�
 CỤM CÙNG PHIÊN, KHÔNG NỢ VỤN. MỖI CỤM 1 COMMIT. SỐ LIỆU PHẢI CÓ MÁY + HASH.
 VICTIMS.TXT `0x...,0.01`. TOKEN/WBNB HOẶC TOKEN/USDT. PANCAKE V2+V3+V4+MỚI NHẤT (PIN). UR PATH WBNB OK.
 DRY-RUN. KHÔNG BỊA. KHÔNG TỰ LIVE.
+MODE 2 ONLY. PAIRS VET TAY. HOT PATH V2 MATH + GAS THẬT. REVM = VET/PRE-SIGN/VALIDATOR.

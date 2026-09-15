@@ -405,15 +405,28 @@ async fn victims(State(state): State<AppState>) -> Json<Value> {
 /// `last_reload_sec_ago`/danh sách entry (`pair_addr`/`source_line`/
 /// `resolved_from`) đúng schema CLAUDE.md lệnh pair-mode. Chỉ đọc, không sửa
 /// (sửa qua file `pairs.txt`, hot-reload theo `pairs_reload_sec`).
+///
+/// Cụm `strategy-lock-mode2` — thêm 5 cột: `vetted_at` (ngày Chủ vet tay,
+/// `null` = chưa vet), `candidate` (`PairBook::contains` thật — `false` khi
+/// bị vet nền loại, xem `vet_failed`), `buy_bps`/`sell_bps`/`honeypot`/
+/// `last_vet_sec_ago` (kết quả `pairs_vet_task` gần nhất, `null` khi chưa
+/// từng vet nền lần nào).
 async fn pairs(State(state): State<AppState>) -> Json<Value> {
     let book = state.pairbook.read().await;
     let entries: Vec<Value> = book
         .entries()
         .map(|e| {
+            let vet = book.vet_result(&e.pair_addr);
             json!({
                 "pair_addr": format!("{:#x}", e.pair_addr),
                 "source_line": e.source_line,
                 "resolved_from": e.resolved_from.as_str(),
+                "vetted_at": e.vetted_at.map(|d| d.to_string()),
+                "candidate": book.contains(&e.pair_addr),
+                "buy_bps": vet.map(|(r, _)| r.buy_bps),
+                "sell_bps": vet.map(|(r, _)| r.sell_bps),
+                "honeypot": vet.map(|(r, _)| r.honeypot),
+                "last_vet_sec_ago": vet.map(|(_, secs)| secs),
             })
         })
         .collect();

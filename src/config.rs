@@ -187,6 +187,21 @@ pub struct Config {
     /// victim, giá đã dịch chuyển nhiều hơn và có thể dính tax bán.
     pub back_slippage_bps: u32,
 
+    /// Cụm `strategy-lock-mode2` — chu kỳ (giây) task nền `pairs_vet_task`
+    /// đo lại tax/honeypot bằng EVM thật (`sim_evm::measure_tax_evm`) cho
+    /// MỌI entry `pairs.txt` đã có `vetted`. Độc lập với đường nóng (không
+    /// chặn `handle_paper_tx`). Ship `600`. Field bắt buộc, cùng khuôn mọi
+    /// field khác (thiếu = fail load).
+    pub pairs_vet_interval_sec: u64,
+
+    /// Cụm `strategy-lock-mode2` — `true` (ship, AN TOÀN): entry `pairs.txt`
+    /// KHÔNG có `vetted YYYY-MM-DD` hợp lệ trong comment bị `PairBook::reload`
+    /// bỏ qua hẳn (không vào map, log `pair.unvetted` 1 lần/reload) — không
+    /// bao giờ thành candidate (`not_in_list`). `false` = quay lại hành vi cũ
+    /// (mọi entry resolve được đều thành candidate, bất kể vet) — Chủ tự tắt
+    /// nếu muốn, KHÔNG phải mặc định. Field bắt buộc (thiếu = fail load).
+    pub pairs_require_vetted: bool,
+
     /// Mốc lần reload gần nhất — KHÔNG đọc/ghi từ `config.toml`
     /// (`#[serde(skip)]`, mặc định `None`). Dùng bởi `reload_if_due`, cùng
     /// quy ước `VictimBook::last_reload` (`src/victims.rs`).
@@ -603,16 +618,18 @@ pairs_path = "pairs.txt"
 pairs_reload_sec = 30
 pairs_min_swap_bnb = 0.05
 pair_scan_universal = false
-wallet_scan_enabled = true
+wallet_scan_enabled = false
 pair_scan_enabled = true
 scan_quote_usdt = false
 min_profit_usdt = 3.0
 max_front_usdt = 3000.0
 min_reserve_usdt = 15000.0
-sim_engine = "evm"
+sim_engine = "v2"
 tax_cache_ttl_sec = 600
 front_slippage_bps = 10
 back_slippage_bps = 50
+pairs_vet_interval_sec = 600
+pairs_require_vetted = true
 "#
         .to_string()
     }
@@ -1033,7 +1050,7 @@ back_slippage_bps = 50
     /// khuon cac field bat buoc khac.
     #[test]
     fn missing_explicit_mode_flags_fail_load() {
-        for needle in ["wallet_scan_enabled = true\n", "pair_scan_enabled = true\n"] {
+        for needle in ["wallet_scan_enabled = false\n", "pair_scan_enabled = true\n"] {
             let toml_str = base_toml().replace(needle, "");
             let err = Config::from_str(&toml_str).unwrap_err();
             match err {
@@ -1043,23 +1060,25 @@ back_slippage_bps = 50
         }
     }
 
-    /// Ship mac dinh CA HAI field PHAI la `true` - hanh vi goc dang chay that
-    /// dua tren victims.txt/pairs.txt, khong duoc doi default thanh false
-    /// (dung lenh goc).
+    /// Cụm `strategy-lock-mode2` (Chủ chốt 2026-09-15) — ship mặc định ĐỔI:
+    /// CHỈ mode 2 (pair-mode) bật, mode 1 (wallet/victims.txt) TẮT. Đây là
+    /// hành vi GỐC MỚI kể từ chiến lược này — KHÔNG được đổi lại `true` trừ
+    /// khi Chủ ra lệnh quay về đa-mode (xem CLAUDE.md mục "Chiến lược đã chốt").
     #[test]
-    fn explicit_mode_flags_ship_default_is_true() {
+    fn explicit_mode_flags_ship_default_is_mode2_only() {
         let cfg = Config::from_str(&base_toml()).unwrap();
-        assert!(cfg.wallet_scan_enabled, "wallet_scan_enabled phai ship true");
-        assert!(cfg.pair_scan_enabled, "pair_scan_enabled phai ship true");
+        assert!(!cfg.wallet_scan_enabled, "wallet_scan_enabled phai ship false (mode 2 only)");
+        assert!(cfg.pair_scan_enabled, "pair_scan_enabled phai ship true (nguon candidate duy nhat)");
+        assert!(!cfg.pair_scan_universal, "pair_scan_universal phai ship false (mode 3 TAT)");
     }
 
     #[test]
-    fn explicit_mode_flags_can_be_set_false_independently() {
+    fn explicit_mode_flags_can_be_set_true_independently() {
         let toml_str = base_toml()
-            .replace("wallet_scan_enabled = true", "wallet_scan_enabled = false")
+            .replace("wallet_scan_enabled = false", "wallet_scan_enabled = true")
             .replace("pair_scan_enabled = true", "pair_scan_enabled = false");
-        let cfg = Config::from_str(&toml_str).expect("ca 2 field = false van phai load duoc (khong ep 1 mode)");
-        assert!(!cfg.wallet_scan_enabled);
+        let cfg = Config::from_str(&toml_str).expect("to hop nguoc lai van phai load duoc (khong ep 1 mode)");
+        assert!(cfg.wallet_scan_enabled);
         assert!(!cfg.pair_scan_enabled);
     }
 
@@ -1135,5 +1154,35 @@ back_slippage_bps = 50
         assert_eq!(cfg.min_profit_usdt_wei(), bnb_f64_to_wei(3.0));
         assert_eq!(cfg.max_front_usdt_wei(), bnb_f64_to_wei(3000.0));
         assert_eq!(cfg.min_reserve_usdt_wei(), bnb_f64_to_wei(15000.0));
+    }
+
+    /// Cụm `strategy-lock-mode2` — 2 field mới bắt buộc, thiếu field nào cũng
+    /// phải fail load, cùng khuôn mọi field bắt buộc khác.
+    #[test]
+    fn missing_pairs_vet_fields_fail_load() {
+        for needle in ["pairs_vet_interval_sec = 600\n", "pairs_require_vetted = true\n"] {
+            let toml_str = base_toml().replace(needle, "");
+            let err = Config::from_str(&toml_str).unwrap_err();
+            match err {
+                ConfigError::Parse(_) => {}
+                other => panic!("expected Parse error khi thieu '{needle}', got {other:?}"),
+            }
+        }
+    }
+
+    /// Ship mặc định `pairs_vet_interval_sec=600`/`pairs_require_vetted=true`
+    /// (AN TOÀN — token chưa có `vetted` trong `pairs.txt` không được sim).
+    #[test]
+    fn pairs_vet_fields_ship_defaults() {
+        let cfg = Config::from_str(&base_toml()).unwrap();
+        assert_eq!(cfg.pairs_vet_interval_sec, 600);
+        assert!(cfg.pairs_require_vetted);
+    }
+
+    #[test]
+    fn pairs_require_vetted_false_loads_ok() {
+        let toml_str = base_toml().replace("pairs_require_vetted = true", "pairs_require_vetted = false");
+        let cfg = Config::from_str(&toml_str).expect("pairs_require_vetted=false phai load duoc");
+        assert!(!cfg.pairs_require_vetted);
     }
 }

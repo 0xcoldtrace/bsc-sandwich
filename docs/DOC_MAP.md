@@ -24,4 +24,8 @@ Thứ tự đọc bắt buộc đầu mỗi phiên (theo CLAUDE.md):
   qua SSH (tar+ssh pipe, không nhét password), tuỳ cờ cài rustup/chạy
   probe/build/chạy bot nền. Chỉ dùng khi đã có SSH key/agent sẵn tới VPS,
   xem README.md mục "Deploy nhanh lên VPS".
+- `docs/RUN.md` (đổi tên từ `docs/VPS_RUN.md`, cụm `strategy-lock-mode2`) —
+  cách chạy paper 30 phút (`scripts/paper_run.sh`, WSL hoặc VPS đều chạy
+  được) + cách lọc thô `pairs.txt` bằng GoPlus (`scripts/vet_goplus.sh`)
+  trước khi Chủ tự vet tay và điền `vetted YYYY-MM-DD`.
 - `baocao/` — báo cáo mỗi phiên, không đè file cũ.

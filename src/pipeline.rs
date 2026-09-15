@@ -1156,7 +1156,8 @@ mod tests {
              scan_quote_usdt = false\nmin_profit_usdt = 3.0\n\
              max_front_usdt = 3000.0\nmin_reserve_usdt = 15000.0\n\
              sim_engine = \"evm\"\ntax_cache_ttl_sec = 600\n\
-             front_slippage_bps = 10\nback_slippage_bps = 50\n",
+             front_slippage_bps = 10\nback_slippage_bps = 50\n\
+             pairs_vet_interval_sec = 600\npairs_require_vetted = false\n",
         );
         for (needle, replacement) in overrides {
             s = s.replace(needle, replacement);

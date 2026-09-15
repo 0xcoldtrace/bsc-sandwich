@@ -32,6 +32,18 @@ config/victims cũ + log lỗi, không crash — sửa lại đúng là tự áp
 cargo test
 ```
 
+## Vet `pairs.txt` (mode 2, pair-mode) — lọc thô + chạy paper
+
+Chiến lược đã chốt (`CLAUDE.md` mục "Chiến lược đã chốt"): CHỈ mode 2
+(`pairs.txt`, token do Chủ vet tay) đang bật. Bước lọc thô trước khi Chủ tự
+soát tay + điền `vetted YYYY-MM-DD`:
+
+```
+scripts/vet_goplus.sh pairs.txt   # can curl + jq, in bang PASS/REVIEW/FAIL
+```
+
+Chạy paper 30 phút (thu funnel/skip/tax/validate) xem `docs/RUN.md`.
+
 ## Đo RPC (`rpc_probe`) — PHẢI chạy trên VPS, không phải máy dev
 
 Máy dev (VN) đo RTT tới RPC US/Cluster sẽ RA SỐ SAI (cộng thêm ~150-250ms
