@@ -41,6 +41,14 @@ pub struct AppStateInner {
     pub logger: Arc<BotLogger>,
     pub bot_state: RwLock<BotState>,
     pub start_time: Instant,
+    /// Cụm `real-economics-mode2` — mốc thời gian THỰC (wall-clock, khớp định
+    /// dạng `ts` mà `BotLogger::log` ghi — `Utc::now().to_rfc3339()`) lúc boot.
+    /// `GET /api/econ` dùng field này để CHỈ tính dòng của LẦN CHẠY HIỆN TẠI —
+    /// `logs/bot.jsonl` là file DÙNG CHUNG, KHÔNG bị xoá giữa các lần chạy
+    /// (khác `skip_counts`/`FunnelCounters`, 2 bộ đếm trong RAM tự reset mỗi
+    /// lần boot) — thiếu mốc này, `/api/econ` sẽ lẫn lộn số liệu của MỌI lần
+    /// chạy trước đó trong lịch sử file, không phải chỉ lần chạy đang xem.
+    pub boot_wall_clock: chrono::DateTime<chrono::Utc>,
     pub skip_counts: RwLock<HashMap<String, u64>>,
     pub last_block: RwLock<Option<u64>>,
     /// Cụm `5.1` — provider HTTP đã kết nối (nếu `.env`/`BSC_HTTP` hợp lệ),
@@ -661,12 +669,30 @@ async fn econ(State(state): State<AppState>) -> Json<Value> {
     let all_lines: Vec<&str> = content.lines().collect();
     let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
     let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
-    Json(compute_econ_from_rows(&rows))
+    // Cụm `real-economics-mode2` — CHỈ tính dòng có `ts >= boot_wall_clock`
+    // (`logs/bot.jsonl` dùng CHUNG qua mọi lần chạy, không bị xoá) — thiếu
+    // lọc này, /api/econ sẽ lẫn số liệu MỌI lần chạy trước đó (phát hiện
+    // thật khi verify 60 phút, BAOCAO38: `lines_scanned` gấp ~4 lần số dòng
+    // thật của riêng lần chạy đó).
+    let boot_ts = state.boot_wall_clock.to_rfc3339();
+    Json(compute_econ_from_rows(&rows, Some(&boot_ts)))
 }
 
 /// Lõi THUẦN (không I/O) của `GET /api/econ` — tách riêng để test được bằng
-/// dòng JSON dựng tay, không cần dựng `AppState`/ghi file thật.
-fn compute_econ_from_rows(rows: &[Value]) -> Value {
+/// dòng JSON dựng tay, không cần dựng `AppState`/ghi file thật. `since_ts`
+/// (RFC3339, `None` = không lọc — dùng bởi test cũ/muốn xem TOÀN BỘ lịch sử
+/// file) — so sánh CHUỖI trực tiếp với `row["ts"]`: an toàn vì
+/// `BotLogger::log` LUÔN ghi `Utc::now().to_rfc3339()` (cùng định dạng,
+/// cùng múi giờ UTC) nên thứ tự chuỗi khớp thứ tự thời gian thật.
+fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
+    let filtered: Vec<Value>;
+    let rows: &[Value] = match since_ts {
+        Some(cutoff) => {
+            filtered = rows.iter().filter(|r| r["ts"].as_str().map(|t| t >= cutoff).unwrap_or(false)).cloned().collect();
+            &filtered
+        }
+        None => rows,
+    };
     let mut buckets: [BucketAcc; 5] = Default::default();
     let mut by_quote: HashMap<String, u64> = HashMap::new();
     let mut by_token: HashMap<String, u64> = HashMap::new();
@@ -952,7 +978,7 @@ mod tests {
             "profit_net_wei": 3_000_000_000_000_000i64,
             "seen_to_decision_ms": 12.5,
         })];
-        let econ = compute_econ_from_rows(&rows);
+        let econ = compute_econ_from_rows(&rows, None);
         assert_eq!(econ["candidate"], 1);
         let buckets = econ["buckets_bnb"].as_array().unwrap();
         let bucket_005_02 = buckets.iter().find(|b| b["bucket"] == "0.05-0.2").unwrap();
@@ -981,7 +1007,7 @@ mod tests {
             json!({"event": "tx.skip", "reason": "decode_fail", "to": smart_router}),
             json!({"event": "tx.skip", "reason": "decode_fail", "to": "0x0000000000000000000000000000000000dead"}),
         ];
-        let econ = compute_econ_from_rows(&rows);
+        let econ = compute_econ_from_rows(&rows, None);
         assert_eq!(econ["decode_fail_by_router"]["SmartRouter"], 2);
         assert_eq!(econ["decode_fail_by_router"]["other"], 1);
         assert!(econ["summary_line"].as_str().unwrap().contains("decode_fail_smartrouter=2"));
@@ -997,7 +1023,7 @@ mod tests {
             json!({"event": "tx.skip", "reason": "below_min"}),
             json!({"event": "tx.skip", "reason": "below_min"}),
         ];
-        let econ = compute_econ_from_rows(&rows);
+        let econ = compute_econ_from_rows(&rows, None);
         assert_eq!(econ["candidate"], 4);
         assert!((econ["nonce_stale_pct_of_candidate"].as_f64().unwrap() - 25.0).abs() < 1e-9);
     }
@@ -1010,7 +1036,7 @@ mod tests {
             .iter()
             .map(|ms| json!({"event": "tx.skip", "reason": "below_min", "seen_to_decision_ms": ms}))
             .collect();
-        let econ = compute_econ_from_rows(&rows);
+        let econ = compute_econ_from_rows(&rows, None);
         // nearest-rank: p50 idx=round(0.5*3)=2 -> gia tri 30; p95 idx=round(0.95*3)=3 -> 40.
         assert_eq!(econ["latency_ms"]["p50"], 30.0);
         assert_eq!(econ["latency_ms"]["p95"], 40.0);
@@ -1026,7 +1052,7 @@ mod tests {
             "event": "sim.result", "token": "0xtoken2", "quote": "usdt",
             "profit_gross_wei": 1i64, "profit_net_wei": 1i64,
         })];
-        let econ = compute_econ_from_rows(&rows);
+        let econ = compute_econ_from_rows(&rows, None);
         assert_eq!(econ["by_quote"]["usdt"], 1);
         let total_bucket_count: i64 = econ["buckets_bnb"].as_array().unwrap().iter().map(|b| b["count"].as_i64().unwrap()).sum();
         assert_eq!(total_bucket_count, 0, "usdt khong duoc quy sang bucket BNB");
@@ -1034,11 +1060,31 @@ mod tests {
 
     #[test]
     fn compute_econ_empty_rows_no_panic() {
-        let econ = compute_econ_from_rows(&[]);
+        let econ = compute_econ_from_rows(&[], None);
         assert_eq!(econ["candidate"], 0);
         assert_eq!(econ["net_pos_total"], 0);
         assert!(econ["best_net_bnb"].is_null());
         assert!(econ["latency_ms"]["p50"].is_null());
+    }
+
+    /// ĐẠT CẦN DÁN — phát hiện THẬT lúc verify 60 phút (BAOCAO38):
+    /// `logs/bot.jsonl` dùng CHUNG qua mọi lần boot (không bị xoá), nên
+    /// `/api/econ` PHẢI lọc theo `since_ts` (`boot_wall_clock`) để không lẫn
+    /// số liệu của các lần chạy TRƯỚC — thiếu lọc, `candidate` bị thổi phồng
+    /// (quan sát thật: 87225 thay vì 49787 của riêng 60 phút đó).
+    #[test]
+    fn compute_econ_since_ts_excludes_rows_from_previous_runs() {
+        let rows = vec![
+            json!({"event": "tx.skip", "reason": "decode_fail", "ts": "2026-09-15T09:00:00+00:00"}), // lan chay TRUOC
+            json!({"event": "tx.skip", "reason": "decode_fail", "ts": "2026-09-15T10:16:09+00:00"}), // lan chay HIEN TAI
+            json!({"event": "tx.skip", "reason": "unprofitable", "ts": "2026-09-15T10:20:00+00:00"}), // lan chay HIEN TAI
+        ];
+        let boot_ts = "2026-09-15T10:16:08+00:00";
+        let econ_filtered = compute_econ_from_rows(&rows, Some(boot_ts));
+        assert_eq!(econ_filtered["candidate"], 2, "chi 2 dong co ts >= boot_wall_clock");
+
+        let econ_unfiltered = compute_econ_from_rows(&rows, None);
+        assert_eq!(econ_unfiltered["candidate"], 3, "khong loc thi tinh ca dong lan chay truoc");
     }
 
     #[test]

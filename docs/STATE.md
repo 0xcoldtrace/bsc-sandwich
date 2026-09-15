@@ -3710,8 +3710,21 @@ WBNB) — `meta.amount_in=None` cho nhánh USDT, ghi rõ CÒN NỢ (không bịa
 Đọc trực tiếp `logs/bot.jsonl` (dòng `tx.skip`/`sim.result`, tối đa 2 triệu
 dòng cuối) mỗi lần gọi (không giữ state riêng trong `AppStateInner` — đơn
 giản hơn, luôn phản ánh log thật). Lõi tính toán (`compute_econ_from_rows`)
-THUẦN (nhận `&[Value]`, không I/O) — test được bằng dòng JSON dựng tay,
-`econ()` (handler) chỉ đọc file rồi gọi hàm này.
+THUẦN (nhận `&[Value]` + `since_ts: Option<&str>`, không I/O) — test được
+bằng dòng JSON dựng tay, `econ()` (handler) chỉ đọc file rồi gọi hàm này.
+
+**Phát hiện THẬT lúc verify 60 phút (BAOCAO38) — đã sửa cùng phiên**:
+`logs/bot.jsonl` là file DÙNG CHUNG qua MỌI lần boot (không bị xoá giữa các
+lần chạy, khác `skip_counts`/`FunnelCounters` — 2 bộ đếm RAM tự reset mỗi
+lần boot) — bản `/api/econ` ban đầu đọc TOÀN BỘ file nên `candidate` bị thổi
+phồng bởi lịch sử các phiên TRƯỚC (quan sát thật: `candidate=87225` thay vì
+số đúng của riêng 60 phút đó là `49787`, tính tay bằng cách lọc theo dòng
+`ts >= boot_wall_clock` của lần chạy). Sửa: `AppStateInner.boot_wall_clock:
+chrono::DateTime<Utc>` (đặt lúc boot, khớp định dạng `ts` mà `BotLogger`
+ghi) — `econ()` truyền field này làm `since_ts` cho `compute_econ_from_rows`,
+CHỈ tính dòng của LẦN CHẠY HIỆN TẠI. Test
+`compute_econ_since_ts_excludes_rows_from_previous_runs` tái tạo đúng kịch
+bản này.
 
 - **Bucket BNB** (5 khoảng CLAUDE.md mục 3.a) CHỈ áp dụng cho `quote="wbnb"`
   (USDT không quy đổi được sang BNB nếu không có price oracle — CLAUDE.md
