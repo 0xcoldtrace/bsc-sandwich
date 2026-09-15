@@ -3219,3 +3219,26 @@ Theo đúng luật "chưa đạt thì CHƯA XONG, không sang C" (áp dụng cho
 B3 đứng SAU B4' trong chuỗi tuần tự lệnh) — cụm B3 (nối `sim_evm` vào
 pipeline), C (đo tax tự động), D (config/USDT calldata/VPS script) ĐỀU
 KHÔNG làm phiên này.
+
+## Toolchain + môi trường build (phiên "wsl-env-rules-paperrun", 2026-09-15)
+
+Lệnh chủ: xác nhận repo chạy trong WSL (`/home/dmin/bsc-sandwich`, KHÔNG
+phải `/mnt/c`), build/test xanh trong WSL, ghi lại version toolchain cụ thể
+để phiên sau/VPS đối chiếu khi so kết quả runtime.
+
+- Máy chạy: WSL2 (`Linux 6.6.87.2-microsoft-standard-WSL2`), thư mục
+  `/home/dmin/bsc-sandwich` (ext4 native của WSL, không qua `/mnt/c` —
+  tránh chậm I/O của filesystem Windows mount qua 9p).
+- `rustc 1.97.1 (8bab26f4f 2026-07-14)`, `cargo 1.97.1 (c980f4866
+  2026-06-30)`, toolchain `stable-x86_64-unknown-linux-gnu` (qua `rustup`,
+  không dùng rustc hệ thống ngoài rustup).
+- `cargo build --release`: xanh, `Finished \`release\` profile [optimized]
+  target(s) in 1m 14s`. Binary `target/release/bsc_sandwich`
+  (17.325.640 bytes) — `sha256sum`:
+  `e45c804ac7ecff2a867d7b235e876d50d28a4af4becf9c7fef27f88496426bd8`.
+- `cargo test --release`: `246 passed; 0 failed; 10 ignored` (lib) +
+  `9 passed; 0 failed` (`src/main.rs`) — 10 ignored là toàn bộ `real_rpc_*`
+  (`#[ignore]`, cần RPC mạng thật, không chạy trong `cargo test` thường,
+  xem luật riêng ở `CLAUDE.md` mục "3 luật mới" về không được dán output
+  rỗng cho nhóm test này). Git HEAD lúc build/test:
+  `251689766dd9d89c406363b1ad8024833ef2e49d`.

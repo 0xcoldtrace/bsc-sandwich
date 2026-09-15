@@ -107,6 +107,28 @@ Cấm bịa pin; cấm “test pass” không dán output; cấm tự ĐẠT; c�
 
 Pin = `DEX_REGISTRY.md` + source_url + ngày + `eth_getCode > 0` trong BAOCAO.
 
+### 3 luật bổ sung (chủ ra lệnh 2026-09-15)
+
+1. **Mỗi cụm kết thúc bằng git commit.** Làm xong cụm trong lệnh (kể cả
+   việc kéo thêm dính liền cùng phiên) → `git commit` trước khi đóng
+   phiên. BAOCAO ô 3 (FILE ĐỔI) phải ghi kèm hash commit đó
+   (`git log -1 --format=%H`). Không commit = phiên chưa xong, ghi
+   `CHƯA XONG`, không được ghi `CHỜ GROK`.
+2. **Mọi số liệu runtime phải ghi rõ chạy ở đâu + hash binary.** Bất kỳ
+   output thật nào dán vào BAOCAO (`cargo test`, paper run, `real_rpc_*`,
+   `/api/*`, log jsonl...) phải kèm: (a) máy chạy — `WSL` hay `VPS` (ghi
+   rõ, không được để trống), (b) `sha256sum` của binary đã build lúc chạy
+   (`target/release/bsc_sandwich`) hoặc git HEAD hash nếu chạy qua `cargo
+   run`/`cargo test` trực tiếp. Số liệu không ghi được 2 mục này coi như
+   `MISSING`, không được tính là bằng chứng ĐẠT.
+3. **`real_rpc_*` không được "pass rỗng".** Test nhóm `real_rpc_*`
+   (`#[ignore]`, gọi RPC thật) chỉ được báo là chạy được khi có output
+   THẬT dán kèm (số block, giá trị quote, tx hash...) — không được ghi
+   "ignored" rồi coi như đã verify, không được dán dòng `... ok` mà không
+   kèm số liệu RPC thật phía trên nó, không được chạy với danh sách URL
+   rỗng rồi báo FAIL/SKIP im lặng. Thiếu RPC thật để chạy → ghi `MISSING`
+   rõ ràng ở BAOCAO, không tự suy diễn kết quả.
+
 ---
 
 ## BAOCAO — một phiên một file mới

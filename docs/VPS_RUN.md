@@ -1,29 +1,41 @@
-# docs/VPS_RUN.md — chạy PAPER 30 phút trên VPS (cụm `evm-validate-fixed-then-wire` D3)
+# docs/VPS_RUN.md — chạy PAPER 30 phút (cụm `evm-validate-fixed-then-wire` D3)
 
-Mục đích: chạy bot ở chế độ **paper (dry_run)** trên VPS thật (có `.env` với
-`BSC_HTTP`/`BSC_WS` thật) trong 30 phút, với cấu hình ngưỡng-0 tối đa hoá số
-candidate để **quan sát đường EVM (`sim_engine="evm"`) hoạt động trên mempool
-sống** và thu số liệu funnel/skip/tax/validate.
+Mục đích: chạy bot ở chế độ **paper (dry_run)** trên máy thật (WSL hoặc VPS,
+có `.env` với `BSC_HTTP`/`BSC_WS` thật) trong 30 phút, với cấu hình ngưỡng-0
+tối đa hoá số candidate để **quan sát đường EVM (`sim_engine="evm"`) hoạt
+động trên mempool sống** và thu số liệu funnel/skip/tax/validate.
+
+Script dùng chung: `scripts/paper_run.sh` (phiên "wsl-env-rules-paperrun",
+2026-09-15) — chạy được cả trên WSL (máy dev) lẫn VPS, không có bước SSH nào
+bên trong (SSH chỉ nằm ở `scripts/deploy_vps.sh`/`.ps1`, dùng để ĐƯA source
+lên VPS trước khi chạy, không liên quan script paper run). `scripts/
+vps_paper_run.sh` cũ giờ chỉ là alias forward sang `paper_run.sh`, giữ lại để
+không phá tham chiếu cũ trong BAOCAO.
 
 ## KHÔNG bao giờ
 
-- Script `scripts/vps_paper_run.sh` **KHÔNG** bật `allow_live`/`bot_armed`/
+- Script `scripts/paper_run.sh` **KHÔNG** bật `allow_live`/`bot_armed`/
   `dry_run=false`, **KHÔNG** gửi tx, **KHÔNG** ký, **KHÔNG** in `PRIVATE_KEY`/
   URL RPC có token/IP VPS. Nó chỉ đọc file + gọi API local `127.0.0.1`.
 - Redact mọi secret trước khi dán log cho Grok.
 
 ## Điều kiện
 
-1. VPS đã có repo + `.env` (chứa `BSC_HTTP`/`BSC_WS` thật của Chủ).
+1. Máy chạy (WSL hoặc VPS) đã có repo + `.env` (chứa `BSC_HTTP`/`BSC_WS`
+   thật của Chủ).
 2. Đã `cargo build --release` được (script tự build lại).
 3. `BSC_WS` nên là host `publicnode` (script tự verify host, **không in URL**).
 
 ## Chạy
 
 ```bash
-# TREN VPS, trong thu muc repo:
-scripts/vps_paper_run.sh --minutes 30 --port 8799
+# Trong thu muc repo, tren WSL hoac VPS deu chay duoc:
+scripts/paper_run.sh --minutes 30 --port 8799
 ```
+
+Script tự in máy đang chạy (`WSL`/`VPS`, tự phát hiện qua `/proc/version`) và
+`sha256sum` của binary vừa build ngay đầu phần kết quả — dán nguyên vào
+BAOCAO theo luật #2 (`CLAUDE.md` mục "3 luật bổ sung").
 
 Script sẽ:
 
