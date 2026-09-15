@@ -146,3 +146,8 @@
       lệnh riêng nếu Grok cần.
     - `docs/TASKS.md` chưa cập nhật mục này (không thuộc phạm vi lệnh, chưa
       đụng).
+
+Commit: `e24a834a48e6e82652c12a0f0b04164b3cb20867` (git chưa có `user.name`/
+`user.email` local lúc viết BAOCAO ban đầu — Chủ tự set qua `! git config
+--local` theo yêu cầu, Code không tự sửa git config; commit thực hiện sau
+khi Chủ set xong, đúng luật #1 mới).
