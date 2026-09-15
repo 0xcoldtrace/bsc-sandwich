@@ -3242,3 +3242,148 @@ phải `/mnt/c`), build/test xanh trong WSL, ghi lại version toolchain cụ th
   xem luật riêng ở `CLAUDE.md` mục "3 luật mới" về không được dán output
   rỗng cho nhóm test này). Git HEAD lúc build/test:
   `251689766dd9d89c406363b1ad8024833ef2e49d`.
+
+## `exec-path-traps` (chủ ra lệnh sau `BAOCAO_AUDIT_2026-09-15.md`, 2026-09-15)
+
+Cụm chặn 12 bẫy trên đường thực thi (F-04/05/06/07/08/13/14/15/16/20 + V-06,
+xem bảng phát hiện của audit) để `7.3` (nối signer thật) sau này không kế
+thừa lỗi cũ. KHÔNG đổi chiến lược/công thức kinh tế, KHÔNG nối live. 2 quyết
+định kỹ thuật cần ghi rõ (Chủ yêu cầu — mục 4(b) và mục 7 trong lệnh gốc):
+
+### Mục 4(b) — RiskGuard::record_result ở đường PAPER dùng tín hiệu gì
+
+`RiskGuard::record_result(is_loss: bool)` cần 1 nguồn sự thật để biết
+"lỗ/lãi" — nhưng đường paper (`dry_run=true`) KHÔNG có giao dịch thật, không
+có BNB thật mất/được để đo. Quyết định: dùng lại chính validator nhúng
+(`main.rs::spawn_victim_validator`, cụm `evm-validate-fixed-then-wire`
+B3.4 — cơ chế ĐÃ chứng minh đạt 0% lệch trên block cô lập ở B4''.2) làm
+nguồn tín hiệu thay thế:
+
+- Victim tx **REVERT THẬT** (`receipt.status() == false`) → `is_loss=true`
+  NGAY (không có Swap log để so, không cần đợi bước dự đoán) — victim tx
+  không thực thi như kỳ vọng là dấu hiệu "thua" rõ ràng nhất (sandwich giả
+  định victim tx thành công).
+- Victim tx thành công nhưng dự đoán EVM lệch **>1%** so kết quả THẬT
+  (`lech_pct > 1.0`, đúng ngưỡng B4''.2 đã dùng) → `is_loss=true` (sim đang
+  lệch khỏi thực tế — dấu hiệu sớm cho thấy bot có thể đang tính sai lợi
+  nhuận, dù chưa phải giao dịch thật).
+- Còn lại (thành công, lệch ≤1%) → `is_loss=false`.
+
+Đây KHÔNG PHẢI "lỗ tiền thật" (đường paper không gửi tx nào) — là tín hiệu
+THAY THẾ để bộ đếm `consecutive_loss`/`max_consecutive_loss` KHÔNG còn vĩnh
+viễn bằng 0 (audit F-04: trước bản sửa này, `record_result` không có call
+site sản xuất nào). Khi `7.3` nối signer thật, call site THẬT (dựa trên kết
+quả on-chain thật của 1 cặp front/back) phải thay thế/bổ sung — đã đặt sẵn 1
+đoạn comment đánh dấu vị trí ở `executor.rs` (không phải code chạy được,
+chỉ đánh dấu).
+
+### Mục 7 — F-13 nonce: dùng tag RPC `"latest"`, KHÔNG PHẢI `"pending"` như chữ literal trong lệnh
+
+Lệnh gốc viết `eth_getTransactionCount(from, pending)`. Đã đổi sang tag
+`"latest"` — quyết định kỹ thuật có chủ đích, không phải đọc nhầm, lý do:
+
+Tag `"pending"` của node Geth-tương-thích trả **`latest_count` CỘNG số tx
+PENDING LIÊN TỤC (không đứt quãng nonce) đã thấy của địa chỉ đó**. Vì
+chính candidate đang được đánh giá LUÔN nằm trong mempool của node (đó là lý
+do nó tới được `handle_paper_tx`), trong trường hợp BÌNH THƯỜNG (tx hợp lệ,
+không có gì bất thường) `eth_getTransactionCount(from, "pending")` LUÔN trả
+`victim.nonce + 1` — nghĩa là so `victim.nonce == pending_count` sẽ LUÔN
+`false` (`Stale` theo hướng so sánh của lệnh), kể cả ở trường hợp khoẻ mạnh
+nhất. Áp dụng literal sẽ chặn **MỌI** candidate là `nonce_stale`, không chỉ
+candidate thật sự có bẫy — phá vỡ toàn bộ pipeline paper.
+
+Tag `"latest"` (nonce đã XÁC NHẬN on-chain — chính là nonce BẮT BUỘC cho 1
+tx MỚI của địa chỉ đó nếu không có gì khác chen vào) cho đúng ngữ nghĩa
+"nonce này có phải cái TIẾP THEO sẽ thực thi hay không" mà lệnh mô tả
+(`nonce victim < expected → nonce_stale`, `> expected → nonce_future`) —
+chỉ khác Ở CHỌN TAG RPC nào để hỏi "expected", không đổi hướng so sánh hay
+2 reason mới. Đã verify bằng chạy thật `scripts/paper_run.sh --minutes 1`
+trên mempool BSC sống: `nonce_stale` quan sát được 6-10 lần trong 1 phút
+(số dương thật, không phải luôn-0 như literal `"pending"` sẽ gây ra ở CHIỀU
+NGƯỢC LẠI — tức luôn-100% nếu áp literal).
+
+`disable_nonce_check=true` trong `sim_evm.rs::build_evm` (cấu hình `revm`
+nội bộ, cần cho 3 tx giả của attacker dùng chung `nonce=0`) GIỮ NGUYÊN
+không đổi — dụng ý "không áp cho victim" được đảm bảo Ở BÊN NGOÀI hàm đó:
+`main.rs::run_evm_decision` gọi `transport::fetch_expected_nonce` +
+`transport::compare_nonce` TRƯỚC KHI mở fork, từ chối sớm mọi candidate có
+nonce victim sai lệch — nonce victim đã được xác minh THẬT qua RPC trước
+khi fork tồn tại, độc lập với revm có bật check nội bộ hay không.
+
+### Tóm tắt các mục còn lại (F-05/06/07/08/14/15/16/20, V-06)
+
+- **F-05**: `Config::gate_check` (method mới trên `Config`) là nguồn DUY
+  NHẤT cho điều kiện live — `executor::gate_check` (hàm rời, THIẾU
+  `version_pinned`, đúng phát hiện audit) đã XOÁ, `executor::can_send_live`
+  giờ chỉ gọi `cfg.live_gate_ok(...)`. Test duyệt hết 2^8=256 tổ hợp 8 cờ,
+  xác nhận `live_gate_ok`/`gate_check.ok` luôn khớp nhau.
+- **F-06**: `executor::executor_self_address()` — paper mode (chưa nối
+  signer thật, cùng lý do kỹ thuật `load_signer` trả `B256` thô ở `7.1`)
+  LUÔN trả `None`. `build_and_log_paper_sandwich` từ chối build khi không
+  có địa chỉ thật (`None`/`Address::ZERO`), log `build.refused
+  {reason:"self_address_zero"}` — **KHÔNG còn nhánh nào build calldata với
+  `to=Address::ZERO`** (audit F-06: đã quan sát placeholder này lọt vào
+  calldata thật). Hệ quả CHỦ Ý: mọi build hiện tại đều bị từ chối cho tới
+  khi `7.3` nối signer thật (verify: `grep -c build.refused` dương khi có
+  `simulated`, `grep -c tx.build` = 0).
+- **F-07**: đã tự động đúng nhờ F-26 — `EvmDecision.outcome`'s
+  `SandwichQuote.front_out` được `pipeline::decide_with_evm` THAY bằng
+  `evm.token_received` (số token THẬT sau front-buy, đo bằng `balanceOf`
+  qua revm) trước khi `build_paper_txs_from_evm_decision` build back-sell —
+  không cần đọc `balanceOf` riêng lần nữa vì EVM đã đo thật trong quá trình
+  sim.
+- **F-08**: `build_front_buy_paper_tx`/`build_back_sell_paper_tx` dùng
+  ĐÚNG `cfg.front_slippage_bps`/`cfg.back_slippage_bps` (trước đó dùng
+  CHUNG `executor_slippage_bps` cho cả 2 chân — sai theo thiết kế D1 đã có
+  từ trước nhưng chưa wire). Field `executor_slippage_bps` XOÁ khỏi
+  `Config`; nếu còn trong `config.toml` (kể cả 1 mình, không kèm field
+  khác) → fail load với thông báo "đã đổi tên thành front_slippage_bps /
+  back_slippage_bps" (không phải lỗi parse serde mù mờ).
+- **F-14**: `PipelineSkip::Deadline` (reason `"deadline"` ĐÃ khai báo trong
+  `SKIP_REASONS` từ đầu nhưng chưa từng có variant/code path sinh ra nó,
+  đúng phát hiện audit) — `evaluate_candidate`/`evaluate_candidate_quote`
+  gate NGAY ĐẦU (trước mọi check khác, 0 RPC): `deadline < now_unix + 2 *
+  3` (giây, `BSC_BLOCK_TIME_SEC=3`). `deadline=None` (command Universal
+  Router, không mang tham số deadline riêng) → KHÔNG áp dụng, luôn `false`.
+- **F-15**: `passes_router_gate(to, source)` — `to=None` giờ CHỈ `true`
+  khi `source=="inject"` (định dạng cũ `state/inject_tx.jsonl`, cố ý không
+  có cột `to`); nguồn WS/`txpool_content` (luôn có `Some(to)` cho tx thật)
+  giờ `false` khi gặp `to=None` (trường hợp hiếm, vd contract-creation lẫn
+  vào).
+- **F-16**: `decoder::venue_matches_router(selector_name, router_venue)` —
+  cross-check địa chỉ router thật (`venues::venue_for_router(tx.to)`) với
+  selector/command đã decode. Selector V2 Router cổ điển (6 biến thể, kể cả
+  FOT) chỉ hợp lệ khi router là V2; `exactInputSingle`/`exactInput` chỉ hợp
+  lệ khi router là V3 SwapRouter/SmartRouter; command UR (`selector_name`
+  bắt đầu `"UR:"`) chỉ hợp lệ khi router là Universal Router. Lệch →
+  `decode_fail` với `TxLogMeta.detail = Some("venue_mismatch")` (field
+  `detail` mới trong log `tx.skip`, `None` cho mọi trường hợp khác).
+- **F-20**: 4 chỗ cộng offset không `checked_` trong `decoder.rs`
+  (`word`/`u256_at_byteoffset`/`dynamic_bytes_at_offset`/
+  `dynamic_bytes_array_at_offset`) gộp qua 1 hàm `slice_checked` dùng
+  `checked_add` — tràn `usize` trả `None` (→ `decode_fail`) thay vì panic.
+  Fuzz test 1000 calldata random + 20 calldata cố ý nhắm offset gần
+  `usize::MAX` vào 3 selector có nhánh offset — không panic.
+- **V-06**: `main.rs::halt_watch_task` (task nền mới, tick 1s) log ĐÚNG 1
+  dòng `halt.triggered`/`halt.cleared` mỗi lần `state/halt.lock`
+  CHUYỂN trạng thái (không lặp lại mỗi tick), cập nhật `bot_state`
+  (`STOPPED`/`WATCHING`). Paper loop dừng THẬT (không chỉ hiển thị): cả 3
+  nguồn tx (`subscribe_pending_txs`/`poll_txpool_pending`/
+  `watch_inject_file`) tự kiểm `state_files.is_halted()` NGAY TRƯỚC khi
+  `tokio::spawn(handle_paper_tx(...))`, cộng 1 lớp bảo vệ thứ 2 ngay đầu
+  `handle_paper_tx`.
+
+### Mục 13 (bổ sung giữa phiên) — `scripts/paper_run.sh`
+
+4 lỗi đo được sửa theo đúng yêu cầu (a-d, xem lệnh gốc) + **1 bug thật phát
+hiện thêm ngoài 4 mục đó**: `.env` được `source` (`. ./.env`) vào shell hiện
+tại nhưng KHÔNG `export` (file `.env` không có từ khoá `export` trước mỗi
+dòng) — biến chỉ tồn tại trong shell CHẠY SCRIPT, KHÔNG truyền xuống tiến
+trình con `./target/release/bsc_sandwich ... &`. Hệ quả quan sát thật: bot
+con hoàn toàn không thấy `BSC_HTTP`/`BSC_WS`, rơi về `vps.json` (còn
+placeholder `"REPLACE_ME_..."`) → lỗi `relative URL without a base`, 0 kết
+nối RPC nào suốt lần chạy đầu debug phiên này. Sửa bằng `set -a` (auto-export
+mọi biến gán trong khối `source`) trước dòng `. ./.env`, `set +a` ngay sau.
+Verify: lần chạy SAU khi sửa, `seen=~20000` tx thật/phút, `venue_v2=~100+`,
+và quan trọng nhất — `nonce_stale` quan sát dương thật (xem mục 7 trên),
+chứng minh cả đường RPC lẫn gate nonce mới đều hoạt động trên dữ liệu sống.

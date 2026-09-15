@@ -77,13 +77,6 @@ pub struct Config {
     /// ~3s/block).
     pub executor_deadline_buffer_sec: u64,
 
-    /// Cụm `7.3` (BAOCAO16) — slippage (basis point) áp vào `amount_out_min`
-    /// khi build tx paper (`executor::apply_slippage`): `amount_out_min =
-    /// expected * (10000 - bps) / 10000`. Field bắt buộc, ship `50` (0.5%).
-    /// KHÔNG liên quan `max_roundtrip_tax`/`max_roundtrip_tax_bps` (đó là
-    /// ngưỡng phát hiện tax, đây là dung sai trượt giá khi build calldata).
-    pub executor_slippage_bps: u32,
-
     /// Cụm pair-mode — đường dẫn `pairs.txt` (`PairBook`), cùng khuôn
     /// `victims_path`. Field bắt buộc (thiếu = fail load).
     pub pairs_path: String,
@@ -182,10 +175,11 @@ pub struct Config {
     /// `tax.rs::TaxCache::get_fresh_ttl`.
     pub tax_cache_ttl_sec: u64,
 
-    /// Cụm `evm-validate-fixed-then-wire` (D1) — slippage riêng cho chân
-    /// FRONT-BUY (bps). Tách khỏi `executor_slippage_bps` (vẫn đọc được, giữ
-    /// nguyên cho tương thích) vì 2 chân có rủi ro khác nhau: front-buy chạy
-    /// TRƯỚC victim nên giá gần như chắc chắn, chịu được slippage chặt.
+    /// Cụm `evm-validate-fixed-then-wire` (D1), giờ ĐÃ WIRE thật vào build
+    /// (cụm `exec-path-traps` F-08) — slippage riêng cho chân FRONT-BUY
+    /// (bps). Thay hẳn `executor_slippage_bps` (field đó đã XOÁ — 2 chân có
+    /// rủi ro khác nhau: front-buy chạy TRƯỚC victim nên giá gần như chắc
+    /// chắn, chịu được slippage chặt, không nên dùng chung 1 số với back-sell).
     pub front_slippage_bps: u32,
 
     /// Cụm `evm-validate-fixed-then-wire` (D1) — slippage riêng cho chân
@@ -244,8 +238,24 @@ pub fn bnb_f64_to_wei(v: f64) -> U256 {
     U256::from(wei as u128)
 }
 
+/// Cụm `exec-path-traps` (F-08) — field `config.toml` đã ĐỔI TÊN, còn xuất
+/// hiện thì fail load với thông báo RÕ (khác lỗi parse serde mù mờ "unknown
+/// field" — serde MẶC ĐỊNH không `deny_unknown_fields` nên field lạ vốn bị
+/// ÂM THẦM bỏ qua, không báo gì cả). `(tên_cũ, gợi_ý)`.
+const RENAMED_FIELDS: &[(&str, &str)] = &[("executor_slippage_bps", "front_slippage_bps / back_slippage_bps")];
+
 impl Config {
     pub fn from_str(s: &str) -> Result<Self, ConfigError> {
+        let raw: toml::Value = toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        if let Some(table) = raw.as_table() {
+            for (old_name, new_name) in RENAMED_FIELDS {
+                if table.contains_key(*old_name) {
+                    return Err(ConfigError::Parse(format!(
+                        "field '{old_name}' da doi ten thanh '{new_name}' (cum exec-path-traps) - xoa field cu khoi config.toml"
+                    )));
+                }
+            }
+        }
         let mut cfg: Config = toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
         cfg.validate()?;
         // Danh dau moc "vua load xong" ngay tai day (cung quy uoc
@@ -435,19 +445,66 @@ impl Config {
         bnb_f64_to_wei(self.pairs_min_swap_bnb)
     }
 
-    /// Cổng live theo CLAUDE.md mục "Live". `halt_locked` đọc từ state/halt.lock.
-    /// version_pinned/version_live là cờ riêng của từng family (v2/v3/v4), truyền
-    /// vào để không lặp lại logic ở nhiều nơi.
-    pub fn live_gate_ok(&self, halt_locked: bool, version_live: bool, version_pinned: bool, gas_cap_positive: bool) -> bool {
-        self.allow_live
-            && !self.dry_run
-            && self.bot_armed
-            && !halt_locked
-            && self.chain_id == REQUIRED_CHAIN_ID
-            && version_live
-            && version_pinned
-            && gas_cap_positive
+    /// Cụm `exec-path-traps` (F-05) — cổng live CHI TIẾT, NGUỒN DUY NHẤT cho
+    /// mọi điều kiện live theo CLAUDE.md mục "Live". `halt_exists` đọc từ
+    /// `state/halt.lock`. `version_flag_name`/`version_live`/`version_pinned`
+    /// là cờ riêng của family (v2/v3/v4) ĐANG được đánh giá, gọi lại hàm này
+    /// riêng cho từng family cần live. Gom TẤT CẢ lý do thiếu vào `failures`
+    /// (không dừng ở lý do đầu tiên) — trước bản sửa này, `executor::gate_check`
+    /// có 1 bản CHÉP RIÊNG của các điều kiện này mà THIẾU `version_pinned`
+    /// (audit F-05: 2 cổng lệch nhau) — giờ chỉ còn ĐÚNG 1 chỗ định nghĩa,
+    /// `live_gate_ok`/`executor::can_send_live`/`executor::gate_check` (giữ
+    /// lại làm hàm mỏng gọi thẳng xuống đây) đều dùng chung.
+    pub fn gate_check(&self, halt_exists: bool, version_flag_name: &str, version_live: bool, version_pinned: bool) -> LiveGateStatus {
+        let mut failures = Vec::new();
+        if !self.allow_live {
+            failures.push("allow_live=false".to_string());
+        }
+        if self.dry_run {
+            failures.push("dry_run=true".to_string());
+        }
+        if !self.bot_armed {
+            failures.push("bot_armed=false".to_string());
+        }
+        if halt_exists {
+            failures.push("halt.lock present".to_string());
+        }
+        if self.chain_id != REQUIRED_CHAIN_ID {
+            failures.push(format!("chain_id={} != {REQUIRED_CHAIN_ID}", self.chain_id));
+        }
+        if !version_live {
+            failures.push(format!("{version_flag_name}=false"));
+        }
+        if !version_pinned {
+            failures.push(format!("{version_flag_name}_pinned=false"));
+        }
+        if self.front_max_gas_bnb_wei == 0 {
+            failures.push("front_max_gas_bnb_wei=0".to_string());
+        }
+        if self.back_max_gas_bnb_wei == 0 {
+            failures.push("back_max_gas_bnb_wei=0".to_string());
+        }
+        LiveGateStatus { ok: failures.is_empty(), failures }
     }
+
+    /// Cổng live theo CLAUDE.md mục "Live", dạng `bool` tiện dụng — GỌI THẲNG
+    /// `gate_check` ở trên (F-05, không còn 2 danh sách điều kiện tách rời).
+    /// `gas cap > 0` đọc THẲNG từ `front_max_gas_bnb_wei`/`back_max_gas_bnb_wei`
+    /// (bên trong `gate_check`) thay vì nhận tham số `gas_cap_positive` rời
+    /// như bản cũ — tránh caller tự tính sai/quên đồng bộ 2 field gas.
+    pub fn live_gate_ok(&self, halt_locked: bool, version_live: bool, version_pinned: bool) -> bool {
+        self.gate_check(halt_locked, "version", version_live, version_pinned).ok
+    }
+}
+
+/// Cụm `7.1` — kết quả cổng live CHI TIẾT (khác `live_gate_ok` chỉ trả
+/// `bool`): liệt kê ĐỦ các điều kiện đang THIẾU để chủ/Grok biết chính xác
+/// cái gì chưa xanh, thay vì chỉ biết `false`. Dời từ `executor.rs` sang đây
+/// (F-05) vì `Config::gate_check` giờ là nguồn duy nhất sinh ra kiểu này.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveGateStatus {
+    pub ok: bool,
+    pub failures: Vec<String>,
 }
 
 /// Cụm pair-mode/7.1 — wire 2 field từng chỉ validate-lúc-load mà chưa có
@@ -542,7 +599,6 @@ max_roundtrip_tax = 0.005
 tax_cache_blocks = 30
 allow_tax_inject = true
 executor_deadline_buffer_sec = 120
-executor_slippage_bps = 50
 pairs_path = "pairs.txt"
 pairs_reload_sec = 30
 pairs_min_swap_bnb = 0.05
@@ -607,9 +663,48 @@ back_slippage_bps = 50
     #[test]
     fn dry_run_true_blocks_live_gate() {
         let cfg = Config::from_str(&base_toml()).unwrap();
-        // Không có halt, version pinned+live giả định true, gas cap > 0:
-        // nhưng dry_run=true và allow_live=false nên cổng live PHẢI đóng.
-        assert!(!cfg.live_gate_ok(false, true, true, true));
+        // Không có halt, version pinned+live giả định true, gas cap > 0
+        // (base_toml ship có front/back_max_gas_bnb_wei > 0): nhưng
+        // dry_run=true và allow_live=false nên cổng live PHẢI đóng.
+        assert!(!cfg.live_gate_ok(false, true, true));
+    }
+
+    /// Cụm `exec-path-traps` (F-05) — ĐẠT CẦN DÁN "2 cổng cho cùng kết quả
+    /// với mọi tổ hợp 8 cờ": duyệt toàn bộ 2^8=256 tổ hợp của 8 điều kiện live
+    /// (allow_live, dry_run, bot_armed, halt, chain_id==56, version_live,
+    /// version_pinned, gas_cap>0 — gộp front/back thành 1 cờ vì `gate_check`
+    /// luôn kiểm CẢ HAI cùng lúc) và xác nhận `live_gate_ok(...)` (bool) ==
+    /// `gate_check(...).ok` (chi tiết) cho MỌI tổ hợp — không chỉ vài case
+    /// tay. Trước F-05, `executor::gate_check` là 1 bản CHÉP RIÊNG thiếu
+    /// `version_pinned` nên có thể lệch với `live_gate_ok`; giờ cả hai gọi
+    /// chung 1 hàm nên test này chủ yếu là bảo vệ hồi quy (chống ai đó tách
+    /// lại thành 2 bản trong tương lai).
+    #[test]
+    fn gate_check_and_live_gate_ok_agree_on_all_256_flag_combinations() {
+        let mut cfg = Config::from_str(&base_toml()).unwrap();
+        for bits in 0u32..256 {
+            cfg.allow_live = bits & 1 != 0;
+            cfg.dry_run = bits & 2 != 0;
+            cfg.bot_armed = bits & 4 != 0;
+            let halt = bits & 8 != 0;
+            cfg.chain_id = if bits & 16 != 0 { 56 } else { 1 };
+            let version_live = bits & 32 != 0;
+            let version_pinned = bits & 64 != 0;
+            let gas_ok = bits & 128 != 0;
+            cfg.front_max_gas_bnb_wei = if gas_ok { 1 } else { 0 };
+            cfg.back_max_gas_bnb_wei = if gas_ok { 1 } else { 0 };
+
+            let bool_result = cfg.live_gate_ok(halt, version_live, version_pinned);
+            let detailed_result = cfg.gate_check(halt, "live_v2", version_live, version_pinned).ok;
+            assert_eq!(
+                bool_result, detailed_result,
+                "bits={bits:#010b}: live_gate_ok={bool_result} != gate_check.ok={detailed_result}"
+            );
+        }
+        // chain_id bi doi trong vong lap tren - dat lai 56 de khong lam
+        // "bau" cfg cho test khac neu ai do tai dung bien nay (khong xay ra
+        // trong suite hien tai vi cfg la local, nhung ghi ro cho ro rang).
+        cfg.chain_id = 56;
     }
 
     /// Lệnh chủ: "load max_front_bnb=100, min_profit_bnb=0 → OK" — không chặn
@@ -797,12 +892,11 @@ back_slippage_bps = 50
         assert_eq!(cfg.min_profit_bnb, 0.01, "reload that bai phai giu nguyen config cu");
     }
 
-    /// `executor_deadline_buffer_sec`/`executor_slippage_bps` la field bat
-    /// buoc moi (cum `7.3`, BAOCAO16) - thieu field nao cung phai fail load,
-    /// cung khuon cac field bat buoc khac.
+    /// `executor_deadline_buffer_sec` la field bat buoc (cum `7.3`, BAOCAO16)
+    /// - thieu no phai fail load, cung khuon cac field bat buoc khac.
     #[test]
     fn missing_executor_fields_fail_load() {
-        for needle in ["executor_deadline_buffer_sec = 120\n", "executor_slippage_bps = 50\n"] {
+        for needle in ["executor_deadline_buffer_sec = 120\n"] {
             let toml_str = base_toml().replace(needle, "");
             let err = Config::from_str(&toml_str).unwrap_err();
             match err {
@@ -816,7 +910,23 @@ back_slippage_bps = 50
     fn executor_fields_load_ship_defaults() {
         let cfg = Config::from_str(&base_toml()).unwrap();
         assert_eq!(cfg.executor_deadline_buffer_sec, 120);
-        assert_eq!(cfg.executor_slippage_bps, 50);
+    }
+
+    /// Cụm `exec-path-traps` (F-08) — ĐẠT CẦN DÁN: field `executor_slippage_bps`
+    /// (đã đổi tên) còn sót trong `config.toml` -> fail load với thông báo RÕ
+    /// nhắc tên field mới, KHÔNG âm thầm bị serde bỏ qua (mặc định
+    /// `toml::from_str` không `deny_unknown_fields`).
+    #[test]
+    fn executor_slippage_bps_still_present_fails_load_with_clear_rename_message() {
+        let toml_str = format!("{}\nexecutor_slippage_bps = 50\n", base_toml());
+        let err = Config::from_str(&toml_str).unwrap_err();
+        match err {
+            ConfigError::Parse(msg) => {
+                assert!(msg.contains("executor_slippage_bps"), "thong bao phai nhac ten field cu: {msg}");
+                assert!(msg.contains("da doi ten"), "thong bao phai noi ro 'da doi ten': {msg}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
     }
 
     /// `pairs_path`/`pairs_reload_sec`/`pairs_min_swap_bnb` la field bat buoc

@@ -41,9 +41,16 @@ fi
 echo "== may chay: $RUN_ENV (repo: $ROOT) =="
 
 # ---- verify BSC_WS host = publicnode, KHONG in URL/token ----
+# `set -a` de MOI bien duoc source tu .env tu dong EXPORT ra tien trinh con
+# (`./target/release/bsc_sandwich ... &` ben duoi) - thieu buoc nay, .env chi
+# dinh nghia BIEN SHELL cuc bo (vi .env khong co tu khoa `export` truoc moi
+# dong), bot con chay khong thay BSC_HTTP/BSC_WS gi ca, roi VOI xuong
+# vps.json (con placeholder "REPLACE_ME_..." chua thay) -> loi "relative URL
+# without a base", khong ket noi RPC nao - da quan sat that phien nay truoc
+# khi sua (loi nay co tu truoc, khong phai do cum lenh nay gay ra).
 if [ -f .env ]; then
   # shellcheck disable=SC1091
-  set +u; . ./.env 2>/dev/null || true; set -u
+  set +u -a; . ./.env 2>/dev/null || true; set -u +a
 fi
 if [ -n "${BSC_WS:-}" ]; then
   WS_HOST="$(printf '%s' "$BSC_WS" | sed -E 's#^[a-z]+://##; s#[:/].*$##')"
@@ -101,32 +108,98 @@ echo "== config TAM (nguong 0 + universal + USDT + sim_engine=evm), port $PORT =
 # Binary nhan duong dan config lam THAM SO VI TRI THU 1 (src/main.rs:28), KHONG
 # phai --config. Config tam co web_port rieng nen khong dung web_port that.
 LOG="logs/paper_run_$(date +%s).log"
-echo "== chay bot $MINUTES phut, log -> $LOG =="
+
+# ---- cum exec-path-traps (muc 13a): chi dem log CUA LAN CHAY NAY, khong
+# lan voi log tich luy tu cac lan chay truoc trong CUNG file logs/bot.jsonl
+# (file dung chung, khong bi xoa giua cac lan chay). Ghi lai dong cuoi cung
+# TRUOC khi bot moi khoi dong, RUN_LOG() chi doc TU dong ke tiep tro di.
+mkdir -p logs
+touch logs/bot.jsonl
+START_LINE=$(( $(wc -l < logs/bot.jsonl 2>/dev/null || echo 0) + 1 ))
+RUN_LOG() { tail -n +"$START_LINE" logs/bot.jsonl 2>/dev/null; }
+
+# `grep -c PATTERN` LUON in ra so dem (ke ca "0") NHUNG van thoat ma 1 neu
+# khong co dong nao khop - "X=$(grep -c ... || echo 0)" vi vay bi GHI DOI 2
+# LAN ("0" that cua grep -c CONG THEM "0" cua || echo 0) khi dem ra 0. Dung 2
+# ham nay o MOI cho can dem dong bang grep -c de tranh loi do (chi dung
+# `|| true` giu nguyen dung 1 gia tri grep -c da in).
+count_matches() { # count_matches <pattern>
+  RUN_LOG | { grep -c "$1" || true; }
+}
+count_matches_in() { # count_matches_in <pattern_loc> <pattern_dem>
+  # QUAN TRONG: MOI stage trong pipe phai tu "|| true" rieng — voi
+  # `set -o pipefail`, exit code cua CA PIPE la exit code cua stage THAT BAI
+  # CUOI CUNG TINH TU PHAI SANG (khong phai chi stage cuoi cung): neu chi
+  # bao ve stage `grep -c` cuoi (`|| true`) ma stage `grep "$1"` GIUA bi 0
+  # dong khop (exit 1, dieu BINH THUONG khi dem ra 0), pipefail VAN bao loi
+  # ca pipe (vi stage giua la "rightmost FAILING stage"), lam `set -e` giet
+  # ca script — da tu tai hien bug nay that (script chet dung ngay o day
+  # truoc khi sua, khong thay dong "== halt bot ..." nao ca).
+  RUN_LOG | { grep "$1" || true; } | { grep -c "$2" || true; }
+}
+
+echo "== chay bot $MINUTES phut, log -> $LOG (bot.jsonl tu dong $START_LINE) =="
 ./target/release/bsc_sandwich "$CFG" >"$LOG" 2>&1 &
 echo $! > state/paper_run.pid
 PID="$(cat state/paper_run.pid)"
 echo "PID=$PID"
 
-sleep $(( MINUTES * 60 ))
+# ---- cum exec-path-traps (muc 13c): phat hien bot chet giua chung thay vi
+# ngu mu roi bao ket qua rong nhu thanh cong ----
+ELAPSED_MIN=0
+while [ "$ELAPSED_MIN" -lt "$MINUTES" ]; do
+  sleep 60
+  ELAPSED_MIN=$((ELAPSED_MIN + 1))
+  if ! kill -0 "$PID" 2>/dev/null; then
+    echo "BOT DA CHET sau $ELAPSED_MIN phut"
+    echo "---- tail -30 $LOG ----"
+    tail -30 "$LOG" || true
+    exit 1
+  fi
+done
 
 BASE="http://127.0.0.1:$PORT"
 echo "======== KET QUA SAU $MINUTES PHUT (may: $RUN_ENV, binary sha256: $BIN_SHA, git HEAD: $GIT_HEAD) ========"
-echo "---- 30 dong funnel.minute cuoi (logs/bot.jsonl) ----"
-grep '"event":"funnel.minute"' logs/bot.jsonl 2>/dev/null | tail -30 || echo "(chua co funnel.minute)"
+echo "---- 30 dong funnel.minute cuoi (lan chay nay) ----"
+RUN_LOG | grep '"event":"funnel.minute"' | tail -30 || echo "(chua co funnel.minute)"
 echo "---- /api/skips ----"; curl -s "$BASE/api/skips" || true; echo
 echo "---- /api/funnel ----"; curl -s "$BASE/api/funnel" || true; echo
 echo "---- /api/tax ----"; curl -s "$BASE/api/tax" || true; echo
 echo "---- /api/validate ----"; curl -s "$BASE/api/validate" || true; echo
-echo "---- 20 dong tx.skip cuoi (token+venue) ----"
-grep '"event":"tx.skip"' logs/bot.jsonl 2>/dev/null | tail -20 || true
-echo "---- 10 dong sim.evm cuoi ----"
-grep '"event":"sim.evm"' logs/bot.jsonl 2>/dev/null | tail -10 || true
-echo "---- dem Simulated (sim.evm decision=simulated) ----"
-grep '"event":"sim.evm"' logs/bot.jsonl 2>/dev/null | grep -c '"decision":"simulated"' || echo 0
+echo "---- 20 dong tx.skip cuoi (lan chay nay) ----"
+RUN_LOG | grep '"event":"tx.skip"' | tail -20 || true
+echo "---- 10 dong sim.evm cuoi (lan chay nay) ----"
+RUN_LOG | grep '"event":"sim.evm"' | tail -10 || true
+echo "---- dem Simulated (sim.evm decision=simulated, lan chay nay) ----"
+count_matches_in '"event":"sim.evm"' '"decision":"simulated"'
 
-# ---- halt sach ----
-echo "== halt bot (ghi state/halt.lock + kill PID) =="
+# ---- halt sach: cho halt.triggered THAT truoc khi kill (muc 13b) ----
+echo "== halt bot (ghi state/halt.lock, cho halt.triggered toi da 10s, roi kill PID) =="
 : > state/halt.lock
+HALT_WAITED=0
+while [ "$HALT_WAITED" -lt 20 ]; do
+  if RUN_LOG | grep -q '"event":"halt.triggered"'; then
+    break
+  fi
+  sleep 0.5
+  HALT_WAITED=$((HALT_WAITED + 1))
+done
+HALT_TRIGGERED_COUNT="$(count_matches '"event":"halt.triggered"')"
+echo "halt.triggered count (lan chay nay) = $HALT_TRIGGERED_COUNT"
+HALT_LINE_NO="$(RUN_LOG | grep -n '"event":"halt.triggered"' | head -1 | cut -d: -f1 || true)"
+if [ -n "${HALT_LINE_NO:-}" ]; then
+  TX_SEEN_AFTER_HALT="$(RUN_LOG | tail -n +"$((HALT_LINE_NO + 1))" | { grep -c '"event":"tx.seen"' || true; })"
+else
+  TX_SEEN_AFTER_HALT="N/A (chua thay halt.triggered trong ${HALT_WAITED}00ms cho)"
+fi
+echo "tx.seen sau halt.triggered (lan chay nay) = $TX_SEEN_AFTER_HALT (ky vong 0)"
 kill "$PID" 2>/dev/null || true
+
+# ---- dong tong ket DoD (muc 13d) ----
+TX_BUILD_COUNT="$(count_matches '"event":"tx.build"')"
+SIMULATED_COUNT="$(count_matches_in '"event":"sim.evm"' '"decision":"simulated"')"
+BUILD_REFUSED_COUNT="$(count_matches '"event":"build.refused"')"
+echo "tx.build=$TX_BUILD_COUNT simulated=$SIMULATED_COUNT build.refused=$BUILD_REFUSED_COUNT halt.triggered=$HALT_TRIGGERED_COUNT"
+
 echo "DONE. Log day du: $LOG (redact secret truoc khi dan cho Grok)."
 echo "Nho dan lai: may=$RUN_ENV, binary sha256=$BIN_SHA, git HEAD=$GIT_HEAD (luat #2 CLAUDE.md)."

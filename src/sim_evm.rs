@@ -189,9 +189,19 @@ fn build_evm(db: ForkDb, fork_block: u64, block_timestamp: u64) -> ForkEvm {
             cfg.chain_id = 56;
             // Sim don thuan kinh te (khong phai validate block that) - tat
             // nonce check de khong phai tu quan ly nonce cho attacker giua
-            // cac tx (front/approve/back), giu nguyen nonce that cho victim
-            // (van truyen dung, chi khong bi CHAN neu lech - uu tien chay
-            // duoc de do kinh te, khong phai validate consensus).
+            // cac tx (front/approve/back, ca 3 dung chung nonce=0, xem
+            // run_sandwich) - CO CHU Y ap dung cho CA victim vi day la
+            // 1 setting toan cuc cua revm (khong co co che tat rieng tung tx).
+            //
+            // Cum `exec-path-traps` (F-13) - dung y "disable_nonce_check CHI
+            // ap cho executor gia, KHONG cho victim" duoc dam bao O BEN NGOAI
+            // ham nay: main.rs::run_evm_decision goi transport::fetch_expected_nonce
+            // (eth_getTransactionCount that) + transport::compare_nonce TRUOC
+            // KHI fork nay duoc mo, tu choi (nonce_stale/nonce_future) moi
+            // candidate co nonce victim sai lech - vi vay setting cfg nay chi
+            // con anh huong toi 3 tx gia cua attacker (dung y dinh), nonce
+            // victim da duoc xac minh THAT qua RPC truoc do, khong phu thuoc
+            // revm co check hay khong.
             cfg.disable_nonce_check = true;
             // BSC spec gan nhat pho bien co san trong revm - khong co
             // SpecId rieng cho BSC, cac opcode swap/ERC20 khong dung tinh

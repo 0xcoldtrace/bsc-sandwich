@@ -124,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         pending_semaphore: Arc::new(Semaphore::new(4)),
         pending_source: RwLock::new(transport::PendingSource::InjectOnly),
         risk_guard: RwLock::new(RiskGuard::new()),
+        nonce_cache: RwLock::new(transport::NonceCache::new()),
         funnel: FunnelCounters::new(),
     });
 
@@ -244,6 +245,12 @@ async fn main() -> anyhow::Result<()> {
     // trong config.toml, cadence noi bo giong `http_pool_health_check`/
     // `watch_inject_file`.
     tokio::spawn(funnel_report_task(app_state.clone(), Duration::from_secs(60)));
+
+    // Cum `exec-path-traps` (V-06) - theo doi state/halt.lock (log
+    // halt.triggered/halt.cleared dung 1 lan moi lan chuyen trang thai + cap
+    // nhat bot_state). Cadence 1s - phai du nhanh de paper_run.sh (cho toi da
+    // 10s) thay duoc su kien nay som.
+    tokio::spawn(halt_watch_task(app_state.clone(), Duration::from_secs(1)));
 
     let addr = format!("{web_bind}:{web_port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -437,8 +444,13 @@ async fn subscribe_pending_txs(app_state: AppState, ws_urls: Vec<String>, http_p
                     // Cum A4 - gate (a) giong het poll_txpool_pending (xem doc-comment
                     // o do): `to` khong nam trong 5 router Pancake da pin -> khong
                     // log tx.seen tung dong, khong spawn, chi dem qua funnel.
-                    if !passes_router_gate(raw.to) {
+                    if !passes_router_gate(raw.to, "pending_ws") {
                         app_state.funnel.record_not_pancake_router();
+                    } else if app_state.state_files.is_halted() {
+                        // Cum `exec-path-traps` (V-06) - halt.lock ton tai -
+                        // KHONG spawn handle_paper_tx (paper loop dung THAT,
+                        // khong chi hien thi tren dashboard). halt_watch_task
+                        // lo viec log chuyen trang thai/cap nhat bot_state.
                     } else {
                         log_tx_seen(&app_state.logger, "pending_ws", &raw);
                         tokio::spawn(handle_paper_tx(app_state.clone(), raw));
@@ -580,7 +592,7 @@ async fn poll_txpool_pending(app_state: AppState, http_pool: Arc<transport::RpcP
                 // nao (KHONG log tx.seen tung dong, chi dem qua funnel) - cap
                 // `pending_txpool_max_per_poll` CHI ap dung cho tx da qua loc
                 // nay (khong bi tieu ton boi rac khong lien quan Pancake).
-                if !passes_router_gate(raw.to) {
+                if !passes_router_gate(raw.to, "txpool") {
                     app_state.funnel.record_not_pancake_router();
                     continue;
                 }
@@ -588,6 +600,12 @@ async fn poll_txpool_pending(app_state: AppState, http_pool: Arc<transport::RpcP
                     break 'outer;
                 }
                 new_count += 1;
+                // Cum `exec-path-traps` (V-06) - halt.lock ton tai -> khong
+                // spawn handle_paper_tx (van dem "seen"/qua gate router o
+                // tren, chi dung LAI truoc buoc xu ly paper that).
+                if app_state.state_files.is_halted() {
+                    continue;
+                }
                 log_tx_seen(&app_state.logger, "txpool", &raw);
                 tokio::spawn(handle_paper_tx(app_state.clone(), raw));
             }
@@ -671,6 +689,12 @@ async fn watch_inject_file(app_state: AppState) {
             match transport::parse_inject_line(line) {
                 Ok(raw) => {
                     app_state.funnel.record_seen();
+                    // Cum `exec-path-traps` (V-06) - halt.lock ton tai ->
+                    // khong spawn handle_paper_tx (van dem "seen" cho tx da
+                    // parse duoc, chi dung LAI truoc buoc xu ly paper that).
+                    if app_state.state_files.is_halted() {
+                        continue;
+                    }
                     log_tx_seen(&app_state.logger, "inject", &raw);
                     tokio::spawn(handle_paper_tx(app_state.clone(), raw));
                 }
@@ -780,6 +804,10 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
             pipeline::PipelineSkip::SimError => funnel.record_sim_error(),
             pipeline::PipelineSkip::Unprofitable => funnel.record_unprofitable(),
             pipeline::PipelineSkip::VictimWouldRevert => funnel.record_victim_would_revert(),
+            // Cum `exec-path-traps` (F-14/F-13)
+            pipeline::PipelineSkip::Deadline => funnel.record_deadline(),
+            pipeline::PipelineSkip::NonceStale => funnel.record_nonce_stale(),
+            pipeline::PipelineSkip::NonceFuture => funnel.record_nonce_future(),
             // NotInList/NotPancakeRouter khong roi vao day (NotPancakeRouter
             // bi chan truoc khi co PipelineOutcome nao duoc tao; NotInList
             // khong co bucket rieng trong danh sach lenh goc A6).
@@ -800,15 +828,77 @@ async fn funnel_report_task(app_state: AppState, interval: Duration) {
     }
 }
 
+/// Cụm `exec-path-traps` (V-06) — theo dõi `state/halt.lock` ĐỘC LẬP với 3
+/// nguồn tx (`subscribe_pending_txs`/`poll_txpool_pending`/`watch_inject_file`,
+/// mỗi nguồn tự kiểm `state_files.is_halted()` NGAY TRƯỚC khi spawn
+/// `handle_paper_tx` — xem 3 hàm đó, đó là nơi paper loop THẬT SỰ dừng).
+/// Task này CHỈ lo 2 việc quan sát được từ ngoài: log ĐÚNG 1 dòng
+/// `halt.triggered`/`halt.cleared` mỗi lần CHUYỂN trạng thái (không lặp lại
+/// mỗi tick khi vẫn đang halt) + cập nhật `bot_state` cho `/api/status`
+/// (`STOPPED` khi halt, quay về `WATCHING` khi xoá file — đúng state machine
+/// CLAUDE.md `STOPPED --reset--> IDLE`... thực tế ở đây coi xoá halt.lock là
+/// "chạy lại bình thường", không phải nhánh `reset.req` riêng, xem
+/// `state.rs`).
+/// V-06 — logic THUẦN "trạng thái trước -> trạng thái hiện tại" ra quyết
+/// định log gì, tách khỏi `halt_watch_task` để test được không cần dựng
+/// `AppState` đầy đủ (state_files/logger/bot_state...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HaltTransition {
+    None,
+    Triggered,
+    Cleared,
+}
+
+fn halt_transition(was_halted: bool, now_halted: bool) -> HaltTransition {
+    match (was_halted, now_halted) {
+        (false, true) => HaltTransition::Triggered,
+        (true, false) => HaltTransition::Cleared,
+        _ => HaltTransition::None,
+    }
+}
+
+async fn halt_watch_task(app_state: AppState, interval: Duration) {
+    let mut was_halted = false;
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        let now_halted = app_state.state_files.is_halted();
+        match halt_transition(was_halted, now_halted) {
+            HaltTransition::Triggered => {
+                app_state.logger.log("halt.triggered", serde_json::json!({}));
+                *app_state.bot_state.write().await = BotState::Stopped;
+            }
+            HaltTransition::Cleared => {
+                app_state.logger.log("halt.cleared", serde_json::json!({}));
+                *app_state.bot_state.write().await = BotState::Watching;
+            }
+            HaltTransition::None => {}
+        }
+        was_halted = now_halted;
+        ticker.tick().await;
+    }
+}
+
 /// Cụm `foundation-fix-then-real-sim` (A4) — gate rẻ tiền (0 RPC, chạy TRƯỚC
 /// decode): `to=None` (tx inject định dạng cũ, không có cột `to`) coi là
-/// "không rõ router" -> CHO QUA (không đủ dữ liệu để từ chối, giữ khả năng
-/// test bằng inject cũ không bị vỡ, xem doc-comment `PendingTxRaw::to`).
-/// `to=Some(addr)` -> phải khớp 1 trong 5 router Pancake đã pin
-/// (`venues::venue_for_router`), sai thì `false` (`not_pancake_router`).
-fn passes_router_gate(to: Option<Address>) -> bool {
+/// "không rõ router" -> CHO QUA CHỈ khi `source == "inject"` (tx bơm từ
+/// `state/inject_tx.jsonl` định dạng cũ, không có cột `to`, xem doc-comment
+/// `PendingTxRaw::to`). `to=Some(addr)` -> phải khớp 1 trong 5 router Pancake
+/// đã pin (`venues::venue_for_router`), sai thì `false` (`not_pancake_router`),
+/// BẤT KỂ `source`.
+///
+/// Cụm `exec-path-traps` (F-15) — TRƯỚC bản sửa này, `to=None` LUÔN `true`
+/// (không phân biệt nguồn), nghĩa là 1 tx WS/`txpool_content` thật hiếm khi
+/// trả `to=None` (vd contract-creation lẫn vào path swap do lỗi decode
+/// nguồn/node) sẽ lọt qua gate (a) dù không có cách nào biết nó có phải
+/// router Pancake hay không — rủi ro "cho qua nhầm" đúng như audit F-15 chỉ
+/// ra. `pending_tx_from_rpc` xác nhận tx pending THẬT (WS/`txpool_content`)
+/// LUÔN có `Some(to)` (trừ trường hợp hiếm contract-creation không nằm trong
+/// path swap nào cả) nên xiết chặt về `false` cho các nguồn đó không phá vỡ
+/// hành vi thật — chỉ `source == "inject"` (định dạng cũ, cố ý không có cột
+/// `to`) mới còn được CHO QUA khi `to=None`.
+fn passes_router_gate(to: Option<Address>, source: &str) -> bool {
     match to {
-        None => true,
+        None => source == "inject",
         Some(addr) => venues::venue_for_router(addr).is_some(),
     }
 }
@@ -829,6 +919,7 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         venue: router_venue.map(|v| v.as_str().to_string()),
         selector: selector_hex_of(&raw.input),
         fee: None,
+        detail: None,
     }
 }
 
@@ -883,6 +974,12 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
         // dam bao khong chay nham logic paper khi chu da chuyen sang live).
         return;
     }
+    // Cum `exec-path-traps` (V-06) - lop bao ve THU 2 (3 nguon tx da tu kiem
+    // truoc khi spawn ham nay, xem subscribe_pending_txs/poll_txpool_pending/
+    // watch_inject_file) - phong truong hop mot nguon tx tuong lai quen kiem.
+    if app_state.state_files.is_halted() {
+        return;
+    }
     let current_block = app_state.last_block.read().await.unwrap_or(0);
     let mut meta = build_tx_log_meta(&raw);
 
@@ -902,7 +999,22 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // luon `null` sai (xem docs/TASKS.md/BAOCAO28 muc no). Sua: giu token
     // THAT ngay khi `precheck` tra `Ok`, CHI `None` khi chinh buoc decode nay
     // that bai (`decode_fail`/`not_wbnb_pair` - token chua tung biet duoc).
-    let mut token_hint = token_hint_from_precheck(precheck.map(|(t, _)| t));
+    let mut token_hint = token_hint_from_precheck(precheck.map(|(t, _, _)| t));
+
+    // Cum `exec-path-traps` (F-16) - cross-check router THAT (tx.to, qua
+    // venues::venue_for_router) voi selector da decode - selector V2 co dien
+    // gui toi router V3/UR (hoac nguoc lai) la calldata bat thuong/decode
+    // nham, coi nhu decode_fail (KHONG phai candidate hop le) thay vi cho
+    // tiep tuc vao nhanh V2/V3 nhu binh thuong.
+    let router_venue = raw.to.and_then(venues::venue_for_router);
+    let precheck = precheck.and_then(|(token, venue, selector_name)| {
+        if bsc_sandwich::decoder::venue_matches_router(selector_name, router_venue) {
+            Ok((token, venue))
+        } else {
+            meta.detail = Some("venue_mismatch".to_string());
+            Err(pipeline::PipelineSkip::DecodeFail)
+        }
+    });
 
     let (outcome, source) = match precheck {
         Err(skip) => (PipelineOutcome::Skip(skip), "none"),
@@ -1032,6 +1144,33 @@ async fn run_evm_decision(
         Some(p) => p.clone(),
         None => return PipelineOutcome::Skip(pipeline::PipelineSkip::SimError),
     };
+
+    // Cum `exec-path-traps` (F-13) - nonce THAT cua victim, chay TRUOC ca
+    // buoc do tax/mo fork EVM (re nhat, chan som candidate khong con y nghia
+    // sandwich truoc khi ton tai nguyen EVM). `disable_nonce_check=true`
+    // trong sim_evm.rs::build_evm la CAU HINH NOI BO cua revm (can thiet de
+    // 3 tx gia cua attacker dung chung nonce=0 replay duoc, xem doc-comment
+    // o do) - KHONG lien quan gate ngoai nay: nonce victim duoc xac minh THAT
+    // qua RPC o day, doc lap voi revm, truoc khi fork ton tai.
+    {
+        let cached = app_state.nonce_cache.read().await.cached(raw.from, current_block);
+        let expected = match cached {
+            Some(n) => n,
+            None => match transport::fetch_expected_nonce(&provider, raw.from).await {
+                Ok(n) => {
+                    app_state.nonce_cache.write().await.insert(raw.from, current_block, n);
+                    n
+                }
+                Err(_) => return PipelineOutcome::Skip(pipeline::PipelineSkip::SimError),
+            },
+        };
+        match transport::compare_nonce(raw.nonce, expected) {
+            transport::NonceCheck::Ok => {}
+            transport::NonceCheck::Stale => return PipelineOutcome::Skip(pipeline::PipelineSkip::NonceStale),
+            transport::NonceCheck::Future => return PipelineOutcome::Skip(pipeline::PipelineSkip::NonceFuture),
+        }
+    }
+
     let quote_addr = match quote {
         pipeline::QuoteAsset::Wbnb => venues::wbnb_addr(),
         pipeline::QuoteAsset::Usdt => venues::usdt_addr(),
@@ -1096,6 +1235,11 @@ async fn run_evm_decision(
                 cache.insert_for_quote(token, quote_addr, bsc_sandwich::tax::TaxMeasurement::from_evm(m, current_block));
             }
             pipeline::log_sim_evm(&app_state.logger, raw.from, token, current_block, &p.evm_decision, quote);
+            // Cum `exec-path-traps` (F-26) - build CHI SAU KHI EVM da xac
+            // nhan Simulated that (evm.is_some()) - diem build DUY NHAT cho
+            // duong sim_engine=evm (decide_and_build_paper_v2 da NGUNG build
+            // som cho duong nay, xem pipeline.rs).
+            pipeline::build_paper_txs_from_evm_decision(&app_state.logger, cfg, raw.from, token, &p.evm_decision);
             // B3.4 - validator nhung: chi cho quote WBNB (predict_victim_swap_out
             // hien dung cho pool V2 WBNB; USDT ghi CON NO). Spawn khi EVM da
             // chay that (evm_decision co so lieu), de do do chinh xac song.
@@ -1156,6 +1300,30 @@ fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Addr
             Ok(Some(r)) => r,
             _ => return,
         };
+
+        // Cum `exec-path-traps` (F-04, muc b) - victim tx REVERT that
+        // (receipt.status()==false) la tin hieu "loss" NGAY, khong can doi
+        // toi buoc so pred/real (tx revert thi khong sinh Swap log nao ca ->
+        // nhanh duoi day se return som, mat dau vet neu khong bat o day
+        // TRUOC). Log rieng 1 dong `validate.victim` rut gon (khong co
+        // pred/real vi khong co Swap that de so) roi return, KHONG tiep tuc
+        // xuong buoc kiem tra co lap/du doan (khong con y nghia gi voi tx da
+        // revert).
+        if !receipt.status() {
+            app_state.risk_guard.write().await.record_result(true);
+            app_state.logger.log(
+                "validate.victim",
+                serde_json::json!({
+                    "hash": format!("{:#x}", victim.hash),
+                    "pair": format!("{:#x}", pair),
+                    "block": block_n,
+                    "victim_reverted": true,
+                    "risk_guard_is_loss": true,
+                }),
+            );
+            return;
+        }
+
         let mut victim_out_real = None;
         for log in receipt.inner.logs() {
             if log.address() == pair && log.topics().first() == Some(&swap_topic) {
@@ -1185,6 +1353,18 @@ fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Addr
         let pct = (u128::try_from(diff).unwrap_or(u128::MAX) as f64) / (u128::try_from(base).unwrap_or(1) as f64) * 100.0;
         let ok = isolated && pct <= 1.0;
 
+        // Cum `exec-path-traps` (F-04, muc b) - wire RiskGuard::record_result
+        // O DUONG PAPER: chua co giao dich that (dry_run=true, khong ky/gui
+        // gi) nen KHONG co "lo that" theo nghia tien that mat - dung KET QUA
+        // VALIDATOR (validate.victim, cung co che da dat 0% lech tren block
+        // co lap o B4''.2) lam tin hieu thay the de bo dem RiskGuard con
+        // SONG (F-04: "consecutive_loss vinh vien = 0 vi khong ai goi
+        // record_result"). Nhanh victim revert that da bat rieng o tren
+        // (return som) - o day chi con truong hop victim THANH CONG, "loss"
+        // = sim lech qua nguong (>1%, khong khop thuc te dung theo lenh).
+        let is_loss = pct > 1.0;
+        app_state.risk_guard.write().await.record_result(is_loss);
+
         let row = serde_json::json!({
             "hash": format!("{:#x}", victim.hash),
             "pair": format!("{:#x}", pair),
@@ -1194,6 +1374,8 @@ fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Addr
             "lech_pct": (pct * 10000.0).round() / 10000.0,
             "isolated": isolated,
             "block_delta": block_n.saturating_sub(0),
+            "victim_reverted": false,
+            "risk_guard_is_loss": is_loss,
         });
         app_state.logger.log("validate.victim", row.clone());
         app_state.validate_log.write().await.push(row, ok);
@@ -1225,6 +1407,97 @@ fn token_hint_from_precheck(precheck: Result<Address, pipeline::PipelineSkip>) -
 mod tests {
     use super::*;
 
+    // ===== Cụm `exec-path-traps` (V-06) — halt_transition =====
+
+    #[test]
+    fn halt_transition_false_to_true_is_triggered() {
+        assert_eq!(halt_transition(false, true), HaltTransition::Triggered);
+    }
+
+    #[test]
+    fn halt_transition_true_to_false_is_cleared() {
+        assert_eq!(halt_transition(true, false), HaltTransition::Cleared);
+    }
+
+    #[test]
+    fn halt_transition_unchanged_is_none() {
+        assert_eq!(halt_transition(false, false), HaltTransition::None);
+        assert_eq!(halt_transition(true, true), HaltTransition::None);
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh exec-path-traps, mục 12/V-06): `halt_watch_task`
+    /// chạy thật với `interval` cực ngắn trên `StateFiles` tạm — tạo
+    /// `halt.lock` giữa chừng, chờ task log ĐÚNG 1 dòng `halt.triggered`, xoá
+    /// file, chờ ĐÚNG 1 dòng `halt.cleared` — không lặp lại dù nhiều tick
+    /// trôi qua trong lúc file không đổi trạng thái.
+    #[tokio::test]
+    async fn halt_watch_task_logs_triggered_then_cleared_exactly_once_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = std::sync::Arc::new(BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap());
+        let state_files = std::sync::Arc::new(StateFiles::new(dir.path().join("state")).unwrap());
+        let cfg = Config::from_str(include_str!("../config.toml")).unwrap();
+        let app_state: AppState = std::sync::Arc::new(AppStateInner {
+            config: RwLock::new(cfg),
+            victims: RwLock::new(VictimBook::new()),
+            pairbook: RwLock::new(PairBook::new()),
+            state_files: state_files.clone(),
+            logger: logger.clone(),
+            bot_state: RwLock::new(BotState::Watching),
+            start_time: std::time::Instant::now(),
+            skip_counts: RwLock::new(HashMap::new()),
+            last_block: RwLock::new(None),
+            provider: RwLock::new(None),
+            tax_cache: RwLock::new(TaxCache::new()),
+            validate_log: RwLock::new(bsc_sandwich::web::ValidateStats::default()),
+            pending_semaphore: std::sync::Arc::new(Semaphore::new(4)),
+            pending_source: RwLock::new(transport::PendingSource::InjectOnly),
+            risk_guard: RwLock::new(RiskGuard::new()),
+            nonce_cache: RwLock::new(transport::NonceCache::new()),
+            funnel: FunnelCounters::new(),
+        });
+
+        let task_state = app_state.clone();
+        let handle = tokio::spawn(async move {
+            halt_watch_task(task_state, Duration::from_millis(20)).await;
+        });
+
+        // Cho vai tick troi qua khi CHUA halt - khong duoc log gi.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(logger.tail(50).iter().all(|v| v["event"] != "halt.triggered"));
+
+        state_files.request_halt().unwrap();
+        // Cho toi da 2s de task nhan ra (interval 20ms, du du).
+        let mut saw_triggered = false;
+        for _ in 0..100u32 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if logger.tail(50).iter().any(|v| v["event"] == "halt.triggered") {
+                saw_triggered = true;
+                break;
+            }
+        }
+        assert!(saw_triggered, "phai thay halt.triggered sau khi tao halt.lock");
+        assert_eq!(*app_state.bot_state.read().await, BotState::Stopped);
+
+        // Cho them vai tick trong luc VAN halt - khong duoc log lap lai.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let triggered_count = logger.tail(50).iter().filter(|v| v["event"] == "halt.triggered").count();
+        assert_eq!(triggered_count, 1, "khong duoc log halt.triggered lap lai khi van dang halt");
+
+        state_files.clear_halt().unwrap();
+        let mut saw_cleared = false;
+        for _ in 0..100u32 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if logger.tail(50).iter().any(|v| v["event"] == "halt.cleared") {
+                saw_cleared = true;
+                break;
+            }
+        }
+        assert!(saw_cleared, "phai thay halt.cleared sau khi xoa halt.lock");
+        assert_eq!(*app_state.bot_state.read().await, BotState::Watching);
+
+        handle.abort();
+    }
+
     /// ĐẠT CẦN DÁN (lệnh usdt-quote-asset, mục 6 FIX LOGGER): token KHÔNG
     /// còn `null` sai khi decode/precheck đã biết token thật.
     #[test]
@@ -1247,18 +1520,29 @@ mod tests {
         Address::from_str(hex).unwrap()
     }
 
+    /// Cụm `exec-path-traps` (F-15) — sửa lại ngữ nghĩa: `to=None` giờ CHỈ
+    /// còn `true` khi `source=="inject"` (định dạng cũ `state/inject_tx.jsonl`,
+    /// cố ý không có cột `to`) — tên test đổi từ "unknown_source" (KHÔNG phân
+    /// biệt nguồn) sang "inject_source" (CHỈ 1 nguồn cụ thể) để khớp hành vi
+    /// mới, đúng ĐẠT CẦN DÁN của lệnh này.
     #[test]
-    fn passes_router_gate_true_for_none_unknown_source() {
-        // tx inject dinh dang cu (khong co cot `to`) - khong du du lieu de tu
-        // choi, cho qua de decode tu quyet dinh (giu inject cu khong bi vo).
-        assert!(passes_router_gate(None));
+    fn passes_router_gate_true_for_none_only_when_source_is_inject() {
+        assert!(passes_router_gate(None, "inject"));
+    }
+
+    /// F-15 — WS/`txpool_content` thật KHÔNG bao giờ nên nhận `to=None` mà
+    /// được cho qua nữa: xiết chặt về `false` (`not_pancake_router`).
+    #[test]
+    fn passes_router_gate_false_for_none_when_source_is_ws_or_txpool() {
+        assert!(!passes_router_gate(None, "pending_ws"));
+        assert!(!passes_router_gate(None, "txpool"));
     }
 
     #[test]
     fn passes_router_gate_true_for_pinned_router_false_for_others() {
-        assert!(passes_router_gate(Some(addr(bsc_sandwich::venues::V2_ROUTER_ADDRESS))));
+        assert!(passes_router_gate(Some(addr(bsc_sandwich::venues::V2_ROUTER_ADDRESS)), "pending_ws"));
         let biswap_like = addr("0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8");
-        assert!(!passes_router_gate(Some(biswap_like)));
+        assert!(!passes_router_gate(Some(biswap_like), "pending_ws"));
     }
 
     /// ĐẠT CẦN DÁN (lệnh A4, test bắt buộc) — tx tới router giả (không nằm
@@ -1268,7 +1552,7 @@ mod tests {
     #[test]
     fn passes_router_gate_rejects_fake_router_even_with_real_v2_selector() {
         let fake_router = addr("0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8"); // Biswap-style, chua pin
-        assert!(!passes_router_gate(Some(fake_router)));
+        assert!(!passes_router_gate(Some(fake_router), "txpool"));
     }
 
     /// ĐẠT CẦN DÁN — 1000 tx giả, đúng 5 tới V2 Router đã pin, phần còn lại
@@ -1292,7 +1576,7 @@ mod tests {
                 tos.push(Some(Address::from_str(&hex).unwrap()));
             }
         }
-        let passed = tos.into_iter().filter(|to| passes_router_gate(*to)).count();
+        let passed = tos.into_iter().filter(|to| passes_router_gate(*to, "txpool")).count();
         assert_eq!(passed, 5);
     }
 

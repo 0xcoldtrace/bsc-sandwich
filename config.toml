@@ -55,11 +55,9 @@ allow_tax_inject = true
 
 # Cụm 7.3 (BAOCAO16): build calldata paper (front-buy/back-sell) từ SandwichQuote.
 # deadline = wall-clock hiện tại + buffer này (giây) — KHÔNG phải block.timestamp
-# on-chain thật (executor.rs không có Provider). slippage_bps áp vào amount_out_min
-# = expected * (10000-bps) / 10000. Cả 2 field CHỈ dùng để build/log calldata paper,
-# không liên quan cổng live/dry_run.
+# on-chain thật (executor.rs không có Provider). CHỈ dùng để build/log calldata
+# paper, không liên quan cổng live/dry_run.
 executor_deadline_buffer_sec = 120
-executor_slippage_bps = 50
 
 # Cụm pair-mode: PairBook theo dõi POOL (token/WBNB) chỉ định trực tiếp qua
 # pairs.txt, khác victims.txt (theo dõi ĐỊA CHỈ VÍ). min_swap là NGƯỠNG
@@ -109,9 +107,11 @@ sim_engine = "evm"
 # KHÔNG còn quyết định tươi/cũ — TTL theo thời gian thực mới là ngưỡng thật.
 tax_cache_ttl_sec = 600
 
-# Cụm evm-validate-fixed-then-wire (D1): slippage tách riêng 2 chân sandwich.
-# front-buy chạy TRƯỚC victim (giá gần như chắc chắn) nên siết chặt; back-sell
-# chạy SAU victim (giá đã dịch + có thể dính tax bán) nên nới rộng hơn.
-# executor_slippage_bps ở trên vẫn đọc được, giữ cho tương thích.
+# Cụm evm-validate-fixed-then-wire (D1), wire thật vào build ở cụm
+# exec-path-traps (F-08): slippage tách riêng 2 chân sandwich. front-buy chạy
+# TRƯỚC victim (giá gần như chắc chắn) nên siết chặt; back-sell chạy SAU
+# victim (giá đã dịch + có thể dính tax bán) nên nới rộng hơn. Field
+# `executor_slippage_bps` (bản gộp chung cũ) đã XOÁ — còn trong file này thì
+# fail load kèm thông báo đổi tên (xem src/config.rs).
 front_slippage_bps = 10
 back_slippage_bps = 50

@@ -181,6 +181,9 @@ pub const SKIP_REASONS: &[&str] = &[
     "hooks_unread",
     // Cum `evm-validate-fixed-then-wire` (B3.2)
     "sim_error",
+    // Cum `exec-path-traps` (F-13)
+    "nonce_stale",
+    "nonce_future",
 ];
 
 #[cfg(test)]
@@ -237,6 +240,14 @@ mod tests {
     fn skip_reasons_contains_both_not_wbnb_pair_and_not_quote_pair() {
         assert!(SKIP_REASONS.contains(&"not_wbnb_pair"), "khong duoc xoa reason cu");
         assert!(SKIP_REASONS.contains(&"not_quote_pair"), "phai co reason moi cho quote-aware path");
+    }
+
+    /// Cụm `exec-path-traps` (F-13) — ĐẠT CẦN DÁN "Thêm 2 reason vào
+    /// SKIP_REASONS".
+    #[test]
+    fn skip_reasons_contains_nonce_stale_and_nonce_future() {
+        assert!(SKIP_REASONS.contains(&"nonce_stale"));
+        assert!(SKIP_REASONS.contains(&"nonce_future"));
     }
 
     #[test]

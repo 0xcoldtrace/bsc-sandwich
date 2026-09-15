@@ -70,6 +70,13 @@ pub enum PipelineSkip {
     VenueUnpinned,
     ThinLiq,
     NoPool,
+    /// Cụm `exec-path-traps` (F-14) — `decoded.deadline` (khi có, `None` cho
+    /// command Universal Router `V2_SWAP_EXACT_IN`/`V3_SWAP_EXACT_IN` — UR
+    /// không mang tham số `deadline` per-swap, xem `decoder.rs`) đã hết hạn
+    /// hoặc còn dưới `2 * BSC_BLOCK_TIME_SEC` giây so wall-clock hiện tại —
+    /// front-run 1 tx sắp hết hạn là bẫy thực thi thật: nếu victim revert vì
+    /// deadline trước khi front/back kịp chạy, bot tự sandwich chính mình.
+    Deadline,
     VictimWouldRevert,
     Unprofitable,
     HoneypotOrTax,
@@ -81,6 +88,17 @@ pub enum PipelineSkip {
     /// nguy hiểm nhất cho bot thật. Skip rõ ràng, đếm riêng trong funnel, để
     /// Chủ thấy ngay khi RPC không kham nổi tải EVM.
     SimError,
+    /// Cụm `exec-path-traps` (F-13) — nonce THẬT của victim (`eth_getTransactionCount`,
+    /// xem `transport::NonceCache`) THẤP HƠN nonce của candidate đang xét —
+    /// tx này đã bị thay thế/đã lên block với nonce khác, KHÔNG còn khả năng
+    /// thực thi ở vị trí quan sát được, front-run nó là vô nghĩa (bot tự
+    /// sandwich chính mình vì victim không bao giờ tới).
+    NonceStale,
+    /// F-13 — nonce THẬT của victim CAO HƠN nonce của candidate — còn khoảng
+    /// trống nonce (tx khác của CÙNG ví phải lên block trước), tx này CHƯA
+    /// thể thực thi ngay ở block kế tiếp — front-run giả định "chạy ngay sau"
+    /// là sai, cùng loại bẫy với `Deadline`.
+    NonceFuture,
 }
 
 impl PipelineSkip {
@@ -96,10 +114,13 @@ impl PipelineSkip {
             PipelineSkip::VenueUnpinned => "venue_unpinned",
             PipelineSkip::ThinLiq => "thin_liq",
             PipelineSkip::NoPool => "no_pool",
+            PipelineSkip::Deadline => "deadline",
             PipelineSkip::VictimWouldRevert => "victim_would_revert",
             PipelineSkip::Unprofitable => "unprofitable",
             PipelineSkip::HoneypotOrTax => "honeypot_or_tax",
             PipelineSkip::SimError => "sim_error",
+            PipelineSkip::NonceStale => "nonce_stale",
+            PipelineSkip::NonceFuture => "nonce_future",
         }
     }
 }
@@ -287,8 +308,14 @@ pub fn precheck_token_only(calldata: &[u8], tx_value: U256) -> Result<Address, P
 /// nhưng trả kèm `decoder::SwapVenue` thật (V2 hay V3+fee) — `main.rs` dùng
 /// để GATE `venue==V3` TRƯỚC khi gọi `resolve_v2_reserves` (bug cũ: V3 bị
 /// đưa nhầm vào pool V2, xem doc-comment `PipelineSkip::VenueUnpinned`).
-pub fn precheck_token_and_venue(calldata: &[u8], tx_value: U256) -> Result<(Address, decoder::SwapVenue), PipelineSkip> {
-    decode_and_classify(calldata, tx_value).map(|(decoded, token)| (token, decoded.venue))
+///
+/// Cụm `exec-path-traps` (F-16) — trả THÊM `selector_name` (so với bản cũ
+/// chỉ trả `(Address, SwapVenue)`) để `main.rs` cross-check được với
+/// `venues::Venue(tx.to)` qua `decoder::venue_matches_router` — selector V2
+/// cổ điển gửi tới router V3/UR (hoặc ngược lại) là dấu hiệu calldata bất
+/// thường/decode nhầm, không nên coi là candidate hợp lệ.
+pub fn precheck_token_and_venue(calldata: &[u8], tx_value: U256) -> Result<(Address, decoder::SwapVenue, &'static str), PipelineSkip> {
+    decode_and_classify(calldata, tx_value).map(|(decoded, token)| (token, decoded.venue, decoded.selector_name))
 }
 
 /// Input đầy đủ cho `decide_paper_v2` — thêm `pair_addr` (đã resolve qua
@@ -310,10 +337,37 @@ pub struct PaperDecisionV2<'a> {
 /// `decide_paper` gốc + thêm cổng `RiskGuard` (7.1/pair-mode wire
 /// `max_consecutive_loss`/`gas_reserve_bnb_wei`, xem `config.rs::RiskGuard`)
 /// ngay trước sim.
+/// Cụm `exec-path-traps` (F-14) — ước lượng thời gian block BSC (giây),
+/// KHÔNG phải số đo thật per-block (không có `Provider` ở tầng thuần này) —
+/// dùng để tính buffer `2 * BSC_BLOCK_TIME_SEC` giây trước khi coi 1
+/// `deadline` là "sắp hết hạn" đủ để từ chối candidate. Khớp CLAUDE.md mục
+/// Math "BSC ~3s/block".
+const BSC_BLOCK_TIME_SEC: u64 = 3;
+
+/// F-14 — `true` khi `deadline` (nếu có) đã hết hạn hoặc còn dưới
+/// `2 * BSC_BLOCK_TIME_SEC` giây so `now_unix`. `deadline=None` (command
+/// Universal Router `V2_SWAP_EXACT_IN`/`V3_SWAP_EXACT_IN` — UR không mang
+/// tham số `deadline` riêng cho từng swap, xem `decoder.rs`) -> KHÔNG áp
+/// dụng gate này, luôn `false` (đúng lệnh "UR tx không có deadline → không
+/// áp"). `deadline` không ép được về `u64` (quá lớn, thực tế = "rất xa
+/// tương lai") -> `false`, không panic.
+fn deadline_expired(deadline: Option<U256>, now_unix: u64) -> bool {
+    let Some(deadline) = deadline else { return false };
+    match u64::try_from(deadline) {
+        Ok(d) => d < now_unix.saturating_add(2 * BSC_BLOCK_TIME_SEC),
+        Err(_) => false,
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 fn evaluate_candidate(
     token: Address,
     amount_in: U256,
     amount_out_min: U256,
+    deadline: Option<U256>,
     min_threshold_wei: u128,
     reserves: PoolReserves,
     current_block: u64,
@@ -321,6 +375,11 @@ fn evaluate_candidate(
     cfg: &Config,
     risk: &RiskGuard,
 ) -> PipelineOutcome {
+    // F-14 - gate deadline TRUOC TIEN (thuan, 0 RPC, khong phu thuoc
+    // amount/reserve) - front-run 1 tx sap het han la bay thuc thi that.
+    if deadline_expired(deadline, now_unix()) {
+        return PipelineOutcome::Skip(PipelineSkip::Deadline);
+    }
     let amount_in_u128: u128 = match amount_in.try_into() {
         Ok(v) => v,
         Err(_) => return PipelineOutcome::Skip(PipelineSkip::Unprofitable), // vuot pham vi BNB thuc te
@@ -407,6 +466,7 @@ pub fn decide_paper_v2(
                 token,
                 decoded.amount_in,
                 decoded.amount_out_min,
+                decoded.deadline,
                 min_wei,
                 input.reserves,
                 input.current_block,
@@ -424,6 +484,7 @@ pub fn decide_paper_v2(
             token,
             decoded.amount_in,
             decoded.amount_out_min,
+            decoded.deadline,
             min_wei,
             input.reserves,
             input.current_block,
@@ -440,6 +501,7 @@ pub fn decide_paper_v2(
             token,
             decoded.amount_in,
             decoded.amount_out_min,
+            decoded.deadline,
             min_wei,
             input.reserves,
             input.current_block,
@@ -472,6 +534,17 @@ pub fn decide_paper_v2(
 /// trả trong tuple kết quả (giữ nguyên chữ ký cũ) — gọi lại `decode_and_classify`
 /// (thuần, rẻ, cùng calldata/tx_value đã decode 1 lần bên trong `decide_paper_v2`,
 /// nên PHẢI trả `Ok` y hệt lần trước, không có nhánh lỗi mới nào phát sinh).
+///
+/// Cụm `exec-path-traps` (F-26) — CHỈ build NGAY ở đây khi `cfg.sim_engine ==
+/// "v2"` (đường lùi, hành vi build-ngay-khi-Simulated GIỮ NGUYÊN như trước —
+/// đúng lệnh "sim_engine=v2 vẫn build theo v2"). Khi `cfg.sim_engine ==
+/// "evm"` (ship mặc định), hàm này KHÔNG build gì nữa dù `decide_paper_v2` ra
+/// `Simulated` — `Simulated` lúc đó CHỈ là ước lượng công thức đóng, CHƯA
+/// được EVM thật xác nhận (xem `docs/STATE.md`/`CLAUDE.md` mục Math). Build
+/// thật cho đường `evm` dời sang `build_paper_txs_from_evm_decision` (dưới),
+/// gọi SAU khi `decide_with_evm` đã chạy — đo THẬT phiên trước sửa: 501
+/// `tx.build` / 1 `simulated` (audit F-26), vì hàm này build TRƯỚC khi EVM
+/// phán quyết.
 pub fn decide_and_build_paper_v2(
     victims: &VictimBook,
     pairbook: &PairBook,
@@ -482,12 +555,40 @@ pub fn decide_and_build_paper_v2(
     input: &PaperDecisionV2,
 ) -> (PipelineOutcome, &'static str) {
     let (outcome, source) = decide_paper_v2(victims, pairbook, tax_cache, cfg, risk, input);
-    if let PipelineOutcome::Simulated(quote) = &outcome {
-        if let Ok((_, token)) = decode_and_classify(input.calldata, input.tx_value) {
-            executor::build_and_log_paper_sandwich(logger, cfg, input.from, token, quote);
+    if !cfg.sim_engine_is_evm() {
+        if let PipelineOutcome::Simulated(quote) = &outcome {
+            if let Ok((_, token)) = decode_and_classify(input.calldata, input.tx_value) {
+                executor::build_and_log_paper_sandwich(logger, cfg, input.from, token, quote, "v2");
+            }
         }
     }
     (outcome, source)
+}
+
+/// Cụm `exec-path-traps` (F-26 + F-07) — điểm build DUY NHẤT cho đường
+/// `sim_engine="evm"`: CHỈ build khi `decision.outcome == Simulated` VÀ
+/// `decision.evm.is_some()` (EVM thật ĐÃ chạy và xác nhận, không phải chỉ
+/// công thức đóng). `decision.outcome`'s `SandwichQuote.front_out` lúc này
+/// ĐÃ được `decide_with_evm` thay bằng `evm.token_received` (số token THẬT
+/// attacker nhận sau front-buy, đã trừ tax mua nếu có) — nên
+/// `build_back_sell_paper_tx` (gọi bên trong `build_and_log_paper_sandwich`)
+/// tự động dùng ĐÚNG số đó làm `amountIn` back-sell, không phải ước lượng
+/// `sim_v2` (F-07: "back-sell amountIn = balanceOf(self) tại thời điểm build,
+/// LẤY TỪ evm.token_received CHỨ KHÔNG PHẢI front_out của sim_v2" — đã đúng
+/// nhờ thay thế này, không cần đọc `balanceOf` riêng lần nữa).
+pub fn build_paper_txs_from_evm_decision(
+    logger: &BotLogger,
+    cfg: &Config,
+    victim_from: Address,
+    token: Address,
+    decision: &EvmDecision,
+) -> Option<(crate::executor::PaperTxLog, crate::executor::PaperTxLog)> {
+    match (&decision.outcome, &decision.evm) {
+        (PipelineOutcome::Simulated(quote), Some(_)) => {
+            executor::build_and_log_paper_sandwich(logger, cfg, victim_from, token, quote, "evm")
+        }
+        _ => None,
+    }
 }
 
 // ===== Cụm `usdt-quote-asset` (BAOCAO29) — quote asset thứ 2 (USDT), SONG
@@ -592,11 +693,16 @@ fn evaluate_candidate_quote(
     token: Address,
     amount_in: U256,
     amount_out_min: U256,
+    deadline: Option<U256>,
     reserves: PoolReserves,
     current_block: u64,
     tax_cache: &TaxCache,
     cfg: &Config,
 ) -> PipelineOutcome {
+    // F-14 - cung gate deadline nhu evaluate_candidate, ap dung ca 2 quote asset.
+    if deadline_expired(deadline, now_unix()) {
+        return PipelineOutcome::Skip(PipelineSkip::Deadline);
+    }
     let (min_reserve_wei, front_cap_raw, gas_wei_for_profit, min_profit_wei) = match quote {
         QuoteAsset::Wbnb => (cfg.min_reserve_wei(), cfg.effective_front_cap_wei(), cfg.gas_wei(), cfg.min_profit_wei()),
         QuoteAsset::Usdt => (cfg.min_reserve_usdt_wei(), cfg.max_front_usdt_wei(), 0u128, cfg.min_profit_usdt_wei()),
@@ -656,7 +762,7 @@ pub fn decide_paper_quote(
         Err(skip) => return (PipelineOutcome::Skip(skip), "none"),
     };
     let outcome =
-        evaluate_candidate_quote(quote, token, decoded.amount_in, decoded.amount_out_min, reserves, current_block, tax_cache, cfg);
+        evaluate_candidate_quote(quote, token, decoded.amount_in, decoded.amount_out_min, decoded.deadline, reserves, current_block, tax_cache, cfg);
     (outcome, quote.as_str())
 }
 
@@ -895,6 +1001,11 @@ pub struct TxLogMeta {
     pub venue: Option<String>,
     pub selector: Option<String>,
     pub fee: Option<u32>,
+    /// Cụm `exec-path-traps` (F-16) — chi tiết thêm cho `reason=decode_fail`
+    /// khi lý do CỤ THỂ là `venue_mismatch` (selector đã decode không khớp
+    /// router `tx.to` thật, xem `decoder::venue_matches_router`) — `None`
+    /// cho MỌI trường hợp khác (không bịa lý do).
+    pub detail: Option<String>,
 }
 
 /// Cụm pair-mode — bản `log_outcome` có thêm field `source` ("wallet"/"pair"/
@@ -925,6 +1036,7 @@ pub fn log_outcome_v2(
                     "venue": meta.venue,
                     "selector": meta.selector,
                     "fee": meta.fee,
+                    "detail": meta.detail,
                 }),
             );
         }
@@ -978,11 +1090,17 @@ mod tests {
     /// deadline)` — path=[WBNB, token], amountIn lấy từ `tx.value` (không
     /// nằm trong calldata, đúng quy ước `decoder.rs`).
     fn build_eth_for_tokens(token: Address, amount_out_min: u64) -> Vec<u8> {
+        build_eth_for_tokens_with_deadline(token, amount_out_min, 9_999_999_999)
+    }
+
+    /// Cụm `exec-path-traps` (F-14) — như `build_eth_for_tokens` nhưng cho
+    /// phép chỉnh `deadline` (test gate deadline cần deadline gần/đã qua wall-clock).
+    fn build_eth_for_tokens_with_deadline(token: Address, amount_out_min: u64, deadline: u64) -> Vec<u8> {
         let mut out = sel("swapExactETHForTokens(uint256,address[],address,uint256)").to_vec();
         out.extend_from_slice(&pad_u256(amount_out_min));
         out.extend_from_slice(&pad_u256(0x80)); // offset path
         out.extend_from_slice(&pad_addr(addr("0x999999999999999999999999999999999999beef"))); // to
-        out.extend_from_slice(&pad_u256(9_999_999_999)); // deadline
+        out.extend_from_slice(&pad_u256(deadline));
         out.extend_from_slice(&pad_u256(2)); // path.length
         out.extend_from_slice(&pad_addr(wbnb()));
         out.extend_from_slice(&pad_addr(token));
@@ -1031,7 +1149,7 @@ mod tests {
              web_bind = \"127.0.0.1\"\nweb_port = 8787\n\
              max_roundtrip_tax = 0.005\ntax_cache_blocks = 30\n\
              allow_tax_inject = true\n\
-             executor_deadline_buffer_sec = 120\nexecutor_slippage_bps = 50\n\
+             executor_deadline_buffer_sec = 120\n\
              pairs_path = \"pairs.txt\"\npairs_reload_sec = 30\npairs_min_swap_bnb = 0.05\n\
              pair_scan_universal = false\n\
              wallet_scan_enabled = true\npair_scan_enabled = true\n\
@@ -1218,18 +1336,20 @@ mod tests {
     fn precheck_token_and_venue_exact_input_single_is_v3_with_fee() {
         let token_out = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_exact_input_single(wbnb(), token_out, 500, 777);
-        let (token, venue) = precheck_token_and_venue(&calldata, U256::ZERO).expect("phai decode duoc");
+        let (token, venue, selector_name) = precheck_token_and_venue(&calldata, U256::ZERO).expect("phai decode duoc");
         assert_eq!(token, token_out);
         assert_eq!(venue, decoder::SwapVenue::V3 { fee: 500 });
+        assert_eq!(selector_name, "exactInputSingle");
     }
 
     #[test]
     fn precheck_token_and_venue_v2_functions_are_v2() {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
-        let (t, venue) = precheck_token_and_venue(&calldata, U256::from(1u64)).expect("phai decode duoc");
+        let (t, venue, selector_name) = precheck_token_and_venue(&calldata, U256::from(1u64)).expect("phai decode duoc");
         assert_eq!(t, token);
         assert_eq!(venue, decoder::SwapVenue::V2);
+        assert_eq!(selector_name, "swapExactETHForTokens");
     }
 
     #[test]
@@ -1932,14 +2052,19 @@ mod tests {
         );
     }
 
-    // ===== Cụm `7.3` (BAOCAO16) — decide_and_build_paper_v2 =====
+    // ===== Cụm `7.3` (BAOCAO16) + `exec-path-traps` (F-26) — decide_and_build_paper_v2 =====
 
-    /// ĐẠT CẦN DÁN: candidate có lợi nhuận (wallet mode) -> `decide_and_build_paper_v2`
-    /// trả kết quả GIỐNG HỆT `decide_paper_v2` (không đổi outcome/source), VÀ
-    /// thêm đúng 1 dòng `tx.build` vào logger (bằng chứng `executor::build_and_log_paper_sandwich`
-    /// đã được gọi khi Simulated).
+    /// Cụm `exec-path-traps` (F-26) — sửa lại theo hành vi MỚI: `test_config()`
+    /// ship `sim_engine="evm"`, nên `decide_and_build_paper_v2` KHÔNG còn
+    /// build ngay khi `Simulated` nữa (build dời sang SAU khi EVM xác nhận,
+    /// qua `build_paper_txs_from_evm_decision`) — outcome/source vẫn ĐÚNG
+    /// (không đổi so `decide_paper_v2`), nhưng KHÔNG có `tx.build` LẪN
+    /// `build.refused` nào (chưa từng gọi tới `executor::build_and_log_paper_sandwich`).
+    /// Tên test đổi từ "logs_tx_build_when_simulated" để phản ánh đúng hành
+    /// vi engine=evm (case engine=v2 build-ngay xem
+    /// `decide_and_build_paper_v2_still_builds_immediately_for_v2_engine` bên dưới).
     #[test]
-    fn decide_and_build_paper_v2_logs_tx_build_when_simulated() {
+    fn decide_and_build_paper_v2_defers_build_to_evm_step_when_engine_is_evm() {
         let dir = tempfile::tempdir().unwrap();
         let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
@@ -1953,6 +2078,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = test_config();
         assert!(cfg.dry_run, "test_config phai dry_run=true (khop config ship)");
+        assert!(cfg.sim_engine_is_evm(), "test_config ship sim_engine=evm");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
         let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
 
@@ -1964,15 +2090,48 @@ mod tests {
         }
 
         let tail = logger.tail(10);
-        let build_events: Vec<_> = tail.iter().filter(|v| v["event"] == "tx.build").collect();
-        assert_eq!(build_events.len(), 1, "phai co dung 1 dong tx.build khi Simulated");
-        assert_eq!(build_events[0]["front"]["label"], "front_buy");
-        assert_eq!(build_events[0]["back"]["label"], "back_sell");
+        assert!(tail.iter().all(|v| v["event"] != "tx.build"), "engine=evm khong duoc build NGAY, du outcome=Simulated");
+        assert!(tail.iter().all(|v| v["event"] != "build.refused"), "engine=evm chua tung goi build_and_log_paper_sandwich o buoc nay");
+    }
+
+    /// F-26 mục "Khi sim_engine=v2 vẫn build theo v2 (giữ hành vi cũ cho
+    /// engine cũ)" — override `sim_engine="v2"` trong `test_config_toml`, xác
+    /// nhận `decide_and_build_paper_v2` VẪN thử build ngay (thấy `build.refused`
+    /// engine="v2", vì `executor_self_address()` luôn `None` ở paper mode —
+    /// KHÔNG thấy `tx.build` thật cho tới khi `7.3` nối signer, nhưng bằng
+    /// chứng "có thử build ngay lập tức" là dòng `build.refused` xuất hiện
+    /// NGAY tại bước này, khác engine=evm ở test trên).
+    #[test]
+    fn decide_and_build_paper_v2_still_attempts_build_immediately_for_v2_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pairbook = PairBook::new();
+        let mut cache = TaxCache::new();
+        cache.insert(token, TaxMeasurement::manual(0, 995));
+        let risk = RiskGuard::new();
+        let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
+        assert!(!cfg.sim_engine_is_evm());
+        let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+
+        let (outcome, _source) = decide_and_build_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &logger, &input);
+        assert!(matches!(outcome, PipelineOutcome::Simulated(_)));
+
+        let tail = logger.tail(10);
+        assert!(tail.iter().all(|v| v["event"] != "tx.build"));
+        let refused: Vec<_> = tail.iter().filter(|v| v["event"] == "build.refused").collect();
+        assert_eq!(refused.len(), 1, "engine=v2 phai THU build NGAY (bi tu choi vi chua co signer, nhung co thu)");
+        assert_eq!(refused[0]["engine"], "v2");
     }
 
     /// Đối chứng: candidate bị SKIP (không tới `Simulated`) -> KHÔNG có dòng
-    /// `tx.build` nào — `executor::build_and_log_paper_sandwich` không được
-    /// gọi ngoài nhánh `Simulated`.
+    /// `tx.build`/`build.refused` nào — `executor::build_and_log_paper_sandwich`
+    /// không được gọi ngoài nhánh `Simulated`.
     #[test]
     fn decide_and_build_paper_v2_no_tx_build_when_skipped() {
         let dir = tempfile::tempdir().unwrap();
@@ -1995,6 +2154,180 @@ mod tests {
 
         let tail = logger.tail(10);
         assert!(tail.iter().all(|v| v["event"] != "tx.build"), "khong duoc log tx.build khi bi skip");
+        assert!(tail.iter().all(|v| v["event"] != "build.refused"), "khong duoc thu build khi bi skip");
+    }
+
+    // ===== Cụm `exec-path-traps` (F-26 + F-07) — build_paper_txs_from_evm_decision =====
+
+    fn fixture_evm_outcome(front_in: U256, token_received: U256, back_out: U256, profit_wei: i128, victim_success: bool) -> crate::sim_evm::EvmSandwichOutcome {
+        crate::sim_evm::EvmSandwichOutcome {
+            front_in,
+            token_received,
+            back_out,
+            profit_wei,
+            victim_success,
+            buy_tax_bps: None,
+            sell_tax_bps: None,
+        }
+    }
+
+    /// ĐẠT CẦN DÁN (mục 1, "Test: outcome v2=Simulated nhưng evm=None →
+    /// không build"): `EvmDecision{outcome: Simulated(_), evm: None}` (đúng
+    /// nhánh `PipelineOutcome::Skip(_) => evm:None` KHÔNG áp dụng ở đây — đây
+    /// là trường hợp GIẢ ĐỊNH có Simulated nhưng evm chưa chạy, dựng tay để
+    /// chứng minh guard `evm.is_some()` hoạt động độc lập với `outcome`) ->
+    /// `build_paper_txs_from_evm_decision` PHẢI trả `None`, KHÔNG log gì cả
+    /// (không gọi `executor::build_and_log_paper_sandwich`).
+    #[test]
+    fn build_paper_txs_from_evm_decision_no_build_when_evm_is_none_even_if_outcome_simulated() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
+        let cfg = test_config();
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let quote = crate::sim_v2::SandwichQuote {
+            front_in: U256::from(1u64),
+            front_out: U256::from(1u64),
+            victim_out: U256::ZERO,
+            back_out: U256::from(2u64),
+            profit_wei: 1,
+        };
+        let decision = EvmDecision { outcome: PipelineOutcome::Simulated(quote), evm: None, tried: 0, total_ms: 0.0 };
+
+        let result = build_paper_txs_from_evm_decision(&logger, &cfg, from, token, &decision);
+        assert!(result.is_none());
+        let tail = logger.tail(10);
+        assert!(tail.is_empty(), "evm=None thi khong duoc goi build_and_log_paper_sandwich, khong log gi ca");
+    }
+
+    /// Đối chứng: `outcome == Skip(_)` (evm cũng luôn `None` trong nhánh này
+    /// theo `decide_with_evm`) -> không build.
+    #[test]
+    fn build_paper_txs_from_evm_decision_no_build_when_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
+        let cfg = test_config();
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let decision = EvmDecision { outcome: PipelineOutcome::Skip(PipelineSkip::Unprofitable), evm: None, tried: 1, total_ms: 5.0 };
+
+        let result = build_paper_txs_from_evm_decision(&logger, &cfg, from, token, &decision);
+        assert!(result.is_none());
+    }
+
+    /// ĐẠT CẦN DÁN (mục 3, F-07): `evm.is_some()` VÀ `outcome==Simulated` ->
+    /// build được THỬ (bị `build.refused` vì paper mode chưa có signer, xem
+    /// F-06) — quan trọng: `EvmDecision.outcome`'s `quote.front_out` (đã được
+    /// `decide_with_evm` thay bằng `evm.token_received`, KHÔNG PHẢI `front_out`
+    /// ước lượng của `sim_v2`) là số ĐÚNG mà `build_and_log_paper_sandwich`
+    /// sẽ dùng làm `amountIn` back-sell nếu build thành công — test này dựng
+    /// `token_received` NHỎ HƠN 1 `front_out` giả định (mô phỏng tax mua) để
+    /// chứng minh guard `evm.is_some()` cho qua đúng candidate, và đường build
+    /// nhận đúng struct đã thay số EVM (không phải struct v2 gốc).
+    #[test]
+    fn build_paper_txs_from_evm_decision_attempts_build_using_evm_adjusted_quote() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
+        let cfg = test_config();
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        // token_received (45 token, da tru tax) < front_out uoc luong sim_v2
+        // gia dinh se lon hon (vd 50 token) - decide_with_evm da THAY the so
+        // nay TRUOC khi toi day (test o day dung thang gia tri da thay).
+        let token_received = U256::from(45_000_000_000_000_000_000u128);
+        let quote_with_evm_numbers = crate::sim_v2::SandwichQuote {
+            front_in: U256::from(50_000_000_000_000_000u64),
+            front_out: token_received, // DA la evm.token_received, khong phai uoc luong sim_v2
+            victim_out: U256::ZERO,
+            back_out: U256::from(57_000_000_000_000_000u64),
+            profit_wei: 7_000_000_000_000_000i128,
+        };
+        let evm = fixture_evm_outcome(
+            U256::from(50_000_000_000_000_000u64),
+            token_received,
+            U256::from(57_000_000_000_000_000u64),
+            7_000_000_000_000_000i128,
+            true,
+        );
+        let decision = EvmDecision { outcome: PipelineOutcome::Simulated(quote_with_evm_numbers), evm: Some(evm), tried: 1, total_ms: 12.3 };
+
+        let result = build_paper_txs_from_evm_decision(&logger, &cfg, from, token, &decision);
+        assert!(result.is_none(), "paper mode chua co signer -> build.refused, khong phai Some");
+        let tail = logger.tail(10);
+        let refused: Vec<_> = tail.iter().filter(|v| v["event"] == "build.refused").collect();
+        assert_eq!(refused.len(), 1, "phai co dung 1 lan THU build (bi tu choi)");
+        assert_eq!(refused[0]["engine"], "evm");
+    }
+
+    // ===== Cụm `exec-path-traps` (F-14) — deadline gate =====
+
+    #[test]
+    fn deadline_expired_none_never_applies_ur_tx() {
+        assert!(!deadline_expired(None, 1_000_000));
+    }
+
+    #[test]
+    fn deadline_expired_true_when_deadline_in_the_past() {
+        assert!(deadline_expired(Some(U256::from(999u64)), 1_000_000));
+    }
+
+    #[test]
+    fn deadline_expired_true_when_deadline_within_2_blocks_ahead() {
+        // now=1000, buffer=2*3=6s -> deadline=1005 (< 1006) van coi la sap het han.
+        assert!(deadline_expired(Some(U256::from(1005u64)), 1_000));
+        assert!(!deadline_expired(Some(U256::from(1006u64)), 1_000));
+    }
+
+    #[test]
+    fn deadline_expired_false_when_far_in_future_or_unrepresentable() {
+        assert!(!deadline_expired(Some(U256::from(9_999_999_999u64)), 1_000_000));
+        assert!(!deadline_expired(Some(U256::MAX), 1_000_000));
+    }
+
+    /// ĐẠT CẦN DÁN (mục 8, F-14) — candidate hợp lệ về mọi mặt khác (wallet
+    /// mode, đủ min-size, pool đủ sâu, `sim_engine="v2"` để khỏi cần fork
+    /// EVM) nhưng `deadline` đã QUA (1 giây Unix epoch, chắc chắn ở quá khứ)
+    /// -> `PipelineSkip::Deadline`, KHÔNG lọt tới bước sim.
+    #[test]
+    fn decide_paper_v2_expired_deadline_is_skipped_with_deadline_reason() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens_with_deadline(token, 0, 1);
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // trong victims_ab, min 0.01
+        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pairbook = PairBook::new();
+        let mut cache = TaxCache::new();
+        cache.insert(token, TaxMeasurement::manual(0, 995));
+        let risk = RiskGuard::new();
+        let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
+        let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+
+        let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
+        assert_eq!(source, "wallet");
+        assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::Deadline)), "expect Deadline, got {outcome:?}");
+    }
+
+    /// Đối chứng: deadline xa tương lai -> KHÔNG bị chặn bởi gate này (vẫn
+    /// `Simulated`, cùng fixture với test `Simulated` cũ, chỉ đổi engine="v2"
+    /// để không cần fork EVM thật).
+    #[test]
+    fn decide_paper_v2_far_future_deadline_not_blocked() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0); // deadline=9_999_999_999
+        let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pairbook = PairBook::new();
+        let mut cache = TaxCache::new();
+        cache.insert(token, TaxMeasurement::manual(0, 995));
+        let risk = RiskGuard::new();
+        let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
+        let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000 };
+
+        let (outcome, _source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
+        assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "expect Simulated, got {outcome:?}");
     }
 
     // ===== Cụm `usdt-quote-asset` (BAOCAO29) — decide_paper_quote =====

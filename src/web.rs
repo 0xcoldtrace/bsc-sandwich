@@ -79,6 +79,10 @@ pub struct AppStateInner {
     /// gas reserve, xem `config.rs::RiskGuard`), dùng chung cho
     /// `pipeline::decide_paper_v2` trong live loop.
     pub risk_guard: RwLock<crate::config::RiskGuard>,
+    /// Cụm `exec-path-traps` (F-13) — cache `(from, block) -> nonce kỳ vọng`
+    /// (`eth_getTransactionCount`, xem `transport::NonceCache`), dùng bởi
+    /// `main.rs::run_evm_decision` TRƯỚC khi mở fork EVM cho mỗi candidate.
+    pub nonce_cache: RwLock<crate::transport::NonceCache>,
     /// Cụm `foundation-fix-then-real-sim` (A6) — bộ đếm funnel theo gate
     /// order THẬT (A4): `seen -> not_pancake_router -> decode_fail ->
     /// not_wbnb_pair -> venue_v3|venue_v2 -> no_pool/rpc_error -> below_min ->
@@ -180,6 +184,14 @@ pub struct FunnelCounters {
     /// (field đó vẫn LUÔN 0, xem BAOCAO31 A6) để Chủ phân biệt được "RPC
     /// không kham nổi tải EVM" với các lý do skip kinh tế.
     sim_error: AtomicU64,
+    /// Cụm `exec-path-traps` (F-14) — `PipelineSkip::Deadline` (reason đã
+    /// khai báo từ trước trong `venues::SKIP_REASONS` nhưng CHƯA từng phát
+    /// sinh, xem audit F-14).
+    deadline: AtomicU64,
+    /// Cụm `exec-path-traps` (F-13) — `PipelineSkip::NonceStale`.
+    nonce_stale: AtomicU64,
+    /// Cụm `exec-path-traps` (F-13) — `PipelineSkip::NonceFuture`.
+    nonce_future: AtomicU64,
 }
 
 impl FunnelCounters {
@@ -229,6 +241,15 @@ impl FunnelCounters {
     pub fn record_sim_error(&self) {
         self.sim_error.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn record_deadline(&self) {
+        self.deadline.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn record_nonce_stale(&self) {
+        self.nonce_stale.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn record_nonce_future(&self) {
+        self.nonce_future.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// Đọc snapshot HIỆN TẠI (không reset) — dùng cho `GET /api/funnel`.
     pub fn snapshot(&self) -> Value {
@@ -248,6 +269,9 @@ impl FunnelCounters {
             "victim_would_revert": self.victim_would_revert.load(Ordering::Relaxed),
             "simulated": self.simulated.load(Ordering::Relaxed),
             "sim_error": self.sim_error.load(Ordering::Relaxed),
+            "deadline": self.deadline.load(Ordering::Relaxed),
+            "nonce_stale": self.nonce_stale.load(Ordering::Relaxed),
+            "nonce_future": self.nonce_future.load(Ordering::Relaxed),
         })
     }
 
@@ -270,6 +294,9 @@ impl FunnelCounters {
             "victim_would_revert": self.victim_would_revert.swap(0, Ordering::Relaxed),
             "simulated": self.simulated.swap(0, Ordering::Relaxed),
             "sim_error": self.sim_error.swap(0, Ordering::Relaxed),
+            "deadline": self.deadline.swap(0, Ordering::Relaxed),
+            "nonce_stale": self.nonce_stale.swap(0, Ordering::Relaxed),
+            "nonce_future": self.nonce_future.swap(0, Ordering::Relaxed),
         });
         out
     }
@@ -317,6 +344,19 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     // "Sim cuoi"/"Bot" xem du thong tin.
     let pending_source = state.pending_source.read().await.as_str();
 
+    // Cum `exec-path-traps` (F-04) — RiskGuard con SONG (record_result gio
+    // co call site that, xem main.rs::spawn_victim_validator) - phoi ra
+    // /api/status de Chu/Grok thay dem lo lien tiep + co bi vuot nguong
+    // max_consecutive_loss hay khong, khong phai doan qua log.
+    let risk_guard = state.risk_guard.read().await;
+    let consecutive_loss = risk_guard.consecutive_loss();
+    let risk_guard_json = json!({
+        "consecutive_loss": consecutive_loss,
+        "max_consecutive_loss": cfg.max_consecutive_loss,
+        "exceeded": risk_guard.consecutive_loss_exceeded(cfg.max_consecutive_loss),
+    });
+    drop(risk_guard);
+
     Json(json!({
         "state": bot_state.as_str(),
         "uptime_sec": state.start_time.elapsed().as_secs(),
@@ -331,6 +371,7 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
         "max_front_bnb": cfg.max_front_bnb,
         "max_exposure_bnb": cfg.max_exposure_bnb,
         "min_profit_bnb": cfg.min_profit_bnb,
+        "risk_guard": risk_guard_json,
     }))
 }
 

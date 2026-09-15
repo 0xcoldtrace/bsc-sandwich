@@ -23,7 +23,12 @@
 //! đến `7.3` (không phải phạm vi phiên này).
 
 use crate::calldata::{encode_back_sell, encode_front_buy};
-use crate::config::{Config, REQUIRED_CHAIN_ID};
+use crate::config::Config;
+/// Cụm `exec-path-traps` (F-05) — `gate_check` giờ SỐNG DUY NHẤT ở
+/// `config.rs` như method `Config::gate_check` (không còn hàm rời trong
+/// module này) — `LiveGateStatus` (kiểu trả về) re-export lại đây để code cũ
+/// `use crate::executor::LiveGateStatus` không phải đổi đường import.
+pub use crate::config::LiveGateStatus;
 use crate::logger::BotLogger;
 use crate::sim_v2::SandwichQuote;
 use crate::venues::{V2_ROUTER_ADDRESS, WBNB_ADDRESS};
@@ -35,60 +40,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Trả true chỉ khi TẤT CẢ điều kiện Live trong CLAUDE.md đều thoả. Vì
 /// `dry_run=true` theo config ship mặc định, hàm này luôn false cho tới khi
 /// chủ tự đổi cờ (không phải Claude Code tự bật).
-pub fn can_send_live(
-    cfg: &Config,
-    halt_locked: bool,
-    version_live: bool,
-    version_pinned: bool,
-    gas_cap_positive: bool,
-) -> bool {
-    cfg.live_gate_ok(halt_locked, version_live, version_pinned, gas_cap_positive)
+///
+/// Cụm `exec-path-traps` (F-05) — bỏ tham số `gas_cap_positive` (bản cũ nhận
+/// rời, có thể lệch với `cfg.front_max_gas_bnb_wei`/`back_max_gas_bnb_wei`
+/// thật): `Config::live_gate_ok` giờ tự đọc thẳng 2 field đó.
+pub fn can_send_live(cfg: &Config, halt_locked: bool, version_live: bool, version_pinned: bool) -> bool {
+    cfg.live_gate_ok(halt_locked, version_live, version_pinned)
 }
 
-/// Cụm `7.1` — kết quả cổng live CHI TIẾT (khác `can_send_live`/`live_gate_ok`
-/// chỉ trả `bool`): liệt kê ĐỦ các điều kiện đang THIẾU để chủ/Grok biết
-/// chính xác cái gì chưa xanh, thay vì chỉ biết "false".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveGateStatus {
-    pub ok: bool,
-    pub failures: Vec<String>,
-}
-
-/// Kiểm TỪNG điều kiện mục "Live" (CLAUDE.md), gom TẤT CẢ lý do thiếu vào
-/// `failures` (không dừng ở điều kiện đầu tiên sai) — `version_flag_name`/
-/// `version_live` là cờ `live_v2`/`live_v3`/`live_v4` của family ĐANG được
-/// đánh giá (gọi hàm này riêng cho từng family cần live). `gas cap > 0` đọc
-/// thẳng 2 field `front_max_gas_bnb_wei`/`back_max_gas_bnb_wei` từ `cfg`
-/// (không cần tham số ngoài, khác `can_send_live` cũ nhận `gas_cap_positive`
-/// làm tham số rời).
-pub fn gate_check(cfg: &Config, halt_exists: bool, version_flag_name: &str, version_live: bool) -> LiveGateStatus {
-    let mut failures = Vec::new();
-    if !cfg.allow_live {
-        failures.push("allow_live=false".to_string());
-    }
-    if cfg.dry_run {
-        failures.push("dry_run=true".to_string());
-    }
-    if !cfg.bot_armed {
-        failures.push("bot_armed=false".to_string());
-    }
-    if halt_exists {
-        failures.push("halt.lock present".to_string());
-    }
-    if cfg.chain_id != REQUIRED_CHAIN_ID {
-        failures.push(format!("chain_id={} != {REQUIRED_CHAIN_ID}", cfg.chain_id));
-    }
-    if !version_live {
-        failures.push(format!("{version_flag_name}=false"));
-    }
-    if cfg.front_max_gas_bnb_wei == 0 {
-        failures.push("front_max_gas_bnb_wei=0".to_string());
-    }
-    if cfg.back_max_gas_bnb_wei == 0 {
-        failures.push("back_max_gas_bnb_wei=0".to_string());
-    }
-    LiveGateStatus { ok: failures.is_empty(), failures }
-}
+// Cụm `exec-path-traps` (F-04, mục a) — CALL SITE DÀNH SẴN cho `7.3` (chưa
+// tồn tại phiên này — KHÔNG có `sendRaw`/`Signer` nào trong repo, xem
+// doc-comment đầu file). Khi `7.3` nối signer + gửi tx thật xong, điểm gọi
+// `RiskGuard::record_result` PHẢI đặt NGAY SAU khi biết kết quả ON-CHAIN THẬT
+// của 1 cặp front/back (receipt front+back đều về, biết chắc lãi/lỗ thật
+// bằng BNB thật) — VÍ DỤ (giả định chữ ký hàm gửi tx tương lai, KHÔNG PHẢI
+// code thật, chỉ đánh dấu vị trí):
+//
+//   let net_wei = back_receipt_bnb_out - front_receipt_bnb_spent - gas_that;
+//   app_state.risk_guard.write().await.record_result(net_wei <= 0);
+//
+// Paper mode phiên này (mục b) dùng tín hiệu thay thế từ validator nhúng
+// (`main.rs::spawn_victim_validator`) vì chưa có giao dịch thật nào để đo lỗ
+// thật — xem doc-comment ở đó.
 
 /// Đọc `PRIVATE_KEY` từ biến môi trường `env_key`, validate đúng 32 byte hex
 /// (`B256`) — CHỈ ĐỌC/PARSE, KHÔNG `sign_transaction`/`send_raw_transaction`
@@ -140,8 +113,18 @@ fn wbnb() -> Address {
     Address::from_str(WBNB_ADDRESS).expect("WBNB_ADDRESS da pin phai la address hop le")
 }
 
-/// Placeholder `to` — xem giải thích ở khối comment trên.
-pub const PLACEHOLDER_SELF_ADDRESS: Address = Address::ZERO;
+/// Cụm `exec-path-traps` (F-06) — địa chỉ THẬT nhận token/WBNB của attacker,
+/// suy ra từ signer khi có. **HIỆN TẠI (paper mode) LUÔN trả `None`**: `7.1`
+/// (`load_signer`) chỉ trả `B256` (khoá riêng thô 32 byte, xem doc-comment
+/// đầu file lý do kỹ thuật — `alloy-signer-local` chưa có bản khớp version
+/// `alloy 2.4.2` đang pin) — KHÔNG có cách nào suy ra địa chỉ public (cần
+/// ECDSA point-mul) mà không bật feature đó. Khi `7.3` nối signer thật
+/// (`alloy-signer-local` bắt kịp version hoặc `alloy` được bơm lên bản mới),
+/// hàm này đổi sang gọi `signer.address()` — mọi call site khác (`build_and_log_paper_sandwich`)
+/// không cần đổi gì, chỉ hàm này đổi.
+pub fn executor_self_address() -> Option<Address> {
+    None
+}
 
 /// `deadline` = giờ hệ thống hiện tại (giây, Unix epoch) + `buffer_sec` — xem
 /// giải thích ở khối comment trên vì sao KHÔNG phải `block.timestamp` on-chain
@@ -224,19 +207,32 @@ pub fn build_back_sell_paper_tx(
     }
 }
 
-/// Điểm gọi DUY NHẤT ghép build + log 2 tx paper — `pipeline.rs::decide_and_build_paper_v2`
-/// gọi hàm này khi `decide_paper_v2` trả `Simulated`. Cổng `cfg.dry_run`: chỉ
+/// Điểm gọi DUY NHẤT ghép build + log 2 tx paper. Cổng `cfg.dry_run`: chỉ
 /// build/log khi `dry_run=true` (đúng lệnh "chỉ log ra (paper/dry-run)") —
 /// `dry_run=false` KHÔNG build gì, chỉ log `tx.build_skipped` rồi dừng, đúng
 /// "không có code path nào dẫn tới ký/gửi" (module này vốn dĩ không có
 /// `Provider`/`Signer` nên dù có build cũng không gửi được gì, nhưng vẫn chặn
 /// tường minh thêm 1 lớp theo đúng lệnh).
+///
+/// Cụm `exec-path-traps`:
+/// - (F-06) — sau cổng `dry_run`, kiểm `executor_self_address()`: `None`
+///   hoặc `Some(Address::ZERO)` -> TỪ CHỐI build, log `build.refused
+///   {reason:"self_address_zero"}`, trả `None`. Paper mode HIỆN TẠI (chưa nối
+///   signer thật) LUÔN rơi vào nhánh này — đúng ý "chưa có signer thì không
+///   build" (khác bản cũ dùng `Address::ZERO` làm placeholder ĐI THẲNG vào
+///   calldata, đã quan sát thật trong log — nguồn gốc audit F-06).
+/// - (F-08) — dùng ĐÚNG `cfg.front_slippage_bps`/`cfg.back_slippage_bps`
+///   riêng cho mỗi chân (field gộp chung `executor_slippage_bps` đã XOÁ).
+/// - `engine`: `"v2"` (build ngay sau công thức đóng, hành vi cũ) hoặc
+///   `"evm"` (build CHỈ SAU khi EVM thật xác nhận — xem `pipeline::build_paper_txs_from_evm_decision`),
+///   ghi vào log `tx.build`/`build.refused` để phân biệt nguồn quyết định.
 pub fn build_and_log_paper_sandwich(
     logger: &BotLogger,
     cfg: &Config,
     victim_from: Address,
     token: Address,
     quote: &SandwichQuote,
+    engine: &str,
 ) -> Option<(PaperTxLog, PaperTxLog)> {
     if !cfg.dry_run {
         logger.log(
@@ -244,14 +240,31 @@ pub fn build_and_log_paper_sandwich(
             json!({
                 "reason": "dry_run=false: executor 7.3 phien nay CHI build/log paper khi dry_run=true",
                 "victim_from": format!("{:#x}", victim_from),
+                "engine": engine,
             }),
         );
         return None;
     }
 
+    let self_addr = match executor_self_address() {
+        Some(a) if a != Address::ZERO => a,
+        _ => {
+            logger.log(
+                "build.refused",
+                json!({
+                    "reason": "self_address_zero",
+                    "victim_from": format!("{:#x}", victim_from),
+                    "token": format!("{:#x}", token),
+                    "engine": engine,
+                }),
+            );
+            return None;
+        }
+    };
+
     let deadline = compute_deadline(cfg.executor_deadline_buffer_sec);
-    let front = build_front_buy_paper_tx(quote, token, PLACEHOLDER_SELF_ADDRESS, deadline, cfg.executor_slippage_bps, cfg.front_max_gas_bnb_wei);
-    let back = build_back_sell_paper_tx(quote, token, PLACEHOLDER_SELF_ADDRESS, deadline, cfg.executor_slippage_bps, cfg.back_max_gas_bnb_wei);
+    let front = build_front_buy_paper_tx(quote, token, self_addr, deadline, cfg.front_slippage_bps, cfg.front_max_gas_bnb_wei);
+    let back = build_back_sell_paper_tx(quote, token, self_addr, deadline, cfg.back_slippage_bps, cfg.back_max_gas_bnb_wei);
 
     logger.log(
         "tx.build",
@@ -259,7 +272,8 @@ pub fn build_and_log_paper_sandwich(
             "victim_from": format!("{:#x}", victim_from),
             "token": format!("{:#x}", token),
             "deadline": deadline.to_string(),
-            "self_address_placeholder": true,
+            "self_address_placeholder": false,
+            "engine": engine,
             "front": {
                 "label": front.label,
                 "to": format!("{:#x}", front.to),
@@ -296,7 +310,7 @@ mod tests {
         assert!(!cfg.allow_live, "config ship phai allow_live=false");
         assert!(!cfg.bot_armed, "config ship phai bot_armed=false");
         // Giả định best-case moi dieu kien khac deu xanh: van phai false.
-        assert!(!can_send_live(&cfg, false, true, true, true));
+        assert!(!can_send_live(&cfg, false, true, true));
     }
 
     #[test]
@@ -305,8 +319,8 @@ mod tests {
         cfg.dry_run = false;
         cfg.allow_live = true;
         cfg.bot_armed = true;
-        assert!(can_send_live(&cfg, false, true, true, true));
-        assert!(!can_send_live(&cfg, true, true, true, true), "halt.lock phai chan live");
+        assert!(can_send_live(&cfg, false, true, true));
+        assert!(!can_send_live(&cfg, true, true, true), "halt.lock phai chan live");
     }
 
     fn green_config() -> Config {
@@ -325,13 +339,13 @@ mod tests {
         let cfg = shipped_config(); // dry_run=true, allow_live=false, bot_armed=false (ship goc)
         let mut only_allow_live_off = green_config();
         only_allow_live_off.allow_live = false;
-        let status = gate_check(&only_allow_live_off, false, "live_v2", true);
+        let status = only_allow_live_off.gate_check(false, "live_v2", true, true);
         assert_eq!(
             status,
             LiveGateStatus { ok: false, failures: vec!["allow_live=false".to_string()] }
         );
         // Config ship goc (3 co live deu tat) -> nhieu ly do cung luc, khong panic.
-        let status_ship = gate_check(&cfg, false, "live_v2", cfg.live_v2);
+        let status_ship = cfg.gate_check(false, "live_v2", cfg.live_v2, true);
         assert!(!status_ship.ok);
         assert!(status_ship.failures.contains(&"allow_live=false".to_string()));
         assert!(status_ship.failures.contains(&"dry_run=true".to_string()));
@@ -339,13 +353,13 @@ mod tests {
     }
 
     /// ĐẠT CẦN DÁN: `gate_check_ok` — mọi điều kiện xanh (kể cả gas cap > 0
-    /// từ config ship, không halt, `live_v2=true` giả lập) -> `ok=true`,
-    /// `failures` rỗng.
+    /// từ config ship, không halt, `live_v2=true` giả lập, version đã pin) ->
+    /// `ok=true`, `failures` rỗng.
     #[test]
     fn gate_check_ok() {
         let cfg = green_config();
         assert!(cfg.front_max_gas_bnb_wei > 0 && cfg.back_max_gas_bnb_wei > 0, "config ship phai co gas cap > 0");
-        let status = gate_check(&cfg, false, "live_v2", true);
+        let status = cfg.gate_check(false, "live_v2", true, true);
         assert_eq!(status, LiveGateStatus { ok: true, failures: vec![] });
     }
 
@@ -353,9 +367,20 @@ mod tests {
     fn gate_check_zero_gas_cap_is_a_failure_reason() {
         let mut cfg = green_config();
         cfg.front_max_gas_bnb_wei = 0;
-        let status = gate_check(&cfg, false, "live_v2", true);
+        let status = cfg.gate_check(false, "live_v2", true, true);
         assert!(!status.ok);
         assert!(status.failures.contains(&"front_max_gas_bnb_wei=0".to_string()));
+    }
+
+    /// Cụm `exec-path-traps` (F-05) — `version_pinned=false` (mà mọi điều
+    /// kiện khác xanh, kể cả `live_v2=true`) PHẢI là 1 lý do fail riêng —
+    /// audit gốc: bản `executor::gate_check` CŨ thiếu hẳn check này.
+    #[test]
+    fn gate_check_version_not_pinned_is_a_failure_reason() {
+        let cfg = green_config();
+        let status = cfg.gate_check(false, "live_v2", true, false);
+        assert!(!status.ok);
+        assert!(status.failures.contains(&"live_v2_pinned=false".to_string()));
     }
 
     #[test]
@@ -401,6 +426,12 @@ mod tests {
     }
 
     // ===== Cụm `7.3` (BAOCAO16) — build + log tx paper =====
+
+    /// Chỉ dùng trong test (F-06 đã xoá khỏi đường build production) — gọi
+    /// thẳng `build_front_buy_paper_tx`/`build_back_sell_paper_tx` (hàm calldata
+    /// thuần, KHÔNG qua cổng `executor_self_address`) vẫn cần 1 địa chỉ `to`
+    /// bất kỳ để kiểm cấu trúc calldata.
+    const TEST_PLACEHOLDER_SELF_ADDRESS: Address = Address::ZERO;
 
     fn test_token() -> Address {
         Address::from_str("0xcccccccccccccccccccccccccccccccccccccccc").unwrap()
@@ -464,7 +495,7 @@ mod tests {
         let token = test_token();
         let quote = fixture_quote();
         let deadline = U256::from(9_999_999_999u64);
-        let front = build_front_buy_paper_tx(&quote, token, PLACEHOLDER_SELF_ADDRESS, deadline, 50, 3_000_000_000_000_000);
+        let front = build_front_buy_paper_tx(&quote, token, TEST_PLACEHOLDER_SELF_ADDRESS, deadline, 50, 3_000_000_000_000_000);
         assert_eq!(front.label, "front_buy");
         assert_eq!(front.to, v2_router());
         assert_eq!(front.value_wei, quote.front_in);
@@ -476,7 +507,7 @@ mod tests {
         assert_eq!(decoded.amount_in, quote.front_in);
         assert_eq!(decoded.path.token_a, wbnb());
         assert_eq!(decoded.path.token_b, token);
-        assert_eq!(decoded.to, PLACEHOLDER_SELF_ADDRESS);
+        assert_eq!(decoded.to, TEST_PLACEHOLDER_SELF_ADDRESS);
         assert_eq!(decoded.deadline, Some(deadline));
         assert_eq!(decoded.amount_out_min, apply_slippage(quote.front_out, 50));
     }
@@ -488,7 +519,7 @@ mod tests {
         let token = test_token();
         let quote = fixture_quote();
         let deadline = U256::from(9_999_999_999u64);
-        let back = build_back_sell_paper_tx(&quote, token, PLACEHOLDER_SELF_ADDRESS, deadline, 50, 3_000_000_000_000_000);
+        let back = build_back_sell_paper_tx(&quote, token, TEST_PLACEHOLDER_SELF_ADDRESS, deadline, 50, 3_000_000_000_000_000);
         assert_eq!(back.label, "back_sell");
         assert_eq!(back.value_wei, U256::ZERO, "swapExactTokensForETH khong payable");
 
@@ -498,37 +529,44 @@ mod tests {
         assert_eq!(decoded.amount_in, quote.front_out, "amountIn back-sell phai la front_out (token vua mua)");
         assert_eq!(decoded.path.token_a, token);
         assert_eq!(decoded.path.token_b, wbnb());
-        assert_eq!(decoded.to, PLACEHOLDER_SELF_ADDRESS);
+        assert_eq!(decoded.to, TEST_PLACEHOLDER_SELF_ADDRESS);
         assert_eq!(decoded.amount_out_min, apply_slippage(quote.back_out, 50));
     }
 
-    /// ĐẠT CẦN DÁN: `dry_run=true` (config ship) -> build đủ 2 tx, log ĐÚNG 1
-    /// dòng `tx.build` chứa cả `front`/`back`.
+    /// Cụm `exec-path-traps` (F-06) — sửa lại theo hành vi MỚI: KHÔNG còn
+    /// build được khi `dry_run=true` (khác bản cũ, tên test đổi để phản ánh
+    /// đúng) vì `executor_self_address()` LUÔN `None` ở paper mode (chưa nối
+    /// signer thật) — `build_and_log_paper_sandwich` giờ TỪ CHỐI build, log
+    /// `build.refused{reason:"self_address_zero"}` thay vì `tx.build` với
+    /// `to=Address::ZERO` (đúng audit F-06: KHÔNG được để calldata thật mang
+    /// `to=0x000...000`). Đây là thay đổi hành vi CÓ CHỦ Ý theo đúng mục 2
+    /// của lệnh, không phải nới test để né fail.
     #[test]
-    fn build_and_log_paper_sandwich_logs_tx_build_when_dry_run_true() {
+    fn build_and_log_paper_sandwich_refuses_when_no_real_self_address() {
         let dir = tempfile::tempdir().unwrap();
         let logger = BotLogger::new(dir.path().join("logs").join("bot.jsonl")).unwrap();
         let cfg = shipped_config();
         assert!(cfg.dry_run, "config ship phai dry_run=true");
+        assert_eq!(executor_self_address(), None, "paper mode chua noi signer that, phai None");
         let quote = fixture_quote();
 
-        let result = build_and_log_paper_sandwich(&logger, &cfg, test_victim(), test_token(), &quote);
-        assert!(result.is_some());
+        let result = build_and_log_paper_sandwich(&logger, &cfg, test_victim(), test_token(), &quote, "v2");
+        assert!(result.is_none(), "khong co self address that thi khong duoc build");
 
         let tail = logger.tail(10);
-        let build_events: Vec<_> = tail.iter().filter(|v| v["event"] == "tx.build").collect();
-        assert_eq!(build_events.len(), 1);
-        assert_eq!(build_events[0]["front"]["label"], "front_buy");
-        assert_eq!(build_events[0]["back"]["label"], "back_sell");
-        assert_eq!(build_events[0]["self_address_placeholder"], true);
-        assert!(tail.iter().all(|v| v["event"] != "tx.build_skipped"));
-        // Bang chung dong log THAT (BAOCAO16 o5) - chay `cargo test ... -- --nocapture`.
-        println!("tx.build log THAT: {}", serde_json::to_string(build_events[0]).unwrap());
+        assert!(tail.iter().all(|v| v["event"] != "tx.build"), "khong co self address that khong duoc log tx.build");
+        let refused: Vec<_> = tail.iter().filter(|v| v["event"] == "build.refused").collect();
+        assert_eq!(refused.len(), 1, "phai co dung 1 dong build.refused");
+        assert_eq!(refused[0]["reason"], "self_address_zero");
+        assert_eq!(refused[0]["engine"], "v2");
+        // Bang chung dong log THAT (cum exec-path-traps) - chay voi --nocapture.
+        println!("build.refused log THAT: {}", serde_json::to_string(refused[0]).unwrap());
     }
 
     /// ĐẠT CẦN DÁN: `dry_run=false` -> KHÔNG build gì (`None`), chỉ log
     /// `tx.build_skipped`, KHÔNG có `tx.build` nào — đúng lệnh "chỉ log ra
-    /// (paper/dry-run)".
+    /// (paper/dry-run)". Cổng `dry_run` chạy TRƯỚC cổng self-address nên vẫn
+    /// đúng dù `executor_self_address()` luôn `None`.
     #[test]
     fn build_and_log_paper_sandwich_skips_when_dry_run_false() {
         let dir = tempfile::tempdir().unwrap();
@@ -537,12 +575,13 @@ mod tests {
         cfg.dry_run = false;
         let quote = fixture_quote();
 
-        let result = build_and_log_paper_sandwich(&logger, &cfg, test_victim(), test_token(), &quote);
+        let result = build_and_log_paper_sandwich(&logger, &cfg, test_victim(), test_token(), &quote, "evm");
         assert!(result.is_none());
 
         let tail = logger.tail(10);
         assert!(tail.iter().all(|v| v["event"] != "tx.build"), "dry_run=false khong duoc log tx.build");
         assert!(tail.iter().any(|v| v["event"] == "tx.build_skipped"));
+        assert!(tail.iter().all(|v| v["event"] != "build.refused"), "dry_run=false dung o cong dry_run, chua toi cong self-address");
     }
 
     /// ĐẠT CẦN DÁN: grep TOÀN BỘ `src/` xác nhận KHÔNG có bất kỳ lời gọi hàm

@@ -365,6 +365,83 @@ pub fn parse_inject_line(line: &str) -> Result<PendingTxRaw, String> {
     Ok(PendingTxRaw { from, to: None, value, input, hash: B256::ZERO, gas: 0, gas_price: U256::ZERO, nonce: 0 })
 }
 
+// ============================================================================
+// Cụm `exec-path-traps` (F-13) — nonce THẬT của victim
+// ============================================================================
+
+/// Kết quả so `nonce` của 1 candidate (lấy từ tx pending thật/`inject`) với
+/// nonce KỲ VỌNG (`eth_getTransactionCount(from, "latest")` — xem lý do CHỌN
+/// `"latest"` thay vì `"pending"` ở `fetch_expected_nonce`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceCheck {
+    /// `actual == expected` — đúng nonce kế tiếp, sẽ thực thi ở block kế (giả
+    /// định không có gì khác chen vào), an toàn để front-run.
+    Ok,
+    /// `actual < expected` — nonce này ĐÃ được dùng bởi 1 tx khác đã lên
+    /// block (tx đang xét là bản sao/đã bị thay thế, không bao giờ chạy).
+    Stale,
+    /// `actual > expected` — còn khoảng trống nonce (tx khác của CÙNG ví
+    /// phải lên block trước), tx đang xét CHƯA thể chạy ngay.
+    Future,
+}
+
+/// So sánh THUẦN, không RPC — tách riêng khỏi `fetch_expected_nonce`/`NonceCache`
+/// để test được không cần `Provider`.
+pub fn compare_nonce(actual: u64, expected: u64) -> NonceCheck {
+    match actual.cmp(&expected) {
+        std::cmp::Ordering::Less => NonceCheck::Stale,
+        std::cmp::Ordering::Equal => NonceCheck::Ok,
+        std::cmp::Ordering::Greater => NonceCheck::Future,
+    }
+}
+
+/// Nonce "kỳ vọng" (nonce mà 1 tx MỚI của `from` cần có để thực thi NGAY ở
+/// block kế tiếp) — dùng `eth_getTransactionCount(from, "latest")` (nonce đã
+/// XÁC NHẬN trên chain), KHÔNG PHẢI tag `"pending"` dù lệnh gốc nêu
+/// `eth_getTransactionCount(from, pending)`.
+///
+/// **Lý do lệch khỏi chữ literal của lệnh (ghi rõ, không âm thầm đổi)**: tag
+/// `"pending"` của hầu hết node (Geth và tương thích) trả `latest_count +
+/// số tx PENDING LIÊN TỤC (không đứt quãng) đã thấy của địa chỉ đó` — vì
+/// CHÍNH tx đang được đánh giá ở đây LUÔN nằm trong mempool node vừa thấy nó
+/// (đó là lý do nó tới được `handle_paper_tx`), tag `"pending"` trong trường
+/// hợp BÌNH THƯỜNG (tx hợp lệ, không có gì bất thường) sẽ LUÔN trả
+/// `victim.nonce + 1` — nghĩa là so `victim.nonce == pending_count` sẽ LUÔN
+/// `false` (`Stale`) kể cả ở trường hợp khoẻ mạnh nhất, làm gate này chặn
+/// MỌI candidate, không chỉ candidate thật sự có bẫy. `"latest"` (nonce đã
+/// xác nhận on-chain — chính là nonce BẮT BUỘC cho tx MỚI tiếp theo của địa
+/// chỉ đó nếu không có gì khác chen vào) cho ra đúng ngữ nghĩa "nonce này có
+/// phải cái TIẾP THEO sẽ chạy hay không" mà lệnh mô tả (`nonce victim <
+/// expected → nonce_stale`, `> expected → nonce_future`) — chỉ khác Ở CHỌN
+/// TAG RPC nào để hỏi, KHÔNG đổi hướng so sánh/2 reason mới.
+pub async fn fetch_expected_nonce(provider: &dyn Provider, from: Address) -> Result<u64, String> {
+    provider.get_transaction_count(from).latest().await.map_err(|e| e.to_string())
+}
+
+/// Cache `(from, block) -> nonce kỳ vọng` để không gọi lặp lại
+/// `eth_getTransactionCount` cho CÙNG 1 victim trong CÙNG 1 block (nhiều
+/// candidate cùng ví hiếm nhưng có thể xảy ra trong 1 block). KHÔNG tự khoá
+/// (khác `RpcPool`) — theo đúng quy ước repo (`AppStateInner` bọc `RwLock`
+/// từ NGOÀI, xem `risk_guard`/`tax_cache`), caller tự `.read()/.write()`.
+#[derive(Debug, Default)]
+pub struct NonceCache {
+    entries: std::collections::HashMap<(Address, u64), u64>,
+}
+
+impl NonceCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cached(&self, from: Address, block: u64) -> Option<u64> {
+        self.entries.get(&(from, block)).copied()
+    }
+
+    pub fn insert(&mut self, from: Address, block: u64, nonce: u64) {
+        self.entries.insert((from, block), nonce);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,5 +784,60 @@ mod tests {
         assert!(after_first_advance.is_some(), "idx 1 van la mock hop le");
         let after_second_advance = pool.advance_and_reconnect(&logger, "http").await;
         assert!(after_second_advance.is_some(), "quay vong ve idx 0, khong panic index");
+    }
+
+    // ===== Cụm `exec-path-traps` (F-13) — compare_nonce / NonceCache =====
+
+    #[test]
+    fn compare_nonce_equal_is_ok() {
+        assert_eq!(compare_nonce(5, 5), NonceCheck::Ok);
+    }
+
+    #[test]
+    fn compare_nonce_lower_is_stale() {
+        assert_eq!(compare_nonce(4, 5), NonceCheck::Stale);
+    }
+
+    #[test]
+    fn compare_nonce_higher_is_future() {
+        assert_eq!(compare_nonce(6, 5), NonceCheck::Future);
+    }
+
+    #[test]
+    fn nonce_cache_miss_then_hit_after_insert() {
+        let mut cache = NonceCache::new();
+        let from = Address::from_str("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        assert_eq!(cache.cached(from, 1000), None);
+        cache.insert(from, 1000, 42);
+        assert_eq!(cache.cached(from, 1000), Some(42));
+        // Block khac -> van la cache miss (khoa theo (from, block), khong
+        // phai chi theo from).
+        assert_eq!(cache.cached(from, 1001), None);
+    }
+
+    /// `#[ignore]` — chỉ chạy thủ công khi có RPC sống (cùng khuôn
+    /// `pool.rs::real_rpc_v2_get_pair_wbnb_usdt`, dùng RPC công khai, KHÔNG
+    /// phải `.env` runtime của bot). Chứng minh `fetch_expected_nonce` gọi
+    /// `eth_getTransactionCount(address, "latest")` THẬT thành công trên
+    /// mainnet chain 56 — dùng địa chỉ WBNB (contract token thường KHÔNG tự
+    /// gửi tx nào, nonce kỳ vọng thấp/ổn định, đủ để chứng minh đường RPC
+    /// hoạt động mà không phụ thuộc trạng thái mempool biến động).
+    #[tokio::test]
+    #[ignore]
+    async fn real_rpc_fetch_expected_nonce_for_wbnb_contract() {
+        use alloy::providers::{Provider, ProviderBuilder};
+
+        let wbnb = Address::from_str(crate::venues::WBNB_ADDRESS).unwrap();
+        let provider =
+            ProviderBuilder::new().connect("https://bsc-dataseed.binance.org/").await.expect("ket noi RPC cong khai that bai");
+        let chain_id = provider.get_chain_id().await.expect("eth_chainId that bai");
+        assert_eq!(chain_id, 56);
+
+        let nonce = fetch_expected_nonce(&provider, wbnb).await.expect("eth_getTransactionCount that bai");
+        println!("eth_getTransactionCount(WBNB, latest) THAT = {nonce}");
+        // Contract token thuong khong tu gui tx nao - nonce thuc te == 0,
+        // nhung khong assert cung 0 (khong bia bat bien on-chain vinh vien
+        // chua tung tu verify se khong bao gio doi) - chi assert goi RPC
+        // thanh cong va tra ve so hop le.
     }
 }

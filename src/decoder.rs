@@ -182,9 +182,18 @@ impl DecodedSwap {
     }
 }
 
+/// Cụm `exec-path-traps` (F-20) — slice an toàn: mọi cộng offset dùng
+/// `checked_add`, tràn `usize` (calldata rác cố ý đưa offset gần
+/// `usize::MAX`) trả `None` (-> `decode_fail` ở tầng gọi) thay vì panic do
+/// tràn cộng KHÔNG checked trong build debug (`start + len` cũ).
+fn slice_checked(data: &[u8], start: usize, len: usize) -> Option<&[u8]> {
+    let end = start.checked_add(len)?;
+    data.get(start..end)
+}
+
 fn word(data: &[u8], idx: usize) -> Option<&[u8]> {
     let start = idx.checked_mul(32)?;
-    data.get(start..start + 32)
+    slice_checked(data, start, 32)
 }
 
 fn u256_at(data: &[u8], idx: usize) -> Option<U256> {
@@ -192,7 +201,7 @@ fn u256_at(data: &[u8], idx: usize) -> Option<U256> {
 }
 
 fn u256_at_byteoffset(data: &[u8], byte_offset: usize) -> Option<U256> {
-    data.get(byte_offset..byte_offset + 32).map(U256::from_be_slice)
+    slice_checked(data, byte_offset, 32).map(U256::from_be_slice)
 }
 
 fn address_at(data: &[u8], idx: usize) -> Option<Address> {
@@ -219,7 +228,7 @@ fn dynamic_bytes_at_offset(data: &[u8], offset_word_idx: usize) -> Option<Vec<u8
     let offset_bytes = usize::try_from(offset).ok()?;
     let len = usize::try_from(u256_at_byteoffset(data, offset_bytes)?).ok()?;
     let start = offset_bytes.checked_add(32)?;
-    data.get(start..start + len).map(|s| s.to_vec())
+    slice_checked(data, start, len).map(|s| s.to_vec())
 }
 
 /// `bytes[]` ABI tail-encoding: word length N, rồi N offset tương đối (tính
@@ -237,9 +246,53 @@ fn dynamic_bytes_array_at_offset(data: &[u8], offset_word_idx: usize) -> Option<
         let elem_base = elems_start.checked_add(rel_offset)?;
         let elem_len = usize::try_from(u256_at_byteoffset(data, elem_base)?).ok()?;
         let elem_start = elem_base.checked_add(32)?;
-        out.push(data.get(elem_start..elem_start + elem_len)?.to_vec());
+        out.push(slice_checked(data, elem_start, elem_len)?.to_vec());
     }
     Some(out)
+}
+
+/// Cụm `exec-path-traps` (F-16) — cross-check `venues::Venue(tx.to)` (địa chỉ
+/// ROUTER thật, `venues::venue_for_router`) với chính `selector_name` đã
+/// decode được — 2 khái niệm tách biệt có chủ đích (`venues::Venue` phân loại
+/// theo ĐỊA CHỈ, `SwapVenue`/`selector_name` ở đây phân loại theo HÀM/COMMAND,
+/// xem doc-comment `SwapVenue`) nhưng PHẢI đồng nhất theo 1 chiều: 6 selector
+/// V2 Router cổ điển (kể cả 3 biến thể FOT) KHÔNG BAO GIỜ hợp lệ khi gửi tới
+/// địa chỉ V3 SwapRouter/SmartRouter/Universal Router (2 nhóm contract đó
+/// không cài các hàm V2 Router) — và ngược lại, `exactInputSingle`/`exactInput`
+/// (gọi V3 trực tiếp) không hợp lệ khi gửi qua V2 Router thuần (V2 Router
+/// không cài các hàm này) hoặc Universal Router (UR gói V3 qua command
+/// `execute()` riêng — selector `UR:V3_SWAP_EXACT_IN`, KHÔNG PHẢI
+/// `exactInputSingle`/`exactInput` trực tiếp). Command UR
+/// (`selector_name` bắt đầu `"UR:"`) chỉ hợp lệ khi router chính là
+/// `Venue::UniversalRouter`.
+///
+/// `router_venue=None` (tx.to không khớp router nào đã pin) coi là KHÔNG
+/// mismatch — hàm này CHỈ phát hiện sai lệch khi ĐÃ biết router là gì; trường
+/// hợp router lạ đã bị gate `not_pancake_router` chặn từ trước ở `main.rs`
+/// (giữ hàm tổng quát/test độc lập, không phụ thuộc thứ tự gọi).
+pub fn venue_matches_router(selector_name: &str, router_venue: Option<crate::venues::Venue>) -> bool {
+    use crate::venues::Venue;
+    let Some(router_venue) = router_venue else { return true };
+    let classic_v2 = matches!(
+        selector_name,
+        "swapExactETHForTokens"
+            | "swapExactTokensForETH"
+            | "swapExactTokensForTokens"
+            | "swapExactETHForTokensSupportingFeeOnTransferTokens"
+            | "swapExactTokensForETHSupportingFeeOnTransferTokens"
+            | "swapExactTokensForTokensSupportingFeeOnTransferTokens"
+    );
+    if classic_v2 {
+        return router_venue == Venue::V2;
+    }
+    let classic_v3 = matches!(selector_name, "exactInputSingle" | "exactInput");
+    if classic_v3 {
+        return matches!(router_venue, Venue::V3 | Venue::SmartRouter);
+    }
+    if selector_name.starts_with("UR:") {
+        return router_venue == Venue::UniversalRouter;
+    }
+    true
 }
 
 /// Decode calldata router. `tx_value` = `msg.value` của tx gốc — cần cho
@@ -776,5 +829,131 @@ mod tests {
         let calldata = build_ur_execute(0x1f, &input); // command khong xu ly trong phien nay
         let err = decode_swap_calldata(&calldata, U256::ZERO).unwrap_err();
         assert_eq!(err, SkipReason::DecodeFail);
+    }
+
+    // ===== Cụm `exec-path-traps` (F-20) — fuzz calldata offset, khong panic =====
+
+    /// Xorshift64* thuần Rust — KHÔNG thêm crate `rand` (chỉ cần chuỗi số giả
+    /// ngẫu nhiên tái lập được cho 1 test, không cần chất lượng thống kê).
+    struct Xorshift64(u64);
+    impl Xorshift64 {
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn next_byte(&mut self) -> u8 {
+            (self.next_u64() & 0xff) as u8
+        }
+    }
+
+    /// ĐẠT CẦN DÁN (lệnh exec-path-traps, mục 11): 1000 calldata ngẫu nhiên
+    /// (selector + độ dài + nội dung random) đưa thẳng vào
+    /// `decode_swap_calldata` — không được panic (chỉ `Ok`/`Err`, không có
+    /// nhánh nào khác). Trước fix F-20, `word`/`u256_at_byteoffset`/
+    /// `dynamic_bytes_at_offset`/`dynamic_bytes_array_at_offset` cộng offset
+    /// không `checked_` — calldata với word offset gần `usize::MAX` (dễ xảy
+    /// ra vì offset là `U256` bất kỳ do kẻ tấn công chọn, ép về `usize` qua
+    /// `try_from` mà không chặn biên trên) có thể tràn cộng và panic (debug
+    /// build). Test này bơm CẢ random thuần lẫn payload cố ý nhắm offset lớn
+    /// vào đúng 4 selector có nhánh offset (`SEL_SWAP_EXACT_ETH_FOR_TOKENS`,
+    /// `SEL_EXACT_INPUT`, `SEL_UR_EXECUTE_2`) để chắc chắn đi qua các hàm đã
+    /// sửa, không chỉ rơi vào `decode_fail` sớm vì selector lạ.
+    #[test]
+    fn fuzz_1000_random_calldata_plus_20_offset_near_usize_max_no_panic() {
+        let mut rng = Xorshift64(0x9E3779B97F4A7C15);
+        let selectors_with_offset: [[u8; 4]; 3] =
+            [*SEL_SWAP_EXACT_ETH_FOR_TOKENS, *SEL_EXACT_INPUT, *SEL_UR_EXECUTE_2];
+
+        // 1000 calldata hoan toan ngau nhien (do dai 0..=200 byte).
+        for _ in 0..1000u32 {
+            let len = (rng.next_u64() % 201) as usize;
+            let mut data = Vec::with_capacity(len);
+            for _ in 0..len {
+                data.push(rng.next_byte());
+            }
+            let tx_value = U256::from(rng.next_u64());
+            let _ = decode_swap_calldata(&data, tx_value); // khong duoc panic
+        }
+
+        // 20 calldata: selector that (co nhanh offset) + word offset gia gan
+        // usize::MAX (32 byte gan toan 0xff) o dung vi tri offset arg dau
+        // tien, phan con lai random.
+        let near_max_word: [u8; 32] = {
+            let mut w = [0xffu8; 32];
+            w[24..32].copy_from_slice(&(u64::MAX - 7).to_be_bytes());
+            w
+        };
+        for i in 0..20u32 {
+            let sel = selectors_with_offset[(i as usize) % selectors_with_offset.len()];
+            let mut data = sel.to_vec();
+            // Dat 1 word offset kich thuoc gan usize::MAX ngay dau args, roi
+            // them vai word random phia sau de cac field khac cung doc duoc
+            // (hoac loi som, deu chap nhan duoc - chi cam panic).
+            data.extend_from_slice(&near_max_word);
+            for _ in 0..6u32 {
+                let mut w = [0u8; 32];
+                for b in w.iter_mut() {
+                    *b = rng.next_byte();
+                }
+                data.extend_from_slice(&w);
+            }
+            let tx_value = U256::from(rng.next_u64());
+            let _ = decode_swap_calldata(&data, tx_value); // khong duoc panic
+        }
+    }
+
+    // ===== Cụm `exec-path-traps` (F-16) — venue_matches_router =====
+
+    use crate::venues::Venue;
+
+    #[test]
+    fn venue_matches_router_none_router_never_mismatches() {
+        assert!(venue_matches_router("swapExactETHForTokens", None));
+        assert!(venue_matches_router("exactInputSingle", None));
+        assert!(venue_matches_router("UR:V2_SWAP_EXACT_IN", None));
+        assert!(venue_matches_router("bogus", None));
+    }
+
+    /// ĐẠT CẦN DÁN (mục 10, chiều 1): selector V2 cổ điển tới V3 SwapRouter/UR -> mismatch.
+    #[test]
+    fn venue_matches_router_classic_v2_selector_to_v3_or_ur_is_mismatch() {
+        for sel in [
+            "swapExactETHForTokens",
+            "swapExactTokensForETH",
+            "swapExactTokensForTokens",
+            "swapExactETHForTokensSupportingFeeOnTransferTokens",
+            "swapExactTokensForETHSupportingFeeOnTransferTokens",
+            "swapExactTokensForTokensSupportingFeeOnTransferTokens",
+        ] {
+            assert!(venue_matches_router(sel, Some(Venue::V2)), "{sel} phai khop Venue::V2");
+            assert!(!venue_matches_router(sel, Some(Venue::V3)), "{sel} toi V3 phai la mismatch");
+            assert!(!venue_matches_router(sel, Some(Venue::SmartRouter)), "{sel} toi SmartRouter phai la mismatch");
+            assert!(!venue_matches_router(sel, Some(Venue::UniversalRouter)), "{sel} toi UR phai la mismatch");
+        }
+    }
+
+    /// ĐẠT CẦN DÁN (mục 10, chiều 2): selector V3 truc tiep toi V2 Router/UR -> mismatch.
+    #[test]
+    fn venue_matches_router_classic_v3_selector_to_v2_or_ur_is_mismatch() {
+        for sel in ["exactInputSingle", "exactInput"] {
+            assert!(venue_matches_router(sel, Some(Venue::V3)), "{sel} phai khop Venue::V3");
+            assert!(venue_matches_router(sel, Some(Venue::SmartRouter)), "{sel} phai khop SmartRouter");
+            assert!(!venue_matches_router(sel, Some(Venue::V2)), "{sel} toi V2 Router phai la mismatch");
+            assert!(!venue_matches_router(sel, Some(Venue::UniversalRouter)), "{sel} toi UR (goi truc tiep, khong qua execute()) phai la mismatch");
+        }
+    }
+
+    #[test]
+    fn venue_matches_router_ur_command_only_matches_universal_router() {
+        for sel in ["UR:V2_SWAP_EXACT_IN", "UR:V3_SWAP_EXACT_IN"] {
+            assert!(venue_matches_router(sel, Some(Venue::UniversalRouter)));
+            assert!(!venue_matches_router(sel, Some(Venue::V2)));
+            assert!(!venue_matches_router(sel, Some(Venue::V3)));
+            assert!(!venue_matches_router(sel, Some(Venue::SmartRouter)));
+        }
     }
 }
