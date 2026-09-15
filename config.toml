@@ -93,7 +93,7 @@ pair_scan_enabled = true
 # đổi gì khi tắt cờ này. 3 ngưỡng dưới là SỐ KHỞI TẠO THÔ do Code chọn (KHÔNG
 # price oracle, KHÔNG quy đổi từ *_bnb) - Chủ tự chỉnh tự do trong file này,
 # hot-reload theo config_reload_sec giống mọi ngưỡng khác.
-scan_quote_usdt = false
+scan_quote_usdt = true
 min_profit_usdt = 3.0
 max_front_usdt = 3000.0
 min_reserve_usdt = 15000.0
