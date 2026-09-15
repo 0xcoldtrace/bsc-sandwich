@@ -63,6 +63,7 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | `hotpath-fix-then-decoder-ur` Phần A (A1-A4: pairs.txt quote USDT, tax gate USDT MODE 2 ONLY, tách `rpc_error`/`no_pool`, `known_pair`+`ReserveCache`) | 39 | *(xem BAOCAO39 ô 3)* | XONG — verify paper run 5 phút thật (`/api/pairs` 89/0, `honeypot_or_tax=0`) |
 | `hotpath-fix-then-decoder-ur` Phần B = `decoder-coverage` (cụm 4: UR đa command, `SmartRouter.multicall`, biến thể không-deadline, `exactOutput*`, fix bug pre-existing `exactInput` 2-lớp offset ABI) | 39 | *(xem BAOCAO39 ô 3)* | MỘT PHẦN — xem "decoder-coverage" (`docs/STATE.md`) mục CÒN NỢ (multihop, `*_SWAP_EXACT_OUT` làm command chính trong UR, recipient sentinel) |
 | `econ-truth-latency-vps` (PairBook cache+backoff, FIX BUG GỐC funnel.simulated vs sim.result, `/api/econ` top_pools+USDT bucket, `compete.check`, Sync-event ReserveCache, deploy VPS) | 40 | *(xem BAOCAO40 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (nonce gate v2 vẫn no-op vì thiếu nguồn điền cache, `competitor_profit_bnb`, p95 latency Sync-event chưa đối chiếu số) |
+| `competitor-recon-and-strategy` (trinh sát MEV thật, bribe model F-02, SỬA F-01 bundle thiếu victim, raw tx reconstruction, shadow mode ký thật) | 41 | *(xem BAOCAO41 ô 3)* | MỘT PHẦN — xem `docs/STATE.md` mục cùng tên cho danh sách CÒN NỢ đầy đủ (bribe coinbase-leg chưa gửi, relay.rs 3-leg chưa nối live loop, shadow chỉ WBNB, 3 địa chỉ Chủ hỏi bị rút gọn chưa tra được) |
 
 ## Hoãn, lý do (không phải "chưa làm" — có chủ đích, cần lệnh Chủ mới đổi)
 
@@ -144,15 +145,23 @@ chép, mà là giới hạn lịch sử git thật của repo).
   "decoder-coverage").
 - **`test-hygiene`** (cụm 5, CHƯA LÀM) — F-17 `real_rpc_*` không pass rỗng,
   F-22/F-23/F-25 dead code & doc, F-21 redact subdomain.
-- **`strategy-exec`** (cụm 6, CHƯA LÀM) — F-01 bundle nguyên tử
-  `[front, victim, back]`, F-02 mô hình gas-price/bribe, executor
-  contract (sandwich) HOẶC backrun-only. Chỉ bắt đầu sau khi Chủ chốt
-  chiến lược bằng số liệu `real-economics-mode2`.
-- **`relay-bundle-builder`** chưa nối vào `pipeline.rs`/`executor.rs` — cần
-  (1) signer thật ký raw tx (`7.1`/`7.3`), (2) HTTP client thật gửi relay,
-  (3) lệnh Chủ riêng cân nhắc rủi ro tiền thật trước khi bật.
-- **`7.3` gửi tx thật (sendRaw)** — vẫn CHƯA có hàm ký/gửi nào trong repo,
-  chỉ có build+log paper-mode. Cần cụm `strategy-exec` xong trước.
+- **`strategy-exec`** (cụm 6, MỘT PHẦN — F-01/F-02 xây khung ở cụm
+  `competitor-recon-and-strategy`, BAOCAO41, CHƯA nối live) — F-01 bundle
+  nguyên tử `[front, victim, back]` ĐÃ SỬA đúng ở `relay.rs` (3 leg, không
+  còn thiếu victim) nhưng CHƯA có nơi gọi từ live loop (vẫn đứng riêng).
+  F-02 mô hình bribe MÔ PHỎNG đã gate `Simulated` (`pipeline.rs`) + shadow
+  mode ký được bribe qua `max_priority_fee_per_gas` (`bribe_mode=
+  "gaspriority"`) nhưng `"coinbase"` (leg chuyển BNB trực tiếp) CHƯA có.
+  Vẫn thiếu: executor contract (sandwich) HOẶC backrun-only quyết định
+  cuối cùng, HTTP client thật gửi relay, signer LIVE (khác shadow — `7.3`).
+- **`relay-bundle-builder`** (đã sửa F-01 ở BAOCAO41) chưa nối vào
+  `pipeline.rs`/`executor.rs` — cần (1) signer LIVE thật ký raw tx (`7.1`/
+  `7.3` — KHÁC shadow mode BAOCAO41, shadow chỉ ký không gửi), (2) HTTP
+  client thật gửi relay, (3) lệnh Chủ riêng cân nhắc rủi ro tiền thật trước
+  khi bật.
+- **`7.3` gửi tx thật (sendRaw)** — vẫn CHƯA có hàm gửi nào trong repo (shadow
+  mode BAOCAO41 chỉ KÝ, không gửi — xem `docs/STATE.md` mục
+  `competitor-recon-and-strategy`). Cần cụm `strategy-exec` xong trước.
 - **`max_consecutive_loss`/`gas_reserve_bnb_wei`** — validate lúc load
   đúng nhưng CHƯA có logic risk-guard nào tiêu thụ 2 field này (chờ
   executor thật `7.x`).

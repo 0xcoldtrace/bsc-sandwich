@@ -1,0 +1,172 @@
+== competitor_recon (cum competitor-recon-and-strategy, F1) ==
+May chay: WSL
+RPC dung: https://rpc-bsc.48.club/***
+latest block THAT: 122083970
+chunk get_logs toi da URL nay chap nhan: 2000 block/lan goi
+
+================ PHAN A: contract 0xa739Dfab40ef6585f1174fcE90EC96330669758c + EOA 0xB406021E07b31E1f7850FCcCD7076094f18d07eF ================
+selector nghi van: 0x5aab2274
+
+--- contract 0xa739dfab40ef6585f1174fce90ec96330669758c ---
+  eth_getTransactionCount(latest) = 1 (nonce hien tai — tin hieu tho ve muc hoat dong tong)
+  eth_getCode len = 2601 byte (CO bytecode - la contract that)
+  Swap-log truc tiep (sender hoac to = dia chi nay): 0 tx duy nhat (quet 150000+150000 block, 75+75 lan goi getLogs)
+  -> qua it (dia chi co the giao dich qua ROUTER, Swap.sender=router chu khong phai contract) — fallback quet Transfer WBNB
+  fallback Transfer WBNB: +0 tx hash
+  Phan tich sau: 0 / 0 tx (gioi han PART_A_ANALYZE_CAP=150)
+  tx phan tich thanh cong: 0/0
+  selector histogram (top 5):
+  tx co >=2 Swap CUNG 1 pool trong 1 tx (round-trip/atomic): 0
+  so pool khac nhau da cham: 0
+  top 10 pool ap dao:
+  debug_traceTransaction: MISSING (RPC public nay KHONG ho tro tracer) — khong the do internal-transfer coinbase bribe truc tiep, chi dung gas_price uu tien lam proxy
+
+================ PHAN A: contract 0xa739Dfab40ef6585f1174fcE90EC96330669758c + EOA 0xB406021E07b31E1f7850FCcCD7076094f18d07eF ================
+selector nghi van: 0x5aab2274
+
+--- eoa 0xb406021e07b31e1f7850fcccd7076094f18d07ef ---
+  eth_getTransactionCount(latest) = 350439 (nonce hien tai — tin hieu tho ve muc hoat dong tong)
+  eth_getCode len = 0 byte (EOA hoac contract rong)
+  Swap-log truc tiep (sender hoac to = dia chi nay): 605 tx duy nhat (quet 150000+8000 block, 75+4 lan goi getLogs)
+  Phan tich sau: 150 / 605 tx (gioi han PART_A_ANALYZE_CAP=150)
+  tx phan tich thanh cong: 122/150
+  selector histogram (top 5):
+    0x38ed1739: 122
+  tx co >=2 Swap CUNG 1 pool trong 1 tx (round-trip/atomic): 0
+  so pool khac nhau da cham: 3
+  top 10 pool ap dao:
+    0xf867ca539dbb9d530464fc231a15a7832122ee6e: 52 lan
+    0xcec13213c390d51121f82ba2ecafb8e11e0af7a3: 40 lan
+    0xdfe23efbdb03ea985c2423eb916fca8cae1d02ef: 30 lan
+  gas_price (gwei): min=0.050 avg=0.050 max=0.050
+  debug_traceTransaction(0xc67075493f5b4c3f9e48aecbb22581f4fc662ae559c3d1a05e400ac393daee25) that bai: server returned an error response: error code -32601: the method debug_traceTransaction does not exist/is not available
+  debug_traceTransaction(0x61041dfca50cf46a750fdcb37d689befde891f4f65159870981ff9a0962ac058) that bai: server returned an error response: error code -32601: the method debug_traceTransaction does not exist/is not available
+  debug_traceTransaction(0x8a3bc6f3d10526929ca5d1bfdfcca3119a60a27197584c1c033ef325c3acd115) that bai: server returned an error response: error code -32601: the method debug_traceTransaction does not exist/is not available
+  debug_traceTransaction: MISSING (RPC public nay KHONG ho tro tracer) — khong the do internal-transfer coinbase bribe truc tiep, chi dung gas_price uu tien lam proxy
+
+================ PHAN A2 (SUA GIUA PHIEN): cluster theo dong tien cung block ================
+  seed: 0xb406021e07b31e1f7850fcccd7076094f18d07ef — vi goc (0xB406)
+  seed: 0xa739dfab40ef6585f1174fce90ec96330669758c — executor cap quyen/chuyen von (0xa739)
+  seed: 0xaabae02d453823e0ce3c86f8a1d29d3da0a3eaf7 — vi giao dich (0xaaBae, doi chung block 122076185: nhan 2757.93 USDT tu 0xB406, swap ngay sau cung block)
+  seed: 0xc412d20a348d91982192ba898756c16af790130b — vi ban (0xc412, Chu cung cap dia chi tu log that)
+  Transfer USDT tu 0xB406 (50k block gan nhat): 4080 lan; Transfer WBNB: 0 lan
+  Top dia chi nhan von THAT tu 0xB406 (ung vien cung cum, toi da 10 hien thi, toi da 8 dua vao cluster de bound RPC):
+    0x8180ad6a7c9f8f4864e9909480fba4123fce6c54: 2850 lan nhan von
+    0x451cc678c5e75b5099affd778cd37ad092680902: 5 lan nhan von
+    0x0080e6da06af3965b7001fda98da45171ac441b6: 4 lan nhan von
+    0x70c2d30a3c2bf464eac1fe86eaf485211f145449: 4 lan nhan von
+    0x4a6be104c8c3dce240a771dfaa66e653b7aa048b: 4 lan nhan von
+    0x4e7a05de0e81353f5b375213ee62455bd36ad938: 4 lan nhan von
+    0x1747bcea1711443fd68c5134cea3839751ce4d00: 4 lan nhan von
+    0xac2306688008a1f607f628acfc83412afa0bdf4c: 4 lan nhan von
+    0xaef4bcfddaf5b2cf9e9b18096e73088f853d0b94: 4 lan nhan von
+    0xd5d5a822493015411078c77bb98a5e9da3e82d62: 4 lan nhan von
+  Tong so dia chi trong cluster (seed + phat hien): 12
+  Tong so pool cluster nay cham toi (hop nhat ca Phan A cu): 4
+    pool cluster: 0xcec13213c390d51121f82ba2ecafb8e11e0af7a3
+    pool cluster: 0xdfe23efbdb03ea985c2423eb916fca8cae1d02ef
+    pool cluster: 0x7fd71204a755f128d788ee1cd89b9cee8b8812e8
+    pool cluster: 0xf867ca539dbb9d530464fc231a15a7832122ee6e
+
+================ PHAN B: 126 pool pairs.txt, 3000 block gan nhat ================
+PairBook resolve thanh cong: 126 pool (tu pairs.txt that)
+  quote=WBNB: 108 pool (chi cac pool nay dung nguong 0.05 BNB); quote=USDT: 18 pool (bo qua nguong BNB, ngoai pham vi phan tich sau)
+eth_getLogs Swap tren 108 pool WBNB, 3000 block [122080971..122083970]: 7608 log THAT (8 lan goi)
+
+victim >=0.05 BNB tim thay (toan bo pool WBNB, 3000 block): 2042
+victim co it nhat 1 tx khac CUNG pool trong +-3 vi tri: 542
+
+Bang doi thu theo pool — CU (dia chi don le, TRUOC khi sua) (chi pool co victim >=1, sap theo victim_count giam dan):
+pool                                         symbol       victim   bracket% top_addr(lan) bi_0xB406_phu(CU)
+0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae   USDT            533      28.9% 0x1de460...6bf4bc (269)    khong
+0xbc42145d5a574ede9b8860fca2a49eb7b239efa5   SKYAI           249      19.3% 0x8086c0...a3c77d (44)    khong
+0x22af7297243c4eef12e2d5a4f888b92e56bf127c   龙虾              212       8.0% 0x7fa34c...714a1b (3)    khong
+0xf0a949d3d93b833c183a27ee067165b6f2c9625e   4               143       7.7% 0x278d85...6ef8d2 (4)    khong
+0x03f18135c44c64ebfdcbad8297fe5bdafdbbdd86   XRP             123       1.6% 0x00956b...1072e9 (1)    khong
+0xc33bacff9141da689875e6381c1932348ab4c5cb   哈基米              91       4.4% 0x9999b0...940515 (9)    khong
+0x203d66ecb7263efe424fcba0898761fc9fc9a8c0   B                85      31.8% 0x9999b0...940515 (17)    khong
+0xa651c8deb3ff9f8d56a26e72042b7a8a1f433480   我踏马来了            56      19.6% 0x16ceff...454219 (5)    khong
+0x58f876857a02d6762e0101bb5c46a8c1ed44dc16   BUSD             54       0.0%                  -    khong
+0x66f289de31eef70d52186729d2637ac978cfc56b   币安人生             37      32.4% 0x16ceff...454219 (3)    khong
+0xac109c8025f272414fd9e2faa805a583708a017f   DOGE             29      13.8% 0x1de460...6bf4bc (6)    khong
+0x28415ff2c35b65b9e5c7de82126b4015ab9d031f   ADA              28      17.9% 0x78da2d...189e17 (2)    khong
+0x3c79593e01a7f7fed5d0735b16621e2d52a6bc58   BOB              28       0.0%                  -    khong
+0x0ec12db33551afba853b691b4edf49196ea0e99a   KOMA             27       7.4% 0x34bf78...d1559e (2)    khong
+0x76c42dda1de814ac60951c2c89c77dbecfb86ffb   BORT             27       0.0%                  -    khong
+0x014608e87af97a054c9a49f81e1473076d51d9a3   UNI              26       0.0%                  -    khong
+0x3dc2878f9f60476dbbb18af7531fbe1a603c8dc0   priceless        22       4.5% 0x10ed43...56024e (1)    khong
+0x61eb789d75a95caa3ff50ed7e47b96c132fec082   BTCB             21       0.0%                  -    khong
+0x824eb9fadfb377394430d2744fa7c42916de3ece   LINK             19       0.0%                  -    khong
+0x74e4716e431f45807dcf19f284c7aa99f18a4fbc   ETH              19       0.0%                  -    khong
+0x6df9adc1837bf37e0b1b943d59a7e50d9678c81b   CAT              19       0.0%                  -    khong
+0x126fadb82cc4ab91e6cd03accaf209fb6d1ffaab   PALU             15      33.3% 0x8086c0...a3c77d (4)    khong
+0xd99c7f6c65857ac913a8f880a4cb84032ab2fc5b   USDC             14       0.0%                  -    khong
+0x9eb0bc7a207f77811ee365729d00152622a745b7   Broccoli         11       0.0%                  -    khong
+0x298c4a3ee26f0e9151175a4f4354ea09eeae7628   黑马               11       0.0%                  -    khong
+0x7d90deedb9f15c1f8fdaccc3b6bc52dc208e9c9a   CREPE            11       0.0%                  -    khong
+0xd55fa2c5e63ecac3a158ca3fed4c8c2185ed45b2   CZ               10       0.0%                  -    khong
+0x827cbac35d1f041a277a16e161e290df7122cf0d   SLT               8       0.0%                  -    khong
+0x3cd338c3bb249b6b3c55799f85a589febbbff9dd   TRX               7       0.0%                  -    khong
+0xb36c81707e5ca2bd6f68cd6b71b3178d29c48a4b   TST               7       0.0%                  -    khong
+0x8c46930c8a84dc5f8f9f545be1e255ce41d0b206   哭哭马               7      28.6% 0x9999b0...940515 (1)    khong
+0x2f19f30b8be1a00e6a5903953f17244fbfcb0309   bibi              7      28.6% 0x2d19bd...a90fdb (3)    khong
+0x19ae1813d020302e624bd4a02703e0241264baf8   ClipX             6       0.0%                  -    khong
+0xc736ca3d9b1e90af4230bd8f9626528b3d4e0ee0   BabyDoge          6       0.0%                  -    khong
+0xd55061bfe169f797641f986e0b399c7cf2ead09d   客服小何              5       0.0%                  -    khong
+0x3dcb1787a95d2ea0eb7d00887704eebf0d79bb13   TWT               5       0.0%                  -    khong
+0x92247860a03f48d5c6425c7ca35cdcfcb1013aa1   C98               5       0.0%                  -    khong
+0x6ffd7c43997496723f0ad1c832efe92a7c423765   AIZU              5       0.0%                  -    khong
+0x19940f4de8ba1d8b7c6045f6be6f4053684c8354   OI                4       0.0%                  -    khong
+0x3fc593d15c34d2f91ca3b4f2097dddaf3c4de86c   FIST              4      50.0% 0x9999b0...940515 (2)    khong
+
+KET LUAN CU (PHUONG PHAP DIA CHI DON LE, TRUOC SUA — SAI/THIEU, CHI DE DOI CHIEU): 48/65 pool co victim NHUNG khong thay bracket (+-3) va khong bi contract/EOA don le cham toi.
+
+Bang doi thu theo pool — MOI (theo CUM dia chi, SAU KHI SUA giua phien) (chi pool co victim >=1, sap theo victim_count giam dan):
+pool                                         symbol       victim cluster_bracket% bi_cum_phu
+0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae   USDT            533           0.0%      khong
+0xbc42145d5a574ede9b8860fca2a49eb7b239efa5   SKYAI           249           0.0%      khong
+0x22af7297243c4eef12e2d5a4f888b92e56bf127c   龙虾              212           0.0%      khong
+0xf0a949d3d93b833c183a27ee067165b6f2c9625e   4               143           0.0%      khong
+0x03f18135c44c64ebfdcbad8297fe5bdafdbbdd86   XRP             123           0.0%      khong
+0xc33bacff9141da689875e6381c1932348ab4c5cb   哈基米              91           0.0%      khong
+0x203d66ecb7263efe424fcba0898761fc9fc9a8c0   B                85           0.0%      khong
+0xa651c8deb3ff9f8d56a26e72042b7a8a1f433480   我踏马来了            56           0.0%      khong
+0x58f876857a02d6762e0101bb5c46a8c1ed44dc16   BUSD             54           0.0%      khong
+0x66f289de31eef70d52186729d2637ac978cfc56b   币安人生             37           0.0%      khong
+0xac109c8025f272414fd9e2faa805a583708a017f   DOGE             29           0.0%      khong
+0x28415ff2c35b65b9e5c7de82126b4015ab9d031f   ADA              28           0.0%      khong
+0x3c79593e01a7f7fed5d0735b16621e2d52a6bc58   BOB              28           0.0%      khong
+0x0ec12db33551afba853b691b4edf49196ea0e99a   KOMA             27           0.0%      khong
+0x76c42dda1de814ac60951c2c89c77dbecfb86ffb   BORT             27           0.0%      khong
+0x014608e87af97a054c9a49f81e1473076d51d9a3   UNI              26           0.0%      khong
+0x3dc2878f9f60476dbbb18af7531fbe1a603c8dc0   priceless        22           0.0%      khong
+0x61eb789d75a95caa3ff50ed7e47b96c132fec082   BTCB             21           0.0%      khong
+0x824eb9fadfb377394430d2744fa7c42916de3ece   LINK             19           0.0%      khong
+0x74e4716e431f45807dcf19f284c7aa99f18a4fbc   ETH              19           0.0%      khong
+0x6df9adc1837bf37e0b1b943d59a7e50d9678c81b   CAT              19           0.0%      khong
+0x126fadb82cc4ab91e6cd03accaf209fb6d1ffaab   PALU             15           0.0%      khong
+0xd99c7f6c65857ac913a8f880a4cb84032ab2fc5b   USDC             14           0.0%      khong
+0x9eb0bc7a207f77811ee365729d00152622a745b7   Broccoli         11           0.0%      khong
+0x298c4a3ee26f0e9151175a4f4354ea09eeae7628   黑马               11           0.0%      khong
+0x7d90deedb9f15c1f8fdaccc3b6bc52dc208e9c9a   CREPE            11           0.0%      khong
+0xd55fa2c5e63ecac3a158ca3fed4c8c2185ed45b2   CZ               10           0.0%      khong
+0x827cbac35d1f041a277a16e161e290df7122cf0d   SLT               8           0.0%      khong
+0x3cd338c3bb249b6b3c55799f85a589febbbff9dd   TRX               7           0.0%      khong
+0xb36c81707e5ca2bd6f68cd6b71b3178d29c48a4b   TST               7           0.0%      khong
+0x8c46930c8a84dc5f8f9f545be1e255ce41d0b206   哭哭马               7           0.0%      khong
+0x2f19f30b8be1a00e6a5903953f17244fbfcb0309   bibi              7           0.0%      khong
+0x19ae1813d020302e624bd4a02703e0241264baf8   ClipX             6           0.0%      khong
+0xc736ca3d9b1e90af4230bd8f9626528b3d4e0ee0   BabyDoge          6           0.0%      khong
+0xd55061bfe169f797641f986e0b399c7cf2ead09d   客服小何              5           0.0%      khong
+0x3dcb1787a95d2ea0eb7d00887704eebf0d79bb13   TWT               5           0.0%      khong
+0x92247860a03f48d5c6425c7ca35cdcfcb1013aa1   C98               5           0.0%      khong
+0x6ffd7c43997496723f0ad1c832efe92a7c423765   AIZU              5           0.0%      khong
+0x19940f4de8ba1d8b7c6045f6be6f4053684c8354   OI                4           0.0%      khong
+0x3fc593d15c34d2f91ca3b4f2097dddaf3c4de86c   FIST              4           0.0%      khong
+
+KET LUAN MOI (THEO CUM, SAU KHI SUA): 65/65 pool co victim NHUNG khong thay cluster_bracket (+-3 khop dia chi cum) VA khong bi cluster cham toi.
+
+SO SANH TRUOC/SAU: opportunity_pools CU=48/65  MOI=65/65  (cluster co 12 dia chi, cham 4 pool)
+KHONG ket luan backrun-only/sandwich o day — cho bang theo cum nay la du lieu chinh, Chu/Grok tu doc so sanh de quyet dinh.
+
+== HET PHAN A+A2+B (du lieu THAT qua RPC https://rpc-bsc.48.club/***, block latest=122083970) ==

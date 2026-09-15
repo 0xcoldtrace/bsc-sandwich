@@ -655,6 +655,74 @@ impl GasOracle {
     }
 }
 
+// ============================================================================
+// Cụm `competitor-recon-and-strategy` (F-01, chuẩn bị bundle nguyên tử
+// `[front, victim_raw, back]`) — tái tạo raw tx ĐÃ KÝ THẬT của victim từ
+// hash quan sát được trong mempool/block. Đặt ở `transport.rs` (tầng RPC),
+// KHÔNG ở `relay.rs` — `relay.rs` giữ nguyên charter "THUẦN, không network"
+// (xem doc-comment đầu `relay.rs` + test `no_http_network_calls_anywhere_in_relay_rs`),
+// chỉ NHẬN raw hex đã có sẵn làm tham số. Hàm này CHỈ ĐỌC (2 phương thức
+// `eth_*` đọc), KHÔNG ký/gửi gì.
+// ============================================================================
+
+/// Nguồn đã dùng để lấy raw tx — ghi vào log để phân biệt (một số RPC không
+/// hỗ trợ `eth_getRawTransactionByHash`, đặc biệt node đã prune calldata cũ).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawTxSource {
+    /// RPC trả thẳng bytes RLP đã encode (route ưu tiên, đúng lệnh).
+    GetRawTransactionByHash,
+    /// RPC không hỗ trợ/trả `None` cho route trên — tái tạo từ
+    /// `eth_getTransactionByHash` (có v/r/s hoặc yParity/r/s tuỳ type 0/2)
+    /// qua `TxEnvelope::encoded_2718()` (alloy tự RLP-encode ĐÚNG theo type
+    /// tx thật — KHÔNG tự viết tay logic RLP, tránh lệch offset/field).
+    ReconstructedFromComponents,
+}
+
+impl RawTxSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RawTxSource::GetRawTransactionByHash => "eth_getRawTransactionByHash",
+            RawTxSource::ReconstructedFromComponents => "eth_getTransactionByHash+encoded_2718",
+        }
+    }
+}
+
+/// Lấy raw tx ĐÃ KÝ (EIP-2718 envelope bytes) của `hash`, verify
+/// `keccak256(raw) == hash` TRƯỚC KHI trả — không bao giờ trả raw không khớp
+/// (dùng sai raw trong bundle vô nghĩa/nguy hiểm hơn là fail rõ ràng ở đây).
+/// Hỗ trợ CẢ type 0 (Legacy) và type 2 (EIP-1559, đã bật trên BSC) vì
+/// `alloy_consensus::TxEnvelope`/`Encodable2718` generic theo type thật của
+/// tx, không giả định 1 loại cố định.
+pub async fn fetch_raw_tx_verified(provider: &DynProvider, hash: B256) -> Result<(Vec<u8>, RawTxSource), String> {
+    use alloy::eips::eip2718::Encodable2718;
+
+    if let Ok(Some(raw)) = provider.get_raw_transaction_by_hash(hash).await {
+        let bytes = raw.to_vec();
+        let computed = alloy::primitives::keccak256(&bytes);
+        if computed == hash {
+            return Ok((bytes, RawTxSource::GetRawTransactionByHash));
+        }
+        return Err(format!(
+            "eth_getRawTransactionByHash tra ve nhung keccak khong khop hash: computed={computed:#x} expected={hash:#x}"
+        ));
+    }
+
+    let tx = provider
+        .get_transaction_by_hash(hash)
+        .await
+        .map_err(|e| format!("eth_getTransactionByHash loi: {e}"))?
+        .ok_or_else(|| "eth_getTransactionByHash tra ve None (tx khong ton tai tren node nay)".to_string())?;
+    let envelope = tx.inner.into_inner();
+    let bytes = envelope.encoded_2718();
+    let computed = alloy::primitives::keccak256(&bytes);
+    if computed != hash {
+        return Err(format!(
+            "tai tao raw tu v/r/s (encoded_2718) khong khop hash that: computed={computed:#x} expected={hash:#x}"
+        ));
+    }
+    Ok((bytes, RawTxSource::ReconstructedFromComponents))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,5 +1414,70 @@ mod tests {
     async fn current_url_label_none_before_any_connect() {
         let pool = RpcPool::new(vec!["http://127.0.0.1:1/".to_string()]);
         assert_eq!(pool.current_url_label().await, Some("http://127.0.0.1:1/***".to_string()));
+    }
+
+    // ===== Cụm `competitor-recon-and-strategy` (F-01) — fetch_raw_tx_verified =====
+
+    /// `#[ignore]` — RPC thật. Quét TỪ block mới nhất LÙI VỀ tối đa 30 block
+    /// tìm ĐỦ 1 tx type 0 (Legacy) VÀ 1 tx type 2 (EIP-1559) THẬT (BSC có cả
+    /// 2 loại lưu thông — EIP-1559 đã bật, xem CLAUDE.md), verify
+    /// `fetch_raw_tx_verified` tái tạo ĐÚNG cả 2 (khớp `keccak256(raw)==hash`),
+    /// và `RawTxSource` phản ánh đúng route đã dùng (RPC hỗ trợ
+    /// `eth_getRawTransactionByHash` hay phải fallback tái tạo từ v/r/s).
+    #[tokio::test]
+    #[ignore]
+    async fn real_rpc_reconstruct_raw_tx_type0_and_type2() {
+        use crate::sim_evm::validate_rpc_urls;
+        use alloy::eips::BlockNumberOrTag;
+        use alloy::providers::{Provider, ProviderBuilder};
+
+        let urls = validate_rpc_urls();
+        let mut provider = None;
+        for u in &urls {
+            if let Ok(p) = ProviderBuilder::new().connect(u).await {
+                if p.get_chain_id().await.unwrap_or(0) == 56 {
+                    provider = Some(p.erased());
+                    println!("dung RPC: {}", redact_rpc_url(u));
+                    break;
+                }
+            }
+        }
+        let Some(provider) = provider else {
+            println!("SKIP (khong phai FAIL): khong ket noi duoc RPC nao trong validate_rpc_urls()");
+            return;
+        };
+
+        let latest = provider.get_block_number().await.expect("eth_blockNumber that bai");
+        let mut type0_hash: Option<B256> = None;
+        let mut type2_hash: Option<B256> = None;
+        for bn in (latest.saturating_sub(30)..=latest).rev() {
+            if type0_hash.is_some() && type2_hash.is_some() {
+                break;
+            }
+            let Ok(Some(block)) = provider.get_block_by_number(BlockNumberOrTag::Number(bn)).full().await else { continue };
+            for tx in block.transactions.txns() {
+                let ty = <_ as alloy::eips::eip2718::Typed2718>::ty(tx);
+                let hash = <_ as alloy::network::TransactionResponse>::tx_hash(tx);
+                if ty == 0 && type0_hash.is_none() {
+                    type0_hash = Some(hash);
+                } else if ty == 2 && type2_hash.is_none() {
+                    type2_hash = Some(hash);
+                }
+            }
+        }
+
+        println!("type0_hash tim duoc: {:?}", type0_hash.map(|h| format!("{h:#x}")));
+        println!("type2_hash tim duoc: {:?}", type2_hash.map(|h| format!("{h:#x}")));
+
+        for (label, hash_opt) in [("type0/Legacy", type0_hash), ("type2/EIP-1559", type2_hash)] {
+            let Some(hash) = hash_opt else {
+                println!("SKIP {label}: khong tim thay mau nao trong 30 block gan nhat (khong phai FAIL - phu thuoc thanh phan mempool that luc chay)");
+                continue;
+            };
+            let (raw, source) = fetch_raw_tx_verified(&provider, hash).await.expect("fetch_raw_tx_verified phai thanh cong voi hash that");
+            let computed = alloy::primitives::keccak256(&raw);
+            assert_eq!(computed, hash, "{label}: keccak256(raw) phai khop hash that");
+            println!("{label}: hash={hash:#x} raw_len={} nguon={}", raw.len(), source.as_str());
+        }
     }
 }

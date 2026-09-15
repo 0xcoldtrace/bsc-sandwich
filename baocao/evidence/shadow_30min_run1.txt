@@ -1,0 +1,46 @@
+== may chay: WSL (repo: /home/dmin/bsc-sandwich) ==
+BSC_WS host = bsc-rpc.publicnode.com,wss (KHONG in URL day du)
+  -> khop publicnode, OK
+== cargo build --release ==
+warning: fields `log_index` and `to` are never read
+   --> src/bin/competitor_recon.rs:147:5
+    |
+144 | struct SwapRow {
+    |        ------- fields in this struct
+...
+147 |     log_index: u64,
+    |     ^^^^^^^^^
+...
+151 |     to: Address,
+    |     ^^
+    |
+    = note: `SwapRow` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `block`, `tx_index`, `from`, `to`, and `status_ok` are never read
+   --> src/bin/competitor_recon.rs:255:5
+    |
+254 | struct TxDetail {
+    |        -------- fields in this struct
+255 |     block: u64,
+    |     ^^^^^
+256 |     tx_index: u64,
+    |     ^^^^^^^^
+257 |     from: Address,
+    |     ^^^^
+258 |     to: Option<Address>,
+    |     ^^
+...
+261 |     status_ok: bool,
+    |     ^^^^^^^^^
+
+warning: `bsc_sandwich` (bin "competitor_recon") generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.27s
+== binary sha256 = 05631b46ba5240cdea53782cc5ea186b4b3d26bcd95a10005470f0720f7f696f ==
+== git HEAD = 75978dea7cffe05518d5a45006f7e393e5b6d23d ==
+da xoa state/halt.lock (neu co)
+== CANH BAO: live_mode override thanh "shadow" (mac dinh "off") - dry_run/allow_live/bot_armed VAN giu nguyen tu config.toml that (khong doi) ==
+== config TAM (chi nguong ve 0 + web_port + live_mode neu co --live-mode, GIU NGUYEN sim_engine/pair_scan_universal/scan_quote_usdt tu config.toml that), port 18930 ==
+== pairs.txt (grep tho, xem sim.evm/pair.unvetted trong log de co so that): tong=126 vetted=126 chua_vet=0 ==
+== chay bot 30 phut, log -> logs/paper_run_1789498095.log (bot.jsonl tu dong 404515) ==
+PID=1784285

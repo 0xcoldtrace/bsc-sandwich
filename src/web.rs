@@ -134,6 +134,14 @@ pub struct AppStateInner {
     pub seen_hashes: RwLock<crate::transport::SeenHashSet>,
     /// Cụm `econ-truth-latency-vps` (mục 2) — thống kê `compete.check`.
     pub compete_stats: CompeteStats,
+    /// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — `(địa chỉ
+    /// THẬT suy từ `PRIVATE_KEY`, `EthereumWallet` để ký) khi
+    /// `live_mode="shadow"` VÀ load key thành công lúc boot; `None` mọi
+    /// trường hợp khác (`live_mode` khác `"shadow"`, hoặc thiếu/sai key —
+    /// KHÔNG panic, bot vẫn chạy paper bình thường, chỉ mất khả năng ký
+    /// shadow). Nạp 1 LẦN lúc boot (không hot-reload — đổi `PRIVATE_KEY`
+    /// cần khởi động lại bot, khác các field `config.toml` khác).
+    pub shadow_wallet: Option<(Address, alloy::network::EthereumWallet)>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -247,6 +255,55 @@ async fn validate_list(State(state): State<AppState>) -> Json<Value> {
 
 async fn compete(State(state): State<AppState>) -> Json<Value> {
     Json(state.compete_stats.snapshot())
+}
+
+/// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — dashboard khối
+/// "Live": `live_mode`, ví REDACT (không bao giờ khoá riêng), số bundle ĐÃ
+/// KÝ (KHÔNG gửi) + số lần bị từ chối re-vet, xem CHI TIẾT các dòng gần
+/// nhất. KHÔNG có "PnL thật" (shadow mode không broadcast nên không có kết
+/// quả on-chain nào để tính lãi/lỗ thật — ghi rõ trong `note`, không bịa số).
+async fn shadow_status(State(state): State<AppState>) -> Json<Value> {
+    let cfg = state.config.read().await;
+    let live_mode = cfg.live_mode.clone();
+    drop(cfg);
+    let shadow_self_address = state.shadow_wallet.as_ref().map(|(addr, _)| redact_address(&format!("{addr:#x}")));
+
+    let log_path = state.logger.path().to_path_buf();
+    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
+    let boot_ts = state.boot_wall_clock.to_rfc3339();
+
+    let mut bundles: Vec<Value> = Vec::new();
+    let mut aborts: Vec<Value> = Vec::new();
+    for line in &all_lines[start..] {
+        let Ok(row) = serde_json::from_str::<Value>(line) else { continue };
+        if row["ts"].as_str().map(|t| t < boot_ts.as_str()).unwrap_or(true) {
+            continue; // chi tinh dong CUA LAN CHAY HIEN TAI, cung luat /api/econ
+        }
+        match row["event"].as_str() {
+            Some("bundle.shadow") => bundles.push(row),
+            Some("tx.abort") if row["reason"] == "pre_sign_revet_failed" => aborts.push(row),
+            _ => {}
+        }
+    }
+    let bundle_count = bundles.len();
+    let abort_count = aborts.len();
+    bundles.reverse();
+    aborts.reverse();
+    bundles.truncate(20);
+    aborts.truncate(20);
+
+    Json(json!({
+        "live_mode": live_mode,
+        "shadow_armed": shadow_self_address.is_some(),
+        "shadow_self_address": shadow_self_address,
+        "bundle_shadow_count": bundle_count,
+        "pre_sign_revet_failed_count": abort_count,
+        "recent_bundles": bundles,
+        "recent_aborts": aborts,
+        "note": "shadow mode KHONG gui/broadcast - khong co PnL THAT (chua co ket qua on-chain nao de biet lai/lo that), day chi la hoat dong KY duoc",
+    }))
 }
 
 /// Cụm A6 — `AtomicU64` (không `RwLock<HashMap>`) vì đây là hot path tăng
@@ -506,6 +563,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/econ", get(econ))
         .route("/api/validate", get(validate_list))
         .route("/api/compete", get(compete))
+        .route("/api/shadow", get(shadow_status))
         .route("/api/tax", get(tax_cache_list).post(tax_inject))
         .route("/api/control", post(control))
         .with_state(state)
@@ -548,6 +606,12 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
     });
     drop(risk_guard);
 
+    // Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — CHỈ phơi
+    // địa chỉ ví đã REDACT (không bao giờ khoá riêng) + có nạp được signer
+    // hay không. `live_mode="off"` (ship) -> `shadow_self_address=None`,
+    // `shadow_armed=false`, không đổi gì so trước cụm này.
+    let shadow_self_address = state.shadow_wallet.as_ref().map(|(addr, _)| redact_address(&format!("{addr:#x}")));
+
     Json(json!({
         "state": bot_state.as_str(),
         "uptime_sec": state.start_time.elapsed().as_secs(),
@@ -563,6 +627,11 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
         "max_exposure_bnb": cfg.max_exposure_bnb,
         "min_profit_bnb": cfg.min_profit_bnb,
         "risk_guard": risk_guard_json,
+        "live_mode": cfg.live_mode,
+        "shadow_armed": state.shadow_wallet.is_some(),
+        "shadow_self_address": shadow_self_address,
+        "bribe_pct_of_profit": cfg.bribe_pct_of_profit,
+        "bribe_mode": cfg.bribe_mode,
     }))
 }
 
@@ -857,6 +926,12 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     let mut candidate_count: u64 = 0;
     let mut net_pos_total: u64 = 0;
     let mut best_net_bnb_total: Option<f64> = None;
+    // Cụm `competitor-recon-and-strategy` (F-02) — tổng bribe MÔ PHỎNG đã
+    // trừ vào các dòng `sim.result` (mọi dòng `Simulated` ĐÃ vượt gate
+    // profit-sau-bribe, xem `pipeline::evaluate_candidate*`) — chỉ cộng khi
+    // quy đổi được sang BNB (`quote_to_bnb_rate`, cùng cơ chế `sum_net_bnb`).
+    let mut sum_bribe_bnb: f64 = 0.0;
+    let mut bribe_samples: u64 = 0;
 
     for row in rows {
         let event = row["event"].as_str().unwrap_or("");
@@ -951,6 +1026,12 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                             acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net_bnb, |b: f64| b.max(net_bnb)));
                             best_net_bnb_total = Some(best_net_bnb_total.map_or(net_bnb, |b: f64| b.max(net_bnb)));
                         }
+                        if let Some(bribe_wei) = parse_profit_wei(&row["bribe_wei"]) {
+                            if bribe_wei > 0 {
+                                sum_bribe_bnb += (bribe_wei as f64) * rate / 1e18;
+                                bribe_samples += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -997,6 +1078,16 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         "net_pos_total": net_pos_total,
         "best_net_bnb": best_net_bnb_total,
         "summary_line": summary_line,
+        // Cụm `competitor-recon-and-strategy` (F-02) — bribe MÔ PHỎNG đã trừ
+        // vào các dòng Simulated (gate đã áp ở pipeline.rs). "Simulated" ở
+        // đây LUÔN net_pos_after_bribe>0 (đúng định nghĩa gate mới) — bucket
+        // "lãi trước bribe nhưng KHÔNG còn lãi sau bribe" CHƯA tách được từ
+        // log hiện có (`tx.skip{reason:unprofitable}` không mang profit_wei
+        // thô để so sánh riêng — xem docs/TASKS.md mục nợ).
+        "bribe": {
+            "sum_bribe_bnb": sum_bribe_bnb,
+            "samples": bribe_samples,
+        },
     })
 }
 

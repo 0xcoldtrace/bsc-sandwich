@@ -233,3 +233,84 @@ systemctl stop bsc-sandwich-paper
 # Hoac dung state/halt.lock (dung ca 2 cach deu duoc, xem README.md muc 8):
 touch /root/bsc-sandwich/state/halt.lock
 ```
+
+---
+
+## Lên live (chỉ VIẾT quy trình — cụm `competitor-recon-and-strategy` CHƯA chạy live, chỉ ký shadow)
+
+Đây là checklist Chủ tự làm THEO THỨ TỰ khi quyết định thử live thật (sau khi
+cụm `strategy-exec` — contract executor + gas-price/bribe model thật — đã
+xong VÀ Chủ tự đọc + đồng ý rủi ro). Claude Code KHÔNG được tự thực hiện bất
+kỳ bước nào dưới đây (bật `allow_live`/`bot_armed`/`dry_run=false`, gửi tx
+thật) — CLAUDE.md cấm tuyệt đối "tự live".
+
+### 9.a Ví mới, nạp nhỏ
+
+1. Tạo 1 ví MỚI HOÀN TOÀN (không dùng lại ví đã từng ký shadow mode nếu ví đó
+   từng dùng cho việc khác) — dùng `cast wallet new`/bất kỳ tool tạo ví
+   offline nào Chủ tin tưởng, KHÔNG generate qua web ngẫu nhiên.
+2. Nạp SỐ TIỀN NHỎ (khuyến nghị: đúng bằng `max_front_bnb` dự kiến dùng ở
+   bước 1h thử nghiệm × 2-3 lần, KHÔNG nạp cả `max_exposure_bnb` ngay) — đủ
+   cho vài chục tx front/back + gas, không hơn.
+3. Dán `PRIVATE_KEY` ví MỚI này vào `.env` trên máy chạy live (khuyến nghị
+   VPS, không phải WSL cá nhân) — KHÔNG dùng lại `.env` đã dùng cho shadow
+   mode nếu ví shadow đã lộ ra ngoài (log `bundle.shadow` có chứa raw tx đã
+   ký — raw tx public-safe không lộ private key, nhưng vẫn nên tách ví cho
+   sạch, tránh nhầm lẫn nonce giữa 2 mục đích).
+
+### 9.b Approve router
+
+Router V2 (`venues::V2_ROUTER_ADDRESS`) cần `allowance` để gọi
+`swapExactTokensForETHSupportingFeeOnTransferTokens` (back-sell) cho MỖI
+token định trade — approve THỦ CÔNG (không phải bot tự approve, executor
+hiện tại không có logic approve) từng token trong `pairs.txt` Chủ định bật
+live, số lượng approve = `type(uint256).max` hoặc số hữu hạn Chủ tự chọn
+(trade-off: max tiện nhưng rủi ro nếu router bị exploit — router Pancake V2
+đã hoạt động nhiều năm, rủi ro thấp nhưng không phải 0).
+
+### 9.c Ngưỡng an toàn (chỉnh trong `config.toml` THẬT trước khi bật live)
+
+- `max_front_bnb`: BẰNG hoặc THẤP HƠN số dư ví trừ gas reserve — không đặt
+  cao hơn ví thực có.
+- `max_exposure_bnb`: trần tổng vốn đang "kẹt" cùng lúc (nhiều candidate
+  cùng lúc) — khuyến nghị bắt đầu = `max_front_bnb` (chỉ 1 vị thế 1 lúc).
+- `gas_reserve_bnb_wei`: đủ cho ÍT NHẤT 20-30 tx gas (front+back đều tốn gas
+  dù revert) — không để cạn gas giữa chừng.
+- `max_consecutive_loss`: 2-3 (RiskGuard tự dừng sớm nếu lỗ liên tiếp — xem
+  `config.rs::RiskGuard`, ĐÃ có sẵn, chỉ cần `7.x` gọi `record_result` thật
+  khi có giao dịch live, xem `docs/TASKS.md` mục nợ).
+- `bribe_pct_of_profit`/`bribe_min_bnb`/`bribe_max_bnb`: bắt đầu THẤP hơn số
+  mặc định 40%/0.0005/0.01 (ship — mốc thô, xem cụm `competitor-recon-and-strategy`)
+  nếu muốn ưu tiên an toàn vốn hơn tỉ lệ thắng vị trí trong block.
+
+### 9.d Shadow 1h → Live 1h vốn 0.05 BNB
+
+1. **Shadow 1 giờ** (`live_mode="shadow"`, `scripts/paper_run.sh --minutes 60
+   --live-mode shadow`): xác nhận số `bundle.shadow` hợp lý so với
+   `funnel.simulated`, không có `tx.abort{reason:pre_sign_revet_failed}` bất
+   thường (nhiều lần liên tiếp = dấu hiệu re-vet quá chặt/RPC không ổn định
+   — điều tra TRƯỚC khi qua bước live, không bỏ qua).
+2. **Live thử 1 giờ, vốn 0.05 BNB** (`max_front_bnb=0.05`, `max_exposure_bnb=
+   0.05`): CHỈ khi cụm `strategy-exec` (contract executor + bribe gửi thật)
+   đã xong — bật `dry_run=false`, `allow_live=true`, `bot_armed=true` (Chủ tự
+   bật, KHÔNG nhờ Claude Code bật). Theo dõi dashboard SÁT SAO (`/api/status`
+   badge `LIVE_ARMED`) trong SUỐT 1 giờ, KHÔNG rời mắt.
+
+### 9.e Tiêu chí dừng (STOP NGAY nếu bất kỳ điều nào xảy ra)
+
+- 2 tx live liên tiếp lỗ (front revert hoặc back revert hoặc profit âm sau
+  gas thật) — `touch state/halt.lock` NGAY, không đợi `max_consecutive_loss`
+  tự dừng (an toàn kép).
+- Gas thật vượt trần cấu hình bất thường (dấu hiệu network tắc nghẽn/relay
+  gặp vấn đề).
+- Dashboard mất kết nối RPC/WS > 2 phút (không còn nhìn thấy trạng thái thật
+  của bot).
+- Số dư ví giảm > 30% so với lúc bắt đầu phiên live (dù chưa chạm
+  `max_consecutive_loss`).
+- BẤT KỲ hành vi nào KHÔNG khớp với những gì đã quan sát ở shadow mode
+  (bundle bị relay từ chối hàng loạt, nonce lệch, gas ước tính sai xa thực
+  tế).
+
+Sau khi dừng: rút toàn bộ số dư còn lại về ví lạnh, review lại
+`logs/bot.jsonl` (`bundle.shadow` so với kết quả live thật) trước khi thử
+lại.

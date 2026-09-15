@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "rpc_probe"
 path = "src/bin/rpc_probe.rs"
 
+[[bin]]
+name = "competitor_recon"
+path = "src/bin/competitor_recon.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal", "net"] }
 serde = { version = "1", features = ["derive"] }
@@ -25,16 +29,10 @@ tower-http = { version = "0.5", features = ["fs"] }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 alloy-primitives = "1"
-alloy = { version = "2", default-features = false, features = [
-    "std",
-    "provider-http",
-    "provider-ws",
-    "rpc-types-eth",
-    "reqwest-rustls-tls",
-    "sol-types",
-] }
+alloy = { version = "2", default-features = false, features = ["std", "provider-http", "provider-ws", "rpc-types-eth", "reqwest-rustls-tls", "sol-types", "signer-local"] }
 url = "2"
 revm = { version = "43", default-features = false, features = ["std", "alloydb", "asyncdb"] }
+alloy-signer-local = "2.4.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,8 +1,23 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `econ-truth-latency-vps`, 2026-09-16)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `competitor-recon-and-strategy`, 2026-09-16)
 
-0. Cụm mới nhất: `econ-truth-latency-vps` (BAOCAO40, 2026-09-16) — sửa
+-1. Cụm mới nhất: `competitor-recon-and-strategy` (BAOCAO41, 2026-09-16) —
+    trinh sát đối thủ MEV THẬT (RPC thật, `src/bin/competitor_recon.rs`),
+    bribe model mô phỏng (F-02), SỬA bug Critical F-01 (bundle thiếu victim
+    leg), raw tx reconstruction (`transport::fetch_raw_tx_verified`), shadow
+    mode ký THẬT (`src/shadow.rs`, `alloy-signer-local` nay ĐÃ có bản
+    `2.4.2`). **SỬA GIỮA PHIÊN quan trọng**: kết luận ban đầu "contract
+    `0xa739Dfab...` dormant" là SAI (lỗi phương pháp — Swap.sender/to không
+    bắt được contract chuyển vốn không tự swap) — Chủ chỉ ra bằng chứng thật
+    (block `122070562`/`122076185`), phiên chính verify lại bằng RPC thật và
+    phát hiện đây là 1 CỤM bot đa-ví (`0xB406`+`0xa739`+ví "burner"+ví trung
+    tâm `0x8180ad6a7c9f8f4864e9909480fba4123fce6c54` — ĐÃ tìm ra địa chỉ đầy
+    đủ Chủ hỏi). Đọc mục "SỬA GIỮA PHIÊN" trong mục "competitor-recon-and-strategy"
+    cuối file TRƯỚC KHI trích dẫn bất kỳ kết luận "dormant"/"backrun-only" cũ
+    nào từ cụm này — 2 kết luận đó ĐÃ BỊ THAY THẾ, không còn hiệu lực.
+
+0. Cụm liền trước: `econ-truth-latency-vps` (BAOCAO40, 2026-09-16) — sửa
    `PairBook`/RPC (cache resolve bền + backoff, item 0), fix **BUG NGHIÊM
    TRỌNG** làm `funnel.simulated` lệch khỏi số dòng `sim.result` thật
    (`serde_json::json!` panic nội bộ với `i128` vượt `i64::MAX`, xem mục
@@ -4226,3 +4241,342 @@ Bảng so sánh 30 phút WSL vs VPS: xem BAOCAO40 ô 5.
 Đầu phiên (HEAD `583d09e`): 329 lib + 15 main = 344 passed (baseline
 BAOCAO39). Cuối phiên (HEAD `5284bd3`): xem BAOCAO40 ô 5 cho số cuối cùng +
 sha256 binary 2 máy.
+
+## `competitor-recon-and-strategy` (BAOCAO41, 2026-09-16)
+
+Lệnh Grok sau `econ-truth-latency-vps` (BAOCAO40) — trinh sát đối thủ MEV
+THẬT, bribe model mô phỏng, SỬA bundle relay (F-01), shadow mode ký thật.
+HEAD bắt đầu `5b17a83`. Không subagent ghi file (luật #4) — toàn bộ code/RPC
+call/phân tích phiên này do phiên chính tự làm trực tiếp.
+
+### Mục 1 — Trinh sát đối thủ THẬT (`src/bin/competitor_recon.rs`, bin mới)
+
+Binary RIÊNG (không đụng live loop `main.rs` ở phần recon), CHỈ ĐỌC RPC
+(`eth_getLogs`/`eth_getTransactionByHash`/`eth_getTransactionReceipt`/
+`eth_getTransactionCount`/`eth_getCode`), không sendRaw. Chạy:
+`set -a; . .env; set +a; cargo run --release --bin competitor_recon`.
+
+**Phần A — contract `0xa739Dfab40ef6585f1174fcE90EC96330669758c` (selector
+nghi vấn `0x5aab2274`, không tìm thấy trong 4byte.directory — có thể là
+selector riêng/obfuscated của searcher contract) + EOA
+`0xB406021E07b31E1f7850FCcCD7076094f18d07eF`**:
+
+- Phương pháp: filter `Swap` event (`topic0` + `topic1=sender`/`topic2=to`
+  chính địa chỉ đang xét) qua `eth_getLogs` — RẺ hơn hẳn quét từng block
+  (không có cách chuẩn "get tx by address" trên JSON-RPC thường, không có
+  BscScan API trong sandbox). Fallback quét `Transfer` WBNB (`from`/`to` = địa
+  chỉ) khi Swap-log trực tiếp cho kết quả quá ít (< 10 — dấu hiệu địa chỉ
+  giao dịch qua ROUTER, lúc đó `Swap.sender` là router chứ không phải địa chỉ
+  gốc).
+- **Contract `0xa739...`**: `eth_getCode` xác nhận CÓ bytecode thật (2601
+  byte — không phải địa chỉ rác/chưa deploy). `eth_getTransactionCount` = 1
+  (contract gần như không tự làm `msg.sender` cho tx nào — bình thường cho
+  1 executor contract chỉ được GỌI VÀO). Quét 150.000 block gần nhất
+  (~5 ngày) + riêng 5.000 block gần nhất (~3.5 giờ, verify bằng `eth_getLogs`
+  không lọc topic, address=contract làm log emitter): **0 log Swap
+  sender/to, 0 Transfer WBNB, 0 log TỰ PHÁT HÀNH nào** — CONTRACT NÀY HIỆN
+  DORMANT (không hoạt động) trong toàn bộ cửa sổ quan sát được, hoặc dùng cơ
+  chế hoàn toàn khác V2 Swap/WBNB-Transfer (V3? quote khác WBNB? gọi
+  delegatecall qua proxy khác?) — KHÔNG suy diễn thêm, ghi thật những gì đo
+  được. Không có bằng chứng nào cho thấy đây là 1 sandwich bot đang hoạt
+  động tại thời điểm trinh sát.
+- **EOA `0xB406...`**: `eth_getTransactionCount` = 350.356 (ví CỰC KỲ hoạt
+  động — đã gửi hơn 350 nghìn tx). Swap-log trực tiếp tìm được 633-654 tx
+  (2 lần chạy, số dao động do block mới phát sinh) — TOÀN BỘ 150 tx phân
+  tích sâu dùng ĐÚNG 1 selector `0x38ed1739`
+  (`swapExactTokensForTokens`, gọi QUA ROUTER — khớp việc bị bắt qua
+  `topic2=to`, không phải `topic1=sender`). Tập trung ĐÚNG 3 pool
+  (~150/150 tx), gas_price quan sát được **LUÔN ĐÚNG 0.050 gwei** (min=avg=
+  max — không có dấu hiệu trả phí ưu tiên/outbid bao giờ), **0 tx có ≥2 Swap
+  trên CÙNG pool trong 1 tx** (không có mẫu round-trip/atomic nào). Kết luận:
+  ĐÂY LÀ TRADER TẦN SUẤT CAO BÌNH THƯỜNG (rất có thể bot arbitrage/market-
+  making đơn giản đặt gas cố định), KHÔNG PHẢI front-running bot — khớp và
+  MỞ RỘNG kết luận BAOCAO40 (14 case tay + 29 case `compete.check`: 0/14 và
+  0/16 có dấu hiệu outbid gas thật).
+- `debug_traceTransaction`: xác nhận THẬT RPC công khai `rpc-bsc.48.club`
+  KHÔNG hỗ trợ (`-32601`) — không đo được internal-transfer coinbase bribe
+  trực tiếp cho 2 địa chỉ này, ghi `MISSING` đúng luật, không suy diễn "không
+  có bribe" từ việc không đo được.
+- **BUG THẬT phát hiện + sửa giữa phiên**: lần chạy đầu (`competitor_recon_run1.txt`)
+  Phần A quét 400.000 block/địa chỉ (800 lần gọi `eth_getLogs` tổng cộng)
+  khiến RPC `rpc-bsc.48.club` trả `429` cho MỌI lần gọi ở Phần B ngay sau đó
+  — Phần B "0 log" SAI (không phải thật, là rate-limit). Sửa:
+  `get_logs_retry` (backoff 500ms→4s, tối đa 4 lần thử) dùng cho MỌI lời gọi
+  `eth_getLogs` trong bin + giảm `PART_A_BLOCK_BUDGET` 400k→150k block +
+  tăng sleep giữa các lần gọi. Verify: `competitor_recon_run2.txt` (chạy lại
+  đầy đủ) có dữ liệu Phần B thật (9359 log, không còn 0).
+
+**Phần B — 126 pool `pairs.txt` đã vet, 3000 block gần nhất (chạy lần cuối,
+`competitor_recon_run2.txt`)**:
+
+- `PairBook::reload` (code PRODUCTION thật, không viết lại resolver riêng)
+  resolve 126/126 pool — 108 quote WBNB (áp ngưỡng 0.05 BNB), 18 quote USDT
+  (ngoài phạm vi ngưỡng BNB, không phân tích sâu phiên này).
+- `eth_getLogs` batch (30 pool/lần, chunk 2000 block) trên 108 pool WBNB,
+  block `[122075151..122078150]`: **9359 log Swap THẬT** (8 lần gọi).
+- **1264 victim ≥0.05 BNB** tìm được. **343/1264 (27.1%)** có ít nhất 1 log
+  Swap KHÁC cùng pool trong ±3 vị trí (`tx_index`) — đây là ngưỡng RỘNG
+  (chưa lọc theo gas_price/địa chỉ lặp lại ở QUY MÔ ĐẦY ĐỦ 1264 victim, chỉ
+  BAOCAO40 đã làm điều đó cho mẫu nhỏ 14+29 case và ra 0% front-run thật —
+  CÒN NỢ mở rộng phép so gas_price này ra toàn bộ 343 case, xem mục CÒN NỢ).
+- Bảng "đối thủ theo pool" (37-55 pool có ≥1 victim, xem file evidence đầy
+  đủ) — top pool là chính pool USDT/WBNB (`0x16b9a828...`, 352 victim, 25.6%
+  bracket), tiếp theo vài pool meme-token thanh khoản vừa. **KHÔNG pool nào
+  trong top 12 bị 2 địa chỉ Phần A "phủ"** (cả 2 đều "khong" ở cột đối
+  chiếu).
+- **KẾT LUẬN SỐ (mục 1.c của lệnh)**: **38/55 pool có victim ≥0.05 BNB
+  KHÔNG có bracket ±3 nào VÀ không bị contract/EOA nghi vấn Phần A chạm
+  tới** — đây là tín hiệu SƠ BỘ về pool "trống" đối thủ (cần Chủ tự xác
+  nhận thêm bằng cách theo dõi trực tiếp trước khi kết luận chắc chắn "an
+  toàn" — bracket ±3 không loại trừ được bot dùng bundle riêng/relay private
+  không lộ trong mempool công khai, đúng giới hạn đã ghi ở
+  `spawn_post_simulated_tracker`/BAOCAO40).
+- **KHUYẾN NGHỊ HƯỚNG ĐI (mục 1.c/(iii) của lệnh) — LỖI THỜI, xem "SỬA GIỮA
+  PHIÊN" ngay dưới**: dữ liệu ban đầu (contract nghi vấn DORMANT, EOA tần
+  suất cao KHÔNG front-run) dẫn tới khuyến nghị backrun-only — Chủ đã CHỈ RA
+  SAI ở phương pháp đo (xem mục sửa dưới), kết luận "DORMANT" bị BÁC BỎ bằng
+  bằng chứng thật.
+
+### SỬA GIỮA PHIÊN (mục 1, sau khi Chủ chỉ ra bằng chứng thật) — 0xa739 KHÔNG dormant, là 1 CỤM multi-wallet
+
+**Lỗi phương pháp đã xác nhận**: phương pháp cũ (filter `Swap.sender`/
+`Swap.to` == địa chỉ) chỉ bắt được khi địa chỉ ĐÓ TỰ LÀ msg.sender/recipient
+của `pair.swap()`. `0xa739Dfab...` KHÔNG BAO GIỜ tự gọi `pair.swap()` — nó là
+1 contract **CHUYỂN VỐN** (USDT `transferFrom` + duy trì `approve`), hoàn
+toàn không phát Swap event nào — phương pháp cũ vì vậy KHÔNG THỂ tìm ra nó dù
+quét bao nhiêu block, và kết luận "DORMANT" ở trên là **SAI**, không phải do
+thiếu dữ liệu mà do method luận sai đối tượng cần tìm.
+
+**2 bằng chứng đối chứng Chủ đưa ra — ĐÃ VERIFY THẬT bằng RPC (không bịa)**:
+- Block `122070562`, tx `0x3395dadaf2b4fd6ad9987a5fa709eaedca18f779f837ba8bb720708c73713abf`:
+  `0xB406021E07b31E1f7850FCcCD7076094f18d07eF` → `0xa739Dfab40ef6585f1174fcE90EC96330669758c`,
+  selector `0x5aab2274` (khớp đúng lệnh gốc), value=0, calldata 356 byte,
+  gas 90188, gasPrice 0.05 gwei, nonce 350245.
+- Block `122076185`, tx `0xcb2018256ed6d047e97351b25c33e71d0b61b9c5367ffdc1aa5ecc893b3c571b`
+  (tx_index 6) — cùng selector `0x5aab2274` — receipt có 2 log: `Transfer`
+  USDT `0xB406... → 0xaaBae02D453823E0CE3C86f8A1d29d3Da0a3eaf7` số tiền
+  **2757.93 USDT CHÍNH XÁC** (khớp con số Chủ đưa) + `Approval(0xB406 owner,
+  0xa739 spender)`. Tx NGAY SAU (tx_index 7, cùng block)
+  `0xaaBae02D... → 0x10ED43C718714eb63d5aA57B78B54704E256024E` (V2 Router,
+  selector `0x38ed1739`) — Swap THẬT trên pool
+  `0xcec13213c390d51121f82ba2ecafb8e11e0af7a3` (token
+  `0xe210c0583c1071714eded2d8beeab05ab5bb7777` — CHÍNH LÀ token duy nhất
+  từng thấy `Simulated` trong lần chạy shadow mode đầu phiên này, xác nhận
+  chéo độc lập).
+
+**Cơ chế THẬT của `0xa739Dfab` (giải mã từ log thật, không đoán)**: mỗi lời
+gọi `0x5aab2274(...)` thực hiện MỘT LOẠT cặp `(Transfer USDT từ 0xB406 tới
+địa chỉ X, Approval(0xB406, 0xa739) làm mới)` — 1 lời gọi có thể cấp vốn
+CHO NHIỀU địa chỉ CÙNG LÚC (verify thật: tx
+`0x4916caa0f14719ec3cc6404e87984ff95d014cfe742afa7c63476d83d0d256fe`, block
+`122082156`, MỘT tx cấp vốn cho 3 địa chỉ khác nhau: `0x344573a5...`
+(~547.5 USDT), `0x33fba61e...` (~223.4 USDT), `0xe20a18de...` (~42.1 USDT)
+— cả 3 SAU ĐÓ swap qua V2 Router NGAY 3 vị trí tx_index kế tiếp (5,6,7),
+CÙNG pool `0xcec13213...`). Đây là **bot đa-ví dùng ví "burner" cấp vốn
+tức thời** — mỗi lần giao dịch dùng 1 ví MỚI/khác, tránh bị theo dõi bằng 1
+địa chỉ cố định.
+
+**Địa chỉ ĐẦY ĐỦ Chủ hỏi (mục CÒN NỢ cũ) — TÌM ĐƯỢC thật qua chính investigate
+này**: `0x8180aD6A…23FcE6c54` = **`0x8180ad6a7c9f8f4864e9909480fba4123fce6c54`**
+— quét `Transfer` USDT `from=0xB406` 50.000 block gần nhất: địa chỉ này nhận
+**2850 LẦN** (áp đảo hoàn toàn — địa chỉ xếp thứ 2 chỉ nhận 5 lần), gần chắc
+chắn là ví TRUNG TÂM/tổng hợp lợi nhuận của cả hệ thống (không phải ví
+"burner" dùng 1 lần như các ví khác). Selector `0xaacb5f51` Chủ hỏi thêm vẫn
+KHÔNG tìm thấy trong 4byte.directory/openchain.xyz (2 nguồn độc lập đã tra ở
+đầu phiên) — chưa xác định được TÊN hàm cụ thể, chỉ biết ĐỊA CHỈ này là
+trung tâm của cụm.
+
+**Cụm (mục 1e) — 12 địa chỉ**: seed 4 (`0xB406`, `0xa739`, `0xaaBae02D...`,
+`0xc412d20A...` — địa chỉ Chủ cung cấp, verify on-chain: nonce=0, không
+code, tức EOA chưa từng tự gửi tx, chỉ nhận — khớp vai trò "ví bán/ví nhận"),
+mở rộng bằng 8 địa chỉ nhận vốn nhiều nhất từ `0xB406` (đứng đầu:
+`0x8180ad6a...`, 2850 lần). **Giới hạn thật đã ghi nhận**: cụm 12 địa chỉ
+này CHỈ LÀ TOP 8 theo số lần — có RẤT NHIỀU địa chỉ "burner" chỉ nhận 1 lần
+(như `0x344573a5...`/`0x33fba61e...`/`0xe20a18de...` ở ví dụ trên) KHÔNG
+lọt vào top 8 nên KHÔNG nằm trong cluster set dùng để tính `cluster_bracket`
+tự động trong `competitor_recon.rs` — số `cluster_bracket%=0.0` ở bảng dưới
+vì vậy là **CẬN DƯỚI** (undercounted), không phải con số cuối cùng.
+
+**Kiểm tay sâu hơn (ngoài phạm vi tool tự động, do phiên chính tự làm bằng
+`curl`+RPC thật)**: lấy 172 log Swap thật trên pool `0xcec13213...` (3000
+block gần nhất), tìm 18 lần `0xB406→0xa739` xuất hiện GẦN hoạt động Swap trên
+đúng pool này. Đối chiếu tx_index: **12/18 lần** ví vừa được cấp vốn swap
+NGAY vị trí kế tiếp (dist=1, không có chỗ trống cho 1 tx thứ 3 chen giữa);
+**6/18 lần** ví cấp vốn swap MUỘN hơn nhiều trong cùng block (gap 29-77 vị
+trí) nhưng KHÔNG có địa chỉ NÀO KHÁC swap trên đúng pool này ở khoảng giữa
+(verify bằng chính `all_rows`/log Swap đã lấy, không phải suy đoán) — tức
+**0/18 trường hợp có dấu hiệu victim bên thứ 3 bị kẹp giữa 2 chân của cụm
+này trên pool đó**. Đây là **bằng chứng CHỐNG lại** giả thuyết "cụm này
+đang sandwich nạn nhân thật trên pool này" — mẫu khớp mô hình **arbitrage/
+tạo volume bằng ví dùng 1 lần** hơn là sandwich cổ điển.
+
+**Bảng SO SÁNH TRƯỚC/SAU (`baocao/evidence/competitor_recon_run3_cluster.txt`,
+chạy lại đầy đủ Phần A+A2+B, HEAD `75978de` + patch giữa phiên)**:
+
+| Chỉ số | CŨ (địa chỉ đơn lẻ) | MỚI (cụm 12 địa chỉ, undercounted) |
+|---|---|---|
+| opportunity_pools (không bracket + không bị phủ) | 48/65 | 65/65 |
+| pool cụm chạm tới | 0 (phương pháp cũ không tìm ra `0xa739`) | 4 (`0xcec13213...`, `0xdfe23efbdb...`, `0x7fd71204a755...`, `0xf867ca539dbb...`) |
+| `bi_0xB406_phu`/`bi_cum_phu` trên 108 pool WBNB `pairs.txt` | 0/65 | 0/65 |
+
+Lưu ý QUAN TRỌNG đọc bảng: cả 2 cột đều `0/65` ở cột "phủ" vì 4 pool cụm này
+chạm tới **ĐỀU LÀ QUOTE USDT** (`0xcec13213...`/`0xdfe23efbdb...` xác nhận
+`quote=usdt` qua chính log `sim.result` shadow-mode phiên này), nằm NGOÀI
+108 pool WBNB mà Phần B (Part B) đang xét — **KHÔNG PHẢI** cụm này "không
+hoạt động trên pool nào trong `pairs.txt`", mà là **giới hạn phạm vi thật
+của Phần B** (chỉ xét WBNB) chưa kiểm được pool "sân nhà" của cụm này. Ghi
+CÒN NỢ: mở rộng Phần B sang 18 pool USDT `pairs.txt` để kiểm cụm này ĐÚNG
+trên chính pool nó hoạt động nhiều nhất.
+
+**KẾT LUẬN MỚI (thay thế kết luận backrun-only vội vàng trước đó)**:
+1. `0xa739Dfab` **KHÔNG dormant** — là một contract "dispatcher" cấp vốn
+   thật, hoạt động ĐỀU ĐẶN (≥18 lần chỉ riêng trên 1 pool/3000 block).
+2. Cả hệ thống (`0xB406` + `0xa739` + hàng chục ví "burner" + 1 ví trung tâm
+   `0x8180ad6a...`) là **một bot đa-ví CÓ THẬT, đang hoạt động**, quy mô lớn
+   (2850 lần cấp vốn cho riêng 1 ví trong 50k block).
+3. Bằng chứng sâu (18 case, 1 pool) **KHÔNG cho thấy** bot này sandwich nạn
+   nhân bên thứ 3 trên pool đã kiểm — khớp mô hình đa-ví thực hiện arbitrage/
+   tạo volume độc lập, KHÔNG PHẢI bằng chứng phủ định hoàn toàn khả năng
+   sandwich (mẫu giới hạn 1 pool, 3000 block, chỉ nhìn ±3 vị trí).
+4. **KHÔNG khẳng định lại "backrun-only"** ở đây theo đúng yêu cầu Chủ — bảng
+   so sánh cụm đã có (ở trên), nhưng CHƯA đủ (thiếu 18 pool USDT — sân nhà
+   thật của cụm này) để kết luận chắc chắn. Quyết định chiến lược cuối cùng
+   chờ mở rộng Phần B sang USDT + xác nhận thêm của Chủ/Grok.
+
+### Mục 2 — Bribe model (F-02, `pipeline.rs`/`config.rs`)
+
+4 field `config.toml` mới: `bribe_pct_of_profit` (ship `40.0`, %),
+`bribe_min_bnb` (`0.0005`), `bribe_max_bnb` (`0.01`), `bribe_mode`
+(`"coinbase"`|`"gaspriority"`, ship `"coinbase"`, fail load giá trị khác —
+cùng khuôn `sim_engine`). `pipeline::compute_bribe_wei(profit_wei, pct,
+clamp_bnb)` — hàm THUẦN, % lợi nhuận GỘP kẹp `[min,max]` khi
+`clamp_bnb=Some` (quote=WBNB — 2 ngưỡng ĐÚNG đơn vị); quote=USDT dùng
+`clamp_bnb=None` (chỉ áp %, KHÔNG kẹp — kẹp cần quy đổi BNB→USDT qua
+reserve, NGOÀI PHẠM VI cụm này, ghi CÒN NỢ).
+
+`evaluate_candidate`/`evaluate_candidate_quote` (2 hàm gate WBNB/USDT) giờ
+tính `net_after_bribe = profit_wei - bribe_wei`, gate `Simulated` trên giá
+trị NÀY thay vì `profit_wei` thô — ĐÚNG lệnh "Simulated chỉ khi
+profit_net_after_bribe > min_profit_bnb". `TxLogMeta` thêm `bribe_wei`/
+`net_pos_after_bribe_wei` (log vào `sim.result`, tính LẠI ở `main.rs` sau
+khi có outcome cuối, CÙNG hàm thuần nên luôn khớp gate đã dùng — không lệch
+số). `GET /api/econ` thêm khối `"bribe": {sum_bribe_bnb, samples}` — bucket
+"lãi trước bribe nhưng KHÔNG còn lãi sau bribe" CHƯA tách được (log
+`tx.skip{reason:unprofitable}` hiện không mang `profit_wei` thô để so sánh
+riêng — ghi CÒN NỢ).
+
+Test mới: `compute_bribe_wei_*` (3 test thuần: kẹp trần, sàn khi %quá nhỏ,
+không kẹp nhánh USDT) +
+`decide_paper_v2_pair_mode_bribe_eats_thin_margin_becomes_unprofitable`
+(ĐẠT CẦN DÁN — chứng minh gate THẬT SỰ chặn, không chỉ tính rồi bỏ qua: 1
+candidate Simulated ở bribe=0% trở thành Unprofitable khi
+`min_profit_bnb == profit_wei` (biên mỏng tối đa) + `bribe_pct_of_profit=
+40%`).
+
+### Mục 3 — SỬA F-01 (Critical, audit) + raw tx reconstruction
+
+**Trước cụm này**: `relay::build_48club_send_bundle_request`/
+`build_blockrazor_send_mev_bundle_request` build bundle CHỈ 2 leg
+`[front, back]` — audit xác nhận đây là lỗi Critical (nếu nối live y
+nguyên: bot tự mua rồi tự bán, KHÔNG có victim tx nào chen giữa để tạo
+chênh lệch giá, chỉ mất 2×0.25% phí + price impact tự gây ra — lỗ CHẮC
+CHẮN). Sửa: cả 2 hàm build giờ nhận THÊM tham số `victim_raw_hex` (giữa
+front/back), bundle LUÔN đúng 3 leg `[front, victim_raw, back]`. Toàn bộ
+test cũ cập nhật theo (verify `txs.len()==3`, `txs[1]==victim_raw`).
+
+`transport::fetch_raw_tx_verified(provider, hash) -> Result<(Vec<u8>,
+RawTxSource), String>` (module MỚI trong `transport.rs`, KHÔNG đặt trong
+`relay.rs` — giữ nguyên charter "relay.rs không network" của module đó, xem
+test `no_http_network_calls_anywhere_in_relay_rs`): ưu tiên
+`eth_getRawTransactionByHash` (RPC trả thẳng bytes RLP), fallback
+`eth_getTransactionByHash` + `TxEnvelope::encoded_2718()` (alloy tự RLP-encode
+ĐÚNG theo type tx thật — type 0 Legacy VÀ type 2 EIP-1559 đều được, không tự
+viết tay logic RLP). Verify `keccak256(raw) == hash` TRƯỚC KHI trả — không
+bao giờ trả raw sai.
+
+Test THẬT (RPC thật, `#[ignore]`):
+`transport::tests::real_rpc_reconstruct_raw_tx_type0_and_type2` (tìm 1 tx
+type 0 + 1 tx type 2 THẬT trong 30 block gần nhất, verify tái tạo đúng cả
+2 — cả 2 mẫu tìm được đều qua route `eth_getRawTransactionByHash`, route
+fallback dựa trên `Encodable2718` của chính alloy, không hit trong lần chạy
+này nhưng dùng lại đúng API đã test upstream) +
+`relay::tests::real_rpc_bundle_with_real_victim_raw_tx` (lấy 1 raw tx THẬT
+làm `victim_raw_hex`, ghép front/back fixture, build bundle 3 leg cho CẢ 2
+relay, verify `txs[1]` khớp bit-for-bit raw thật).
+
+### Mục 4 — Shadow mode (`src/shadow.rs`, module mới)
+
+`alloy-signer-local = "2.4.2"` NAY ĐÃ CÓ trên crates.io (xác nhận
+`cargo add` thật — trước đây `7.1`/BAOCAO15 bị chặn vì bản đó CHƯA phát
+hành, phải dùng `B256` thô, xem `executor.rs`). Thêm dependency thật +
+feature `signer-local` cho `alloy`.
+
+`shadow::load_shadow_signer`/`self_address`: dựng `PrivateKeySigner` đầy đủ
+(khác `executor::load_signer` chỉ trả `B256` — hàm đó GIỮ NGUYÊN, đường
+paper-mode F-06 không đổi). `shadow::sign_leg`: ký 1 tx EIP-1559 (type 2,
+BSC đã bật) THẬT bằng `alloy::network::{EthereumWallet, TransactionBuilder}`
++ `TxEnvelope::encoded_2718()` — KHÔNG gửi đi đâu (không
+`Provider::send_transaction`/`send_raw_transaction` nào trong file, test
+`executor::tests::no_send_raw_transaction_call_anywhere_in_src` quét TOÀN
+`src/` tự động bắt module này).
+
+`shadow::pre_sign_revet`: re-vet NGAY TRƯỚC KHI KÝ — (a) victim CHƯA lên
+block (`eth_getTransactionReceipt` còn `None`), (b) reserve đo LẠI (từ
+`ReserveCache`) vẫn `>= min_reserve_wei`, (c) tax/honeypot đo LẠI bằng
+`sim_evm::measure_tax_evm` (fork tại block hiện tại) vẫn trong ngưỡng
+`max_roundtrip_tax_bps` — đúng 3 việc CLAUDE.md giao `revm` ở live (mục b:
+"đo lại token ngay trước khi ký"). `all_ok()=false` → `tx.abort{reason:
+pre_sign_revet_failed}`, KHÔNG ký.
+
+Config field mới: `live_mode` (`"off"`|`"shadow"`|`"live"`, ship `"off"` —
+hành vi y hệt trước cụm này khi tắt; `"live"` CHƯA implement gì, đọc field
+này KHÔNG tự mở khoá gửi thật, cổng DUY NHẤT vẫn `executor::can_send_live`).
+`AppStateInner.shadow_wallet: Option<(Address, EthereumWallet)>` — load
+1 LẦN lúc boot (không hot-reload) từ `PRIVATE_KEY` khi `live_mode="shadow"`,
+lỗi load → log `shadow.signer_load_failed` + `None` (KHÔNG panic, bot vẫn
+chạy paper bình thường).
+
+`main.rs::spawn_shadow_sign_task` — task NỀN (không chặn `handle_paper_tx`),
+kích hoạt khi `outcome=Simulated` + `live_mode="shadow"` + `source != "usdt"`
+(USDT ngoài phạm vi cụm này — `calldata.rs` chỉ có 2 hàm V2 Router WBNB cho
+build tx, xem `executor.rs`). Lấy nonce THẬT (`eth_getTransactionCount`,
+block `pending`), gas thật (`GasOracle` × 2 hệ số an toàn cho `max_fee_per_gas`),
+bribe (mục 2) rải qua `max_priority_fee_per_gas` khi `bribe_mode=
+"gaspriority"` (0 khi `"coinbase"` — leg chuyển BNB trực tiếp
+`block.coinbase` CHƯA implement, ghi CÒN NỢ). Log `bundle.shadow` (hash +
+raw hex 2 chân, KHÔNG relay simulate — xác nhận THẬT `eth_callBundle`
+KHÔNG tồn tại ở CẢ 2 relay đã pin, `curl` thật 2026-09-16 trả `-32601` cả 2,
+xem doc-comment `shadow.rs`).
+
+Verify THẬT: `scripts/paper_run.sh` thêm `--live-mode shadow` (mặc định
+`"off"`, không đổi hành vi mọi lần chạy trước — chỉ override field
+`live_mode` trong config TẠM, `dry_run`/`allow_live`/`bot_armed` GIỮ NGUYÊN
+từ `config.toml` thật). Chạy 30 phút WSL thật (`.env` đã có `PRIVATE_KEY`
+ví Chủ tự điền, 66 ký tự hex — Chủ đã chuẩn bị trước lệnh này) — xem BAOCAO41
+ô 5 cho số liệu `bundle.shadow`/`tx.abort` đầy đủ.
+
+### CÒN NỢ (ghi thật, không bịa hiệu quả)
+
+- Bribe: bucket "lãi trước bribe, mất lãi sau bribe" chưa tách được từ log.
+  Bribe cho quote USDT chưa kẹp theo ngưỡng (chỉ áp %).
+- `bribe_mode="coinbase"`: bribe được TÍNH + LOG nhưng CHƯA có leg chuyển BNB
+  trực tiếp tới `block.coinbase` nào (chỉ `"gaspriority"` mới thực sự đổi
+  `max_priority_fee_per_gas` của tx ký).
+- Shadow mode chỉ hỗ trợ quote WBNB (không USDT).
+- `relay.rs` build bundle 3 leg ĐÚNG nhưng CHƯA nối vào `main.rs`/`executor.rs`
+  live loop (vẫn đứng riêng, giống trước cụm này) — cần `7.3`/cụm
+  `strategy-exec` để có signer LIVE thật (không phải shadow) + gửi bundle
+  HTTP thật.
+- Phân tích ±3 vị trí ở Phần B (343/1264) CHƯA lọc theo gas_price/địa chỉ
+  lặp lại ở quy mô đầy đủ — chỉ mẫu nhỏ (BAOCAO40, 14+29 case) đã làm việc
+  đó và ra 0% front-run thật.
+- Chủ nhắn hỏi thêm 3 địa chỉ giữa phiên (`0x8180aD6A…23FcE6c54` selector
+  `0xaacb5f51`, `0x3164240e…Ed16Fa7Ae`, `0x40cC5EfD…fBdb5E5A5`) — địa chỉ bị
+  RÚT GỌN (dấu `…`) trong tin nhắn, KHÔNG đủ 40 ký tự hex để tra RPC thật —
+  chưa làm được, cần Chủ dán địa chỉ ĐẦY ĐỦ.
+- `debug_traceTransaction` không khả dụng trên RPC công khai đang dùng —
+  không đo được coinbase bribe trực tiếp (internal transfer), chỉ có
+  gas_price làm proxy.
+- Contract `0xa739...` dormant trong cửa sổ quan sát (150k block) — CHƯA
+  quét xa hơn (vd 1-2 triệu block) để tìm mốc "lần cuối hoạt động" cụ thể
+  (ngoài ngân sách thời gian phiên này).

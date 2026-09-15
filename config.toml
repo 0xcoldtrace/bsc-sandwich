@@ -150,3 +150,25 @@ tax_cache_ttl_sec = 600
 # fail load kèm thông báo đổi tên (xem src/config.rs).
 front_slippage_bps = 10
 back_slippage_bps = 50
+
+# Cụm competitor-recon-and-strategy (F-02, mo hinh bribe MO PHONG, CHUA gui
+# that): bribe_pct_of_profit = % loi nhuan GOP (truoc bribe) dung lam bribe de
+# canh tranh vi tri trong block; profit_net_after_bribe = profit_net - bribe,
+# Simulated CHI KHI profit_net_after_bribe > min_profit_bnb (thay vi profit_net
+# tho nhu truoc cum nay). Kep giua [bribe_min_bnb, bribe_max_bnb] (0 =
+# khong tran). Moc 40%/0.0005/0.01 la SO KHOI TAO THO (chua du mau doi thu
+# that de hieu chinh rieng, xem baocao/evidence/competitor_recon_run1.txt) -
+# Chu tu chinh theo trinh sat cap nhat. bribe_mode chi la NHAN cho executor
+# tuong lai chon co che gui (coinbase transfer hoac tang priority fee) - CHUA
+# co code gui bribe that trong cum nay (xem CLAUDE.md cum strategy-exec).
+bribe_pct_of_profit = 40.0
+bribe_min_bnb = 0.0005
+bribe_max_bnb = 0.01
+bribe_mode = "coinbase"
+
+# Cum competitor-recon-and-strategy (muc 4, shadow mode): "off" (ship - KHONG
+# load signer, hanh vi 100% giong truoc cum nay), "shadow" (KY THAT bang
+# PRIVATE_KEY trong .env, KHONG BAO GIO gui/broadcast - chi log bundle.shadow),
+# "live" (CHUA lam trong cum nay, van can cum strategy-exec + lenh rieng cua
+# Chu - doc field nay KHONG tu mo khoa gui that, xem executor::can_send_live).
+live_mode = "off"

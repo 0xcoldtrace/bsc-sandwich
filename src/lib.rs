@@ -13,6 +13,7 @@ pub mod pairbook;
 pub mod pipeline;
 pub mod pool;
 pub mod relay;
+pub mod shadow;
 pub mod sim_evm;
 pub mod sim_v2;
 pub mod sim_v3;

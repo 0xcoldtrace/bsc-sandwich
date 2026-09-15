@@ -1,0 +1,53 @@
+== competitor_recon (cum competitor-recon-and-strategy, F1) ==
+May chay: WSL
+RPC dung: https://rpc-bsc.48.club/***
+latest block THAT: 122076575
+chunk get_logs toi da URL nay chap nhan: 2000 block/lan goi
+
+================ PHAN A: contract 0xa739Dfab40ef6585f1174fcE90EC96330669758c + EOA 0xB406021E07b31E1f7850FCcCD7076094f18d07eF ================
+selector nghi van: 0x5aab2274
+
+--- contract 0xa739dfab40ef6585f1174fce90ec96330669758c ---
+  Swap-log truc tiep (sender hoac to = dia chi nay): 0 tx duy nhat (quet 400000+400000 block, 200+200 lan goi getLogs)
+  -> qua it (dia chi co the giao dich qua ROUTER, Swap.sender=router chu khong phai contract) — fallback quet Transfer WBNB
+  fallback Transfer WBNB: +0 tx hash
+  Phan tich sau: 0 / 0 tx (gioi han PART_A_ANALYZE_CAP=150)
+  tx phan tich thanh cong: 0/0
+  selector histogram (top 5):
+  tx co >=2 Swap CUNG 1 pool trong 1 tx (round-trip/atomic): 0
+  so pool khac nhau da cham: 0
+  top 10 pool ap dao:
+  debug_traceTransaction: MISSING (RPC public nay KHONG ho tro tracer) — khong the do internal-transfer coinbase bribe truc tiep, chi dung gas_price uu tien lam proxy
+
+--- eoa 0xb406021e07b31e1f7850fcccd7076094f18d07ef ---
+  Swap-log truc tiep (sender hoac to = dia chi nay): 654 tx duy nhat (quet 400000+8000 block, 200+4 lan goi getLogs)
+  Phan tich sau: 150 / 654 tx (gioi han PART_A_ANALYZE_CAP=150)
+  tx phan tich thanh cong: 150/150
+  selector histogram (top 5):
+    0x38ed1739: 150
+  tx co >=2 Swap CUNG 1 pool trong 1 tx (round-trip/atomic): 0
+  so pool khac nhau da cham: 3
+  top 10 pool ap dao:
+    0xf867ca539dbb9d530464fc231a15a7832122ee6e: 64 lan
+    0xcec13213c390d51121f82ba2ecafb8e11e0af7a3: 44 lan
+    0xdfe23efbdb03ea985c2423eb916fca8cae1d02ef: 42 lan
+  gas_price (gwei): min=0.050 avg=0.050 max=0.050
+  debug_traceTransaction(0x604a2f7d12c286d7a10c14be9ce2d5339226978c13fc51eecc1a0d4709811426) that bai: server returned an error response: error code -32601: the method debug_traceTransaction does not exist/is not available
+  debug_traceTransaction(0x7401f34f8388abee547266cc091d78a78a56fb4d25e836bd1dea063dffdb17e6) that bai: server returned an error response: error code -32601: the method debug_traceTransaction does not exist/is not available
+  debug_traceTransaction(0x2db9837e2681c60c68172e4801748b797cfe678e797942510dc0ba3d3dd611b5) that bai: server returned an error response: error code -32601: the method debug_traceTransaction does not exist/is not available
+  debug_traceTransaction: MISSING (RPC public nay KHONG ho tro tracer) — khong the do internal-transfer coinbase bribe truc tiep, chi dung gas_price uu tien lam proxy
+
+================ PHAN B: 126 pool pairs.txt, 3000 block gan nhat ================
+PairBook resolve thanh cong: 114 pool (tu pairs.txt that)
+  quote=WBNB: 96 pool (chi cac pool nay dung nguong 0.05 BNB); quote=USDT: 18 pool (bo qua nguong BNB, ngoai pham vi phan tich sau)
+eth_getLogs Swap tren 96 pool WBNB, 3000 block [122073576..122076575]: 0 log THAT (8 lan goi)
+
+victim >=0.05 BNB tim thay (toan bo pool WBNB, 3000 block): 0
+victim co it nhat 1 tx khac CUNG pool trong +-3 vi tri: 0
+
+Bang doi thu theo pool (chi pool co victim >=1, sap theo victim_count giam dan):
+pool                                         symbol       victim   bracket% top_addr(lan) bi_0xB406_phu
+
+KET LUAN SO BO: 0/0 pool co victim NHUNG khong thay bracket (+-3) va khong bi contract/EOA nghi van cham toi trong Phan A — CO THE la co hoi trong (can kiem chung sau bang gas_price truc tiep, phien nay chua fetch gas_price cho MOI cap victim/neighbor de bound RPC).
+
+== HET PHAN A+B (du lieu THAT qua RPC https://rpc-bsc.48.club/***, block latest=122076575) ==

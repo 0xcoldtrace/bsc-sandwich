@@ -145,6 +145,27 @@ async fn main() -> anyhow::Result<()> {
     let sim_http_pool = Arc::new(transport::RpcPool::new(sim_urls));
     let initial_gas_units = (cfg.gas_units_front, cfg.gas_units_back);
 
+    // Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — load
+    // `PRIVATE_KEY` THẬT CHỈ khi `live_mode="shadow"` (ship `"off"` — nhánh
+    // này không chạy, hành vi y hệt trước cụm này). Lỗi load (thiếu key/key
+    // rác) -> log rõ + `shadow_wallet=None` (KHÔNG panic, KHÔNG chặn boot —
+    // bot vẫn chạy paper bình thường, chỉ mất khả năng ký shadow).
+    let shadow_wallet: Option<(Address, alloy::network::EthereumWallet)> = if cfg.live_mode_is_shadow() {
+        match bsc_sandwich::shadow::load_shadow_signer("PRIVATE_KEY", cfg.chain_id) {
+            Ok(signer) => {
+                let addr = bsc_sandwich::shadow::self_address(&signer);
+                logger.log("shadow.signer_loaded", serde_json::json!({ "self_address": format!("{addr:#x}") }));
+                Some((addr, alloy::network::EthereumWallet::from(signer)))
+            }
+            Err(e) => {
+                logger.log("shadow.signer_load_failed", serde_json::json!({ "reason": e }));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let app_state = Arc::new(AppStateInner {
         config: RwLock::new(cfg),
         victims: RwLock::new(book),
@@ -171,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         sim_provider: RwLock::new(None),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
+        shadow_wallet,
     });
 
     {
@@ -1377,6 +1399,8 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         gas_price_gwei: None,
         seen_to_decision_ms: None,
         amount_in_bnb_equiv: None,
+        bribe_wei: None,
+        net_pos_after_bribe_wei: None,
     }
 }
 
@@ -1762,6 +1786,16 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
 
     record_funnel_terminal(&app_state.funnel, &outcome);
     meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+    // Cum `competitor-recon-and-strategy` (F-02) - tinh lai bribe/net_pos_after_bribe
+    // CUNG 1 ham thuan (`compute_bribe_wei`) da dung de gate Simulated o
+    // pipeline::evaluate_candidate*/, chi de LOG (khong anh huong quyet dinh -
+    // quyet dinh da chot trong `outcome`).
+    if let PipelineOutcome::Simulated(q) = &outcome {
+        let clamp = if source == "usdt" { None } else { Some((cfg.bribe_min_wei(), cfg.bribe_max_wei())) };
+        let bribe_wei = pipeline::compute_bribe_wei(q.profit_wei as u128, cfg.bribe_pct_of_profit, clamp);
+        meta.bribe_wei = Some(bribe_wei.to_string());
+        meta.net_pos_after_bribe_wei = Some((q.profit_wei - bribe_wei as i128).to_string());
+    }
     pipeline::log_outcome_v2(&app_state.logger, raw.from, token_hint, source, &meta, &outcome);
     if let PipelineOutcome::Skip(skip) = &outcome {
         let mut counts = app_state.skip_counts.write().await;
@@ -1773,7 +1807,128 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // .await trong ham nay).
     if matches!(outcome, PipelineOutcome::Simulated(_)) {
         spawn_post_simulated_tracker(app_state.clone(), raw.hash, meta.pair.clone(), current_block);
+        // Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — CHỈ khi
+        // `live_mode="shadow"` (ship "off", nhánh này không chạy) VÀ đã nạp
+        // được signer lúc boot. Hỗ trợ CẢ 2 quote asset (WBNB VÀ USDT —
+        // `calldata::encode_front_buy_usdt`/`encode_back_sell_usdt` đã có sẵn
+        // từ cụm `usdt-quote-asset`, chỉ chưa có nơi gọi cho shadow trước cụm
+        // này). Task NỀN riêng, không chặn `handle_paper_tx`.
+        if cfg.live_mode_is_shadow() && app_state.shadow_wallet.is_some() {
+            if let (PipelineOutcome::Simulated(q), Some(token), Some(pair_str)) = (&outcome, token_hint, &meta.pair) {
+                if let Ok(pair_addr) = Address::from_str(pair_str) {
+                    let quote_asset =
+                        if source == "usdt" { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };
+                    let victim_gas_price_wei: u128 = u128::try_from(raw.gas_price).unwrap_or(u128::MAX);
+                    spawn_shadow_sign_task(app_state.clone(), cfg.clone(), *q, token, pair_addr, quote_asset, raw.hash, victim_gas_price_wei, current_block);
+                }
+            }
+        }
     }
+}
+
+/// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — KÝ THẬT
+/// front-buy/back-sell (nếu pre-sign re-vet OK), log `bundle.shadow`. KHÔNG
+/// BAO GIỜ gửi/broadcast (xem `shadow.rs`, không có `send_raw_transaction`
+/// nào). Task NỀN — spawn từ `handle_paper_tx` khi `Simulated` + `live_mode=
+/// "shadow"`, không chặn đường nóng (cùng khuôn `spawn_post_simulated_tracker`).
+#[allow(clippy::too_many_arguments)]
+fn spawn_shadow_sign_task(
+    app_state: AppState,
+    cfg: Config,
+    quote: bsc_sandwich::sim_v2::SandwichQuote,
+    token: Address,
+    pair_addr: Address,
+    quote_asset: pipeline::QuoteAsset,
+    victim_hash: alloy::primitives::B256,
+    victim_gas_price_wei: u128,
+    current_block: u64,
+) {
+    tokio::spawn(async move {
+        let Some((self_addr, wallet)) = app_state.shadow_wallet.clone() else { return };
+        let Some(provider) = app_state.provider.read().await.clone() else { return };
+        let quote_addr = if quote_asset == pipeline::QuoteAsset::Usdt { venues::usdt_addr() } else { venues::wbnb_addr() };
+        let min_reserve_wei =
+            if quote_asset == pipeline::QuoteAsset::Usdt { cfg.min_reserve_usdt_wei() } else { cfg.min_reserve_wei() };
+
+        let nonce = match provider.get_transaction_count(self_addr).block_id(alloy::eips::BlockId::pending()).await {
+            Ok(n) => n,
+            Err(e) => {
+                app_state.logger.log(
+                    "tx.abort",
+                    serde_json::json!({"reason": "nonce_fetch_failed", "detail": e.to_string(), "victim_hash": format!("{victim_hash:#x}")}),
+                );
+                return;
+            }
+        };
+
+        let gas_price_wei = app_state.gas_oracle.gas_price_wei(&provider, current_block, &app_state.logger).await;
+        let (units_front, units_back) = *app_state.gas_units.read().await;
+        let effective_gas_price = gas_price_wei.max(victim_gas_price_wei);
+        // He so an toan x2 cho max_fee_per_gas (EIP-1559 tran, khong phai gia
+        // tra thuc - gia THUC = base_fee + priority, luon <= max_fee) - cung
+        // tinh than tran an toan nhu front_max_gas_bnb_wei/back_max_gas_bnb_wei.
+        let max_fee_per_gas = effective_gas_price.saturating_mul(2);
+        let bribe_wei =
+            pipeline::compute_bribe_wei(quote.profit_wei.max(0) as u128, cfg.bribe_pct_of_profit, Some((cfg.bribe_min_wei(), cfg.bribe_max_wei())));
+        let total_units = units_front as u128 + units_back as u128;
+        // bribe_mode="gaspriority": rai bribe qua maxPriorityFeePerGas (2 chan
+        // dung chung 1 don gia, chia deu theo tong gas unit). bribe_mode=
+        // "coinbase": leg chuyen thang BNB toi block.coinbase CHUA implement
+        // trong cum nay (can 1 tx/call rieng, xem docs/STATE.md muc no) ->
+        // priority=0, bribe_wei van duoc TINH+LOG nhung CHUA co co che gui.
+        let max_priority_fee_per_gas: u128 = if cfg.bribe_mode == "gaspriority" && total_units > 0 { bribe_wei / total_units } else { 0 };
+
+        let Some(reserves) = app_state.reserve_cache.read().await.cached(pair_addr, current_block) else {
+            return; // khong co reserve cache moi -> khong re-vet an toan duoc, bo qua (khong doan)
+        };
+
+        let revet = bsc_sandwich::shadow::pre_sign_revet(
+            &provider,
+            victim_hash,
+            pair_addr,
+            reserves.reserve_wbnb,
+            min_reserve_wei,
+            token,
+            quote_addr,
+            quote.front_in,
+            cfg.max_roundtrip_tax_bps(),
+            current_block,
+        )
+        .await;
+
+        let deadline = bsc_sandwich::executor::compute_deadline(cfg.executor_deadline_buffer_sec);
+        let front_out_min = bsc_sandwich::executor::apply_slippage(quote.front_out, cfg.front_slippage_bps);
+        let back_out_min = bsc_sandwich::executor::apply_slippage(quote.back_out, cfg.back_slippage_bps);
+        let router = Address::from_str(venues::V2_ROUTER_ADDRESS).expect("V2_ROUTER_ADDRESS da pin phai hop le");
+        // Cụm mục 4 (mở rộng USDT) — WBNB dùng đường native (`amountIn` nằm
+        // trong `msg.value`, KHÔNG trong calldata); USDT dùng
+        // `swapExactTokensForTokens` (đường token↔token, `amountIn` nằm
+        // TRONG calldata, `value=0` cả 2 chân — CHƯA approve USDT cho router
+        // trong shadow mode, không sao vì KHÔNG BAO GIỜ gửi đi, chỉ ký để đo
+        // cơ chế/latency, xem `calldata.rs` doc-comment).
+        let (front_calldata, front_value, back_calldata) = if quote_asset == pipeline::QuoteAsset::Usdt {
+            let front = bsc_sandwich::calldata::encode_front_buy_usdt(quote_addr, token, quote.front_in, front_out_min, self_addr, deadline);
+            let back = bsc_sandwich::calldata::encode_back_sell_usdt(token, quote_addr, quote.front_out, back_out_min, self_addr, deadline);
+            (front, alloy::primitives::U256::ZERO, back)
+        } else {
+            let front = bsc_sandwich::calldata::encode_front_buy(quote_addr, token, front_out_min, self_addr, deadline);
+            let back = bsc_sandwich::calldata::encode_back_sell(token, quote_addr, quote.front_out, back_out_min, self_addr, deadline);
+            (front, quote.front_in, back)
+        };
+
+        bsc_sandwich::shadow::build_and_log_shadow_bundle(
+            &app_state.logger,
+            &wallet,
+            self_addr,
+            cfg.chain_id,
+            &revet,
+            (router, front_value, front_calldata, nonce, max_fee_per_gas, max_priority_fee_per_gas, units_front),
+            (router, alloy::primitives::U256::ZERO, back_calldata, nonce + 1, max_fee_per_gas, max_priority_fee_per_gas, units_back),
+            victim_hash,
+            token,
+        )
+        .await;
+    });
 }
 
 /// Cụm `econ-truth-latency-vps` (mục 3) — đo `decision_vs_mined_block` =
@@ -2249,6 +2404,7 @@ mod tests {
         sim_provider: RwLock::new(None),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
+        shadow_wallet: None,
         });
 
         let task_state = app_state.clone();

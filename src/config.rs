@@ -222,6 +222,38 @@ pub struct Config {
     /// rệt. Field bắt buộc (thiếu = fail load).
     pub gas_price_max_gwei: u64,
 
+    /// Cụm `competitor-recon-and-strategy` (F-02, mô hình bribe) — % lợi
+    /// nhuận GỘP (trước bribe, `SandwichQuote.profit_wei`) dùng làm bribe mô
+    /// phỏng để cạnh tranh vị trí trong block. Ship `40.0` (%) — mốc khởi
+    /// tạo THÔ (chưa có số liệu đối thủ thật đủ mẫu để hiệu chỉnh riêng, xem
+    /// `baocao/evidence/competitor_recon_run1.txt`); Chủ tự chỉnh theo số
+    /// liệu trinh sát cập nhật. Kẹp `[0,100]` ở nơi dùng (`pipeline::compute_bribe_wei`),
+    /// không panic với input rác. Field bắt buộc (thiếu = fail load).
+    pub bribe_pct_of_profit: f64,
+    /// F-02 — sàn bribe (BNB) khi `bribe_pct_of_profit` tính ra số quá nhỏ.
+    /// Ship `0.0005`.
+    pub bribe_min_bnb: f64,
+    /// F-02 — trần bribe (BNB) — `0` = không trần (chỉ dùng `bribe_pct_of_profit`
+    /// + sàn). Ship `0.01`.
+    pub bribe_max_bnb: f64,
+    /// F-02 — cơ chế bribe MÔ PHỎNG (CHƯA gửi thật, xem `docs/STATE.md` mục
+    /// `competitor-recon-and-strategy`): `"coinbase"` (chuyển thẳng BNB cho
+    /// `block.coinbase`, kiểu 48 Club/BlockRazor builder) hoặc
+    /// `"gaspriority"` (tăng `maxPriorityFeePerGas`, kiểu public mempool ưu
+    /// tiên gas). Giá trị khác 2 chuỗi này = FAIL LOAD (cùng khuôn `sim_engine`).
+    pub bribe_mode: String,
+
+    /// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — chế độ
+    /// thực thi: `"off"` (ship, KHÔNG có gì khác paper mode hiện có — không
+    /// load signer, không ký), `"shadow"` (KÝ THẬT bằng `PRIVATE_KEY` trong
+    /// `.env`, KHÔNG BAO GIỜ broadcast — chỉ log `bundle.shadow`), `"live"`
+    /// (CHƯA implement trong cụm này — vẫn cần cụm `strategy-exec` + lệnh
+    /// riêng, xem CLAUDE.md mục "Live"; đọc field này KHÔNG tự mở khoá gửi
+    /// tx thật, `executor::can_send_live`/`Config::gate_check` vẫn là cổng
+    /// DUY NHẤT quyết định có được gửi hay không). Giá trị khác 3 chuỗi này
+    /// = FAIL LOAD (cùng khuôn `sim_engine`/`bribe_mode`).
+    pub live_mode: String,
+
     /// Mốc lần reload gần nhất — KHÔNG đọc/ghi từ `config.toml`
     /// (`#[serde(skip)]`, mặc định `None`). Dùng bởi `reload_if_due`, cùng
     /// quy ước `VictimBook::last_reload` (`src/victims.rs`).
@@ -308,7 +340,7 @@ impl Config {
         if self.chain_id != REQUIRED_CHAIN_ID {
             return Err(ConfigError::InvalidChainId(self.chain_id));
         }
-        let checks: [(&str, f64); 9] = [
+        let checks: [(&str, f64); 12] = [
             ("min_profit_bnb", self.min_profit_bnb),
             ("max_front_bnb", self.max_front_bnb),
             ("min_reserve_wbnb", self.min_reserve_wbnb),
@@ -318,6 +350,9 @@ impl Config {
             ("min_profit_usdt", self.min_profit_usdt),
             ("max_front_usdt", self.max_front_usdt),
             ("min_reserve_usdt", self.min_reserve_usdt),
+            ("bribe_pct_of_profit", self.bribe_pct_of_profit),
+            ("bribe_min_bnb", self.bribe_min_bnb),
+            ("bribe_max_bnb", self.bribe_max_bnb),
         ];
         for (name, v) in checks {
             if !v.is_finite() || v < 0.0 {
@@ -334,7 +369,39 @@ impl Config {
                 self.sim_engine
             )));
         }
+        // Cụm `competitor-recon-and-strategy` (F-02) — cùng khuôn `sim_engine`:
+        // gõ sai `bribe_mode` fail load rõ ràng, không âm thầm rơi về mặc định.
+        if self.bribe_mode != "coinbase" && self.bribe_mode != "gaspriority" {
+            return Err(ConfigError::InvalidNumber(format!(
+                "bribe_mode phai la \"coinbase\" hoac \"gaspriority\" (nhan duoc {:?})",
+                self.bribe_mode
+            )));
+        }
+        if self.live_mode != "off" && self.live_mode != "shadow" && self.live_mode != "live" {
+            return Err(ConfigError::InvalidNumber(format!(
+                "live_mode phai la \"off\", \"shadow\" hoac \"live\" (nhan duoc {:?})",
+                self.live_mode
+            )));
+        }
         Ok(())
+    }
+
+    /// F-02/mục 4 — `true` chỉ khi `live_mode="shadow"` — điểm đọc DUY NHẤT
+    /// (cùng quy ước `sim_engine_is_evm`), tránh so chuỗi rải rác.
+    pub fn live_mode_is_shadow(&self) -> bool {
+        self.live_mode == "shadow"
+    }
+
+    /// F-02 — sàn bribe (wei BNB).
+    pub fn bribe_min_wei(&self) -> u128 {
+        let w = bnb_f64_to_wei(self.bribe_min_bnb);
+        u128::try_from(w).unwrap_or(u128::MAX)
+    }
+
+    /// F-02 — trần bribe (wei BNB), `0` nghĩa "không trần" (caller tự diễn giải).
+    pub fn bribe_max_wei(&self) -> u128 {
+        let w = bnb_f64_to_wei(self.bribe_max_bnb);
+        u128::try_from(w).unwrap_or(u128::MAX)
     }
 
     /// `true` khi động cơ quyết định là EVM thật (`revm`) — điểm đọc DUY NHẤT
@@ -664,6 +731,11 @@ pairs_require_vetted = true
 gas_units_front = 160000
 gas_units_back = 140000
 gas_price_max_gwei = 10
+bribe_pct_of_profit = 0.0
+bribe_min_bnb = 0.0
+bribe_max_bnb = 0.0
+bribe_mode = "coinbase"
+live_mode = "off"
 "#
         .to_string()
     }

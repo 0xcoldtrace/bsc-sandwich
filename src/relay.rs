@@ -6,6 +6,22 @@
 //! dưới xác nhận không có `reqwest`/`hyper`/`TcpStream`/`http::Client` nào
 //! xuất hiện dưới dạng code thật trong file này).
 //!
+//! ## SỬA F-01 (audit Critical, cụm `competitor-recon-and-strategy`, 2026-09-16)
+//!
+//! Bản gốc build bundle CHỈ 2 leg `[front, back]` — THIẾU victim tx ở giữa.
+//! Nếu nối live y nguyên, đây là lỗ CHẮC CHẮN: bot tự mua (front) rồi tự bán
+//! (back) mà KHÔNG có giao dịch victim nào chen giữa để tạo chênh lệch giá —
+//! chỉ mất 2×0.25% phí pool + price impact tự gây ra, không có nguồn lợi
+//! nhuận nào. `build_48club_send_bundle_request`/`build_blockrazor_send_mev_bundle_request`
+//! giờ nhận THÊM `victim_raw_hex` (tham số thứ 2, giữa front/back) — bundle
+//! LUÔN đúng 3 leg thứ tự `[front, victim_raw, back]`. `victim_raw_hex` PHẢI
+//! là raw tx ĐÃ KÝ THẬT của chính victim (lấy qua
+//! `transport::fetch_raw_tx_verified`, xem `transport.rs` — ưu tiên
+//! `eth_getRawTransactionByHash`, fallback tái tạo từ `eth_getTransactionByHash`
+//! qua `Encodable2718`, verify `keccak256(raw)==hash` trước khi dùng) — KHÔNG
+//! PHẢI tx do bot tự ký (đó là front/back, 2 leg còn lại). Verify thật (RPC
+//! thật, 1 victim raw tx trên chain) ở test `real_rpc_bundle_with_real_victim_raw_tx`.
+//!
 //! ## Nguồn field (KHÔNG bịa field ngoài danh sách đã research trong lệnh)
 //!
 //! ### 48 Club (Puissant Builder v2)
@@ -105,6 +121,7 @@ pub struct BlockRazorBundleOptions {
 /// `None`, đúng bảng field trong lệnh.
 pub fn build_48club_send_bundle_request(
     front_raw_hex: &str,
+    victim_raw_hex: &str,
     back_raw_hex: &str,
     current_block: u64,
     request_id: u64,
@@ -113,9 +130,15 @@ pub fn build_48club_send_bundle_request(
     let max_block_number = opts.max_block_number.unwrap_or(current_block + 100);
 
     let mut bundle = Map::new();
+    // Cụm `competitor-recon-and-strategy` (F-01, audit Critical) — SỬA bug
+    // "bundle chỉ gồm [front, back], THIẾU victim tx" (nếu gửi live sẽ lỗ
+    // chắc chắn: bot tự mua rồi tự bán mà KHÔNG có victim ở giữa, 2×0.25%
+    // phí + price impact). Bundle nguyên tử giờ ĐÚNG 3 leg thứ tự
+    // `[front, victim_raw, back]` — `victim_raw_hex` là raw tx ĐÃ KÝ THẬT
+    // của victim (không phải bot tự ký), lấy qua `transport::fetch_raw_tx_verified`.
     bundle.insert(
         "txs".to_string(),
-        json!([normalize_raw_tx_hex(front_raw_hex), normalize_raw_tx_hex(back_raw_hex)]),
+        json!([normalize_raw_tx_hex(front_raw_hex), normalize_raw_tx_hex(victim_raw_hex), normalize_raw_tx_hex(back_raw_hex)]),
     );
     bundle.insert("maxBlockNumber".to_string(), json!(max_block_number));
     if let Some(ref v) = opts.backrun_target {
@@ -146,6 +169,7 @@ pub fn build_48club_send_bundle_request(
 /// `serde_json::Value`, KHÔNG mở kết nối nào.
 pub fn build_blockrazor_send_mev_bundle_request(
     front_raw_hex: &str,
+    victim_raw_hex: &str,
     back_raw_hex: &str,
     current_block: u64,
     request_id: u64,
@@ -154,9 +178,10 @@ pub fn build_blockrazor_send_mev_bundle_request(
     let max_block_number = opts.max_block_number.unwrap_or(current_block + 100);
 
     let mut bundle = Map::new();
+    // F-01 (xem doc-comment 48 Club ở trên, cùng lý do/cùng sửa).
     bundle.insert(
         "txs".to_string(),
-        json!([normalize_raw_tx_hex(front_raw_hex), normalize_raw_tx_hex(back_raw_hex)]),
+        json!([normalize_raw_tx_hex(front_raw_hex), normalize_raw_tx_hex(victim_raw_hex), normalize_raw_tx_hex(back_raw_hex)]),
     );
     bundle.insert("maxBlockNumber".to_string(), json!(max_block_number));
     if let Some(ref v) = opts.reverting_tx_hashes {
@@ -185,15 +210,16 @@ pub struct RelayBundlePreview {
 pub fn build_and_log_relay_bundle_previews(
     logger: &BotLogger,
     front_raw_hex: &str,
+    victim_raw_hex: &str,
     back_raw_hex: &str,
     current_block: u64,
     request_id: u64,
     club48_opts: &Club48BundleOptions,
     blockrazor_opts: &BlockRazorBundleOptions,
 ) -> RelayBundlePreview {
-    let club48_request = build_48club_send_bundle_request(front_raw_hex, back_raw_hex, current_block, request_id, club48_opts);
+    let club48_request = build_48club_send_bundle_request(front_raw_hex, victim_raw_hex, back_raw_hex, current_block, request_id, club48_opts);
     let blockrazor_request =
-        build_blockrazor_send_mev_bundle_request(front_raw_hex, back_raw_hex, current_block, request_id, blockrazor_opts);
+        build_blockrazor_send_mev_bundle_request(front_raw_hex, victim_raw_hex, back_raw_hex, current_block, request_id, blockrazor_opts);
 
     logger.log(
         "bundle.build_preview",
@@ -222,6 +248,11 @@ mod tests {
     // `0x`, một chuỗi KHÔNG có, để test cả 2 nhánh `normalize_raw_tx_hex`.
     const FIXTURE_FRONT_RAW_TX_HEX: &str = "f00dfixturefrontnotarealtx00000000000000000000000000000000001234";
     const FIXTURE_BACK_RAW_TX_HEX: &str = "0xfeedfixturebacknotarealtx0000000000000000000000000000000000005678";
+    // Cụm `competitor-recon-and-strategy` (F-01) — leg victim MỚI (thứ tự
+    // GIỮA front/back trong bundle nguyên tử) — fixture giả lập, KHÔNG phải
+    // raw tx thật (test roundtrip với tx thật nằm ở
+    // `transport::tests::real_rpc_reconstruct_raw_tx_type0_and_type2`).
+    const FIXTURE_VICTIM_RAW_TX_HEX: &str = "0xbeeffixturevictimnotarealtx000000000000000000000000000000009abc";
 
     fn tmp_logger() -> (tempfile::TempDir, BotLogger) {
         let dir = tempfile::tempdir().unwrap();
@@ -255,6 +286,7 @@ mod tests {
     fn club48_request_matches_pinned_schema_with_default_options() {
         let req = build_48club_send_bundle_request(
             FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
             FIXTURE_BACK_RAW_TX_HEX,
             1_000_000,
             7,
@@ -266,8 +298,11 @@ mod tests {
         assert_eq!(req["method"], "eth_sendBundle");
 
         let bundle = &req["params"][0];
+        // F-01 - dung 3 leg, victim O GIUA (thu tu nguyen tu: front, victim, back).
+        assert_eq!(bundle["txs"].as_array().unwrap().len(), 3, "bundle PHAI co dung 3 leg [front, victim, back], khong con thieu victim");
         assert_eq!(bundle["txs"][0], "0xf00dfixturefrontnotarealtx00000000000000000000000000000000001234");
-        assert_eq!(bundle["txs"][1], "0xfeedfixturebacknotarealtx0000000000000000000000000000000000005678");
+        assert_eq!(bundle["txs"][1], FIXTURE_VICTIM_RAW_TX_HEX);
+        assert_eq!(bundle["txs"][2], "0xfeedfixturebacknotarealtx0000000000000000000000000000000000005678");
         // default: current_block(1_000_000) + 100
         assert_eq!(bundle["maxBlockNumber"], 1_000_100);
 
@@ -291,8 +326,14 @@ mod tests {
             no_merge: Some(true),
             position_first: Some(false),
         };
-        let req =
-            build_48club_send_bundle_request(FIXTURE_FRONT_RAW_TX_HEX, FIXTURE_BACK_RAW_TX_HEX, 1_000_000, 1, &opts);
+        let req = build_48club_send_bundle_request(
+            FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
+            FIXTURE_BACK_RAW_TX_HEX,
+            1_000_000,
+            1,
+            &opts,
+        );
         let bundle = &req["params"][0];
 
         // maxBlockNumber tuong minh khac default (999_999 != 1_000_100) -> khang dinh Some() thang the default
@@ -309,6 +350,7 @@ mod tests {
     fn blockrazor_request_matches_pinned_schema_with_default_options() {
         let req = build_blockrazor_send_mev_bundle_request(
             FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
             FIXTURE_BACK_RAW_TX_HEX,
             2_000_000,
             42,
@@ -320,8 +362,10 @@ mod tests {
         assert_eq!(req["method"], "eth_sendMevBundle");
 
         let bundle = &req["params"][0];
+        assert_eq!(bundle["txs"].as_array().unwrap().len(), 3, "bundle PHAI co dung 3 leg [front, victim, back]");
         assert_eq!(bundle["txs"][0], "0xf00dfixturefrontnotarealtx00000000000000000000000000000000001234");
-        assert_eq!(bundle["txs"][1], "0xfeedfixturebacknotarealtx0000000000000000000000000000000000005678");
+        assert_eq!(bundle["txs"][1], FIXTURE_VICTIM_RAW_TX_HEX);
+        assert_eq!(bundle["txs"][2], "0xfeedfixturebacknotarealtx0000000000000000000000000000000000005678");
         assert_eq!(bundle["maxBlockNumber"], 2_000_100);
         assert!(bundle.get("revertingTxHashes").is_none());
         // BlockRazor KHONG co backrunTarget/maxTimestamp/noMerge/positionFirst (chi 48 Club moi co)
@@ -337,8 +381,14 @@ mod tests {
             reverting_tx_hashes: Some(vec!["0xcccc".to_string()]),
             max_block_number: Some(123_456),
         };
-        let req =
-            build_blockrazor_send_mev_bundle_request(FIXTURE_FRONT_RAW_TX_HEX, FIXTURE_BACK_RAW_TX_HEX, 2_000_000, 1, &opts);
+        let req = build_blockrazor_send_mev_bundle_request(
+            FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
+            FIXTURE_BACK_RAW_TX_HEX,
+            2_000_000,
+            1,
+            &opts,
+        );
         let bundle = &req["params"][0];
         assert_eq!(bundle["maxBlockNumber"], 123_456);
         assert_eq!(bundle["revertingTxHashes"][0], "0xcccc");
@@ -346,9 +396,11 @@ mod tests {
 
     #[test]
     fn blockrazor_txs_never_exceeds_documented_50_tx_limit() {
-        // Ham nay LUON dung 2 tx (front+back) - khong co duong nao build > 2 phan tu.
+        // Ham nay LUON dung 3 tx (front+victim+back, F-01) - khong co duong
+        // nao build > 3 phan tu.
         let req = build_blockrazor_send_mev_bundle_request(
             FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
             FIXTURE_BACK_RAW_TX_HEX,
             1,
             1,
@@ -356,7 +408,7 @@ mod tests {
         );
         let txs = req["params"][0]["txs"].as_array().unwrap();
         assert!(txs.len() <= 50);
-        assert_eq!(txs.len(), 2);
+        assert_eq!(txs.len(), 3);
     }
 
     #[test]
@@ -365,6 +417,7 @@ mod tests {
         let preview = build_and_log_relay_bundle_previews(
             &logger,
             FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
             FIXTURE_BACK_RAW_TX_HEX,
             5_000_000,
             1,
@@ -381,6 +434,60 @@ mod tests {
         assert_eq!(tail[0]["blockrazor"]["request"], preview.blockrazor_request);
         assert_eq!(preview.club48_request["method"], "eth_sendBundle");
         assert_eq!(preview.blockrazor_request["method"], "eth_sendMevBundle");
+    }
+
+    /// `#[ignore]` — RPC thật. Chứng minh end-to-end F-01: lấy 1 raw tx THẬT
+    /// đã ký trên chain (qua `transport::fetch_raw_tx_verified`, xem test
+    /// tương ứng ở `transport.rs`) làm `victim_raw_hex`, ghép với front/back
+    /// FIXTURE (chưa có signer thật cho 2 chân đó, xem `docs/STATE.md` mục
+    /// `7.1`) — build ra bundle 3 leg đúng thứ tự `[front, victim_THẬT, back]`
+    /// cho cả 2 relay, verify `txs[1]` chính là raw tx thật (bit-for-bit).
+    #[tokio::test]
+    #[ignore]
+    async fn real_rpc_bundle_with_real_victim_raw_tx() {
+        use crate::sim_evm::validate_rpc_urls;
+        use crate::transport;
+        use alloy::eips::BlockNumberOrTag;
+        use alloy::providers::{Provider, ProviderBuilder};
+
+        let urls = validate_rpc_urls();
+        let mut provider = None;
+        for u in &urls {
+            if let Ok(p) = ProviderBuilder::new().connect(u).await {
+                if p.get_chain_id().await.unwrap_or(0) == 56 {
+                    provider = Some(p.erased());
+                    break;
+                }
+            }
+        }
+        let Some(provider) = provider else {
+            println!("SKIP (khong phai FAIL): khong ket noi duoc RPC nao");
+            return;
+        };
+        let latest = provider.get_block_number().await.expect("eth_blockNumber that bai");
+        let block = provider
+            .get_block_by_number(BlockNumberOrTag::Number(latest.saturating_sub(2)))
+            .full()
+            .await
+            .expect("get_block that bai")
+            .expect("block phai ton tai");
+        let victim_hash = block.transactions.txns().next().map(|t| <_ as alloy::network::TransactionResponse>::tx_hash(t));
+        let Some(victim_hash) = victim_hash else {
+            println!("SKIP (khong phai FAIL): block khong co tx nao");
+            return;
+        };
+        let (victim_raw_bytes, source) = transport::fetch_raw_tx_verified(&provider, victim_hash).await.expect("fetch_raw_tx_verified that bai");
+        let victim_raw_hex = format!("0x{}", victim_raw_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        println!("victim_raw THAT: hash={victim_hash:#x} nguon={} len={}", source.as_str(), victim_raw_bytes.len());
+
+        let req = build_48club_send_bundle_request(FIXTURE_FRONT_RAW_TX_HEX, &victim_raw_hex, FIXTURE_BACK_RAW_TX_HEX, latest, 1, &Club48BundleOptions::default());
+        let bundle = &req["params"][0];
+        assert_eq!(bundle["txs"].as_array().unwrap().len(), 3);
+        assert_eq!(bundle["txs"][1], victim_raw_hex, "leg giua bundle phai la victim_raw THAT, bit-for-bit");
+
+        let req2 = build_blockrazor_send_mev_bundle_request(FIXTURE_FRONT_RAW_TX_HEX, &victim_raw_hex, FIXTURE_BACK_RAW_TX_HEX, latest, 1, &BlockRazorBundleOptions::default());
+        assert_eq!(req2["params"][0]["txs"][1], victim_raw_hex);
+        println!("48club + blockrazor bundle 3-leg voi victim THAT: OK");
     }
 
     /// ĐẠT CẦN DÁN: xác nhận KHÔNG có bất kỳ dấu hiệu gọi HTTP/network THẬT

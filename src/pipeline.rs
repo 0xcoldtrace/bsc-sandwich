@@ -169,6 +169,26 @@ pub fn compute_gas_cost_wei(
     (gas_units_front as u128 + gas_units_back as u128).saturating_mul(effective_price)
 }
 
+/// Cụm `competitor-recon-and-strategy` (F-02, mô hình bribe MÔ PHỎNG — CHƯA
+/// gửi thật, xem `docs/STATE.md`) — bribe = `profit_wei * bribe_pct_of_profit%`,
+/// kẹp `[bribe_min_wei, bribe_max_wei]` khi `clamp_bnb` là `Some` (dùng cho
+/// quote=WBNB, nơi 2 ngưỡng kẹp ĐÚNG đơn vị với profit). Quote=USDT truyền
+/// `clamp_bnb=None` (chỉ áp %, KHÔNG kẹp — kẹp cần quy đổi BNB->USDT qua
+/// reserve thật, ngoài phạm vi cụm này, xem `docs/TASKS.md` mục nợ). Thuần,
+/// không panic với input rác (`pct` không hữu hạn/âm -> coi như `0`).
+pub fn compute_bribe_wei(profit_wei: u128, bribe_pct_of_profit: f64, clamp_bnb: Option<(u128, u128)>) -> u128 {
+    let pct = if bribe_pct_of_profit.is_finite() { bribe_pct_of_profit.clamp(0.0, 100.0) } else { 0.0 };
+    let raw = (profit_wei as f64) * (pct / 100.0);
+    let raw_wei: u128 = if raw.is_finite() && raw >= 0.0 { raw as u128 } else { 0 };
+    match clamp_bnb {
+        Some((min_wei, max_wei)) => {
+            let with_min = raw_wei.max(min_wei);
+            if max_wei > 0 { with_min.min(max_wei) } else { with_min }
+        }
+        None => raw_wei,
+    }
+}
+
 /// Cụm `usdt-quote-asset` (BAOCAO29) — quote asset của 1 candidate: WBNB
 /// (hành vi cổ điển, không đổi) hoặc USDT (mới, chỉ khi `scan_quote_usdt=true`).
 /// KHÔNG lẫn với `PoolReserves` — struct đó vẫn giữ tên field `reserve_wbnb`/
@@ -509,7 +529,15 @@ fn evaluate_candidate(
     if quote.profit_wei <= 0 {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
-    if U256::from(quote.profit_wei as u128) < cfg.min_profit_wei() {
+    // Cụm `competitor-recon-and-strategy` (F-02) — Simulated CHỈ khi lợi
+    // nhuận SAU bribe mô phỏng còn vượt `min_profit_bnb` (trước cụm này gate
+    // thẳng vào `profit_wei` thô, không tính chi phí cạnh tranh vị trí).
+    let bribe_wei = compute_bribe_wei(quote.profit_wei as u128, cfg.bribe_pct_of_profit, Some((cfg.bribe_min_wei(), cfg.bribe_max_wei())));
+    let net_after_bribe = quote.profit_wei - bribe_wei as i128;
+    if net_after_bribe <= 0 {
+        return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
+    }
+    if U256::from(net_after_bribe as u128) < cfg.min_profit_wei() {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
     PipelineOutcome::Simulated(quote)
@@ -860,7 +888,19 @@ fn evaluate_candidate_quote(
     if quote_result.profit_wei <= 0 {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
-    if U256::from(quote_result.profit_wei as u128) < min_profit_wei {
+    // Cụm `competitor-recon-and-strategy` (F-02) — cùng gate bribe của
+    // `evaluate_candidate`. Quote=Usdt: chỉ áp %, KHÔNG kẹp theo ngưỡng BNB
+    // (kẹp cần quy đổi qua reserve, xem doc-comment `compute_bribe_wei`).
+    let clamp = match quote {
+        QuoteAsset::Wbnb => Some((cfg.bribe_min_wei(), cfg.bribe_max_wei())),
+        QuoteAsset::Usdt => None,
+    };
+    let bribe_wei = compute_bribe_wei(quote_result.profit_wei as u128, cfg.bribe_pct_of_profit, clamp);
+    let net_after_bribe = quote_result.profit_wei - bribe_wei as i128;
+    if net_after_bribe <= 0 {
+        return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
+    }
+    if U256::from(net_after_bribe as u128) < min_profit_wei {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
 
@@ -1248,6 +1288,15 @@ pub struct TxLogMeta {
     /// `docs/TASKS.md` mục nợ `hotpath-fix-then-decoder-ur`). `None` khi
     /// chưa tính tới bước đó, hoặc không quy đổi được (`u128::MAX` sentinel).
     pub amount_in_bnb_equiv: Option<String>,
+    /// Cụm `competitor-recon-and-strategy` (F-02) — bribe MÔ PHỎNG (wei BNB
+    /// hoặc USDT, cùng đơn vị `profit_wei` của candidate — xem
+    /// `compute_bribe_wei`), CHỈ điền cho `Simulated` (caller tự tính lại từ
+    /// `PipelineOutcome::Simulated(q).profit_wei` + `cfg` sau khi có outcome
+    /// cuối, cùng hàm thuần nên luôn khớp gate đã dùng). `None` cho `Skip`.
+    pub bribe_wei: Option<String>,
+    /// F-02 — `profit_wei - bribe_wei` (đã DÙNG để gate `Simulated`, không
+    /// tính lại khác công thức). `None` cho `Skip`.
+    pub net_pos_after_bribe_wei: Option<String>,
 }
 
 /// Cụm pair-mode — bản `log_outcome` có thêm field `source` ("wallet"/"pair"/
@@ -1345,6 +1394,9 @@ pub fn log_outcome_v2(
                     "profit_net_wei": q.profit_wei.to_string(),
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
                     "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
+                    // Cum `competitor-recon-and-strategy` (F-02)
+                    "bribe_wei": meta.bribe_wei,
+                    "net_pos_after_bribe_wei": meta.net_pos_after_bribe_wei,
                 }),
             );
         }
@@ -1449,7 +1501,9 @@ mod tests {
              sim_engine = \"evm\"\ntax_cache_ttl_sec = 600\n\
              front_slippage_bps = 10\nback_slippage_bps = 50\n\
              pairs_vet_interval_sec = 600\npairs_require_vetted = false\n\
-             gas_units_front = 160000\ngas_units_back = 140000\ngas_price_max_gwei = 10\n",
+             gas_units_front = 160000\ngas_units_back = 140000\ngas_price_max_gwei = 10\n\
+             bribe_pct_of_profit = 0.0\nbribe_min_bnb = 0.0\nbribe_max_bnb = 0.0\nbribe_mode = \"coinbase\"\n\
+             live_mode = \"off\"\n",
         );
         for (needle, replacement) in overrides {
             s = s.replace(needle, replacement);
@@ -2095,6 +2149,89 @@ mod tests {
         match outcome {
             PipelineOutcome::Simulated(q) => assert!(q.profit_wei > 0),
             other => panic!("expect Simulated (pool da vet, TaxCache rong khong duoc chan) - day la bug BAOCAO37, got {other:?}"),
+        }
+    }
+
+    // ===== Cụm `competitor-recon-and-strategy` (F-02) — compute_bribe_wei / gate bribe =====
+
+    #[test]
+    fn compute_bribe_wei_percent_of_profit_within_clamp() {
+        // 1 BNB profit, 40% -> 0.4 BNB, giua [0.0005, 0.01] BNB thi KEP VE TRAN 0.01.
+        let profit = 1_000_000_000_000_000_000u128; // 1 BNB
+        let min = 500_000_000_000_000u128; // 0.0005 BNB
+        let max = 10_000_000_000_000_000u128; // 0.01 BNB
+        let bribe = compute_bribe_wei(profit, 40.0, Some((min, max)));
+        assert_eq!(bribe, max, "40% cua 1 BNB (0.4 BNB) vuot tran 0.01 BNB -> phai kep ve tran");
+    }
+
+    #[test]
+    fn compute_bribe_wei_floors_at_min_when_percent_too_small() {
+        let profit = 1_000_000_000_000u128; // 0.000001 BNB, rat nho
+        let min = 500_000_000_000_000u128; // 0.0005 BNB
+        let max = 10_000_000_000_000_000u128;
+        let bribe = compute_bribe_wei(profit, 40.0, Some((min, max)));
+        assert_eq!(bribe, min, "profit qua nho, 40% khong du san -> phai lay san min");
+    }
+
+    #[test]
+    fn compute_bribe_wei_no_clamp_for_usdt_branch() {
+        let profit = 1_000_000_000_000_000_000u128;
+        let bribe = compute_bribe_wei(profit, 40.0, None);
+        assert_eq!(bribe, 400_000_000_000_000_000u128, "khong kep (clamp_bnb=None) -> dung 40% tho");
+    }
+
+    /// ĐẠT CẦN DÁN — trước cụm `competitor-recon-and-strategy`, `evaluate_candidate`
+    /// gate thẳng vào `profit_wei` thô. Với `bribe_pct_of_profit` đủ lớn (ăn hết
+    /// biên lợi nhuận mỏng), candidate TRƯỚC ĐÂY `Simulated` giờ phải
+    /// `Unprofitable` — chứng minh gate bribe THẬT SỰ chặn đường sim, không
+    /// chỉ tính rồi bỏ qua.
+    #[tokio::test]
+    async fn decide_paper_v2_pair_mode_bribe_eats_thin_margin_becomes_unprofitable() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0x9999999999999999999999999999999999999999");
+        let tx_value = U256::from(60_000_000_000_000_000u64);
+        let victims = victims_ab();
+        let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let (_dir, logger) = pairbook_test_logger();
+        let mut pairbook = PairBook::new();
+        let content = format!("{pair_addr:#x} # SYM | vetted 2026-09-16 | tax 0/0 | owner renounced | note\n");
+        pairbook.reload(&content, &DirectPairResolver, &logger, std::time::Instant::now(), true).await;
+        let cache = TaxCache::new();
+        let risk = RiskGuard::new();
+
+        // Buoc 1: bribe=0 (mac dinh test) -> Simulated, ghi lai profit_wei that.
+        let cfg_no_bribe = test_config();
+        let input = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg_no_bribe.gas_wei(),
+        };
+        let (outcome0, _) = decide_paper_v2(&victims, &pairbook, &cache, &cfg_no_bribe, &risk, &input);
+        let profit_wei = match outcome0 {
+            PipelineOutcome::Simulated(q) => q.profit_wei,
+            other => panic!("setup: can Simulated voi bribe=0 de co profit_wei lam moc, got {other:?}"),
+        };
+
+        // Buoc 2: min_profit_bnb DAT DUNG BANG profit_wei (bien mong toi da) +
+        // bribe_pct_of_profit=40% (khong tran, min tran deu du lon de khong bi
+        // kep) -> bribe > 0 chac chan lam net_after_bribe < min_profit_bnb.
+        let min_profit_bnb_exact = profit_wei as f64 / 1e18;
+        let cfg_with_bribe = crate::config::Config::from_str(&test_config_toml(&[
+            ("min_profit_bnb = 0.01", &format!("min_profit_bnb = {min_profit_bnb_exact}")),
+            ("bribe_pct_of_profit = 0.0", "bribe_pct_of_profit = 40.0"),
+            ("bribe_max_bnb = 0.0", "bribe_max_bnb = 1.0"),
+        ]))
+        .expect("cfg voi bribe phai load duoc");
+        let input2 = PaperDecisionV2 { gas_cost_wei: cfg_with_bribe.gas_wei(), ..input };
+        let (outcome1, _) = decide_paper_v2(&victims, &pairbook, &cache, &cfg_with_bribe, &risk, &input2);
+        match outcome1 {
+            PipelineOutcome::Skip(PipelineSkip::Unprofitable) => {}
+            other => panic!("bribe 40% an het bien mong (min_profit_bnb == profit_wei truoc bribe) -> phai Unprofitable, got {other:?}"),
         }
     }
 

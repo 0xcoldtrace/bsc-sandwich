@@ -23,10 +23,19 @@ set -euo pipefail
 
 MINUTES=30
 PORT=8799
+# Cụm `competitor-recon-and-strategy` (mục 4) — `--live-mode shadow` override
+# CHỈ field `live_mode` trong config TẠM (mặc định "off", giữ NGUYÊN hành vi
+# mọi phiên trước cụm này) — dùng để verify shadow mode (ký thật, KHÔNG gửi)
+# bằng `.env` đã có `PRIVATE_KEY` thật (ví Chủ tự điền). KHÔNG override field
+# nào khác liên quan live (`allow_live`/`bot_armed`/`dry_run` GIỮ NGUYÊN từ
+# `config.toml` thật, luôn `false`/`false`/`true` theo ship — script này vẫn
+# KHÔNG có cách nào bật live).
+LIVE_MODE="off"
 while [ $# -gt 0 ]; do
   case "$1" in
     --minutes) MINUTES="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
+    --live-mode) LIVE_MODE="$2"; shift 2 ;;
     *) echo "tham so la: $1"; exit 2 ;;
   esac
 done
@@ -124,7 +133,11 @@ apply pairs_min_swap_bnb 0
 apply min_profit_usdt 0
 apply min_reserve_usdt 0
 apply web_port "$PORT"
-echo "== config TAM (chi nguong ve 0 + web_port, GIU NGUYEN sim_engine/pair_scan_universal/scan_quote_usdt tu config.toml that), port $PORT =="
+if [ "$LIVE_MODE" != "off" ]; then
+  apply live_mode "\"$LIVE_MODE\""
+  echo "== CANH BAO: live_mode override thanh \"$LIVE_MODE\" (mac dinh \"off\") - dry_run/allow_live/bot_armed VAN giu nguyen tu config.toml that (khong doi) =="
+fi
+echo "== config TAM (chi nguong ve 0 + web_port + live_mode neu co --live-mode, GIU NGUYEN sim_engine/pair_scan_universal/scan_quote_usdt tu config.toml that), port $PORT =="
 
 # ---- cum `strategy-lock-mode2`: dem nhanh pairs.txt truoc khi chay (tong /
 # co "vetted YYYY-MM-DD" hop le / con lai chua vet) - grep tho, KHONG phai
@@ -207,6 +220,18 @@ echo "---- 10 dong sim.evm cuoi (lan chay nay) ----"
 RUN_LOG | grep '"event":"sim.evm"' | tail -10 || true
 echo "---- dem Simulated (sim.evm decision=simulated, lan chay nay) ----"
 count_matches_in '"event":"sim.evm"' '"decision":"simulated"'
+if [ "$LIVE_MODE" = "shadow" ]; then
+  echo "---- cum competitor-recon-and-strategy (muc 4): shadow.signer_loaded / shadow.signer_load_failed ----"
+  RUN_LOG | grep -E '"event":"shadow\.(signer_loaded|signer_load_failed)"' || echo "(khong thay dong nao)"
+  echo "---- dem bundle.shadow (da ky THAT, KHONG gui) ----"
+  count_matches '"event":"bundle.shadow"'
+  echo "---- dem tx.abort reason=pre_sign_revet_failed ----"
+  count_matches_in '"event":"tx.abort"' '"reason":"pre_sign_revet_failed"'
+  echo "---- 10 dong bundle.shadow cuoi ----"
+  RUN_LOG | grep '"event":"bundle.shadow"' | tail -10 || true
+  echo "---- 10 dong tx.abort cuoi ----"
+  RUN_LOG | grep '"event":"tx.abort"' | tail -10 || true
+fi
 
 # ---- halt sach: cho halt.triggered THAT truoc khi kill (muc 13b) ----
 echo "== halt bot (ghi state/halt.lock, cho halt.triggered toi da 10s, roi kill PID) =="

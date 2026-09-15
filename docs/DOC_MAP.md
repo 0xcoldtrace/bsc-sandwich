@@ -72,12 +72,14 @@
 | `src/pipeline.rs` | Lõi quyết định paper (`decide_paper`/`decide_paper_v2`/quote-aware) — decode → gate → sim → outcome. |
 | `src/calldata.rs` | Encode calldata front-buy/back-sell V2 Router (dùng cho `7.2`/`7.3` paper-build). |
 | `src/executor.rs` | Live gate check + load signer + build/log tx paper-mode (**chưa có hàm gửi tx thật**). |
-| `src/relay.rs` | Build request `eth_sendBundle`/`eth_sendMevBundle` thuần (48 Club/BlockRazor) — chưa nối pipeline. |
-| `src/transport.rs` | Kết nối RPC (HTTP/WSS, đa URL failover), subscribe pending-tx, `vps.json` fallback. |
+| `src/relay.rs` | Build request `eth_sendBundle`/`eth_sendMevBundle` 3 leg `[front, victim, back]` (48 Club/BlockRazor, đã sửa F-01) — chưa nối pipeline/HTTP gửi thật. |
+| `src/shadow.rs` | Shadow mode (`live_mode="shadow"`) — ký THẬT front/back bằng `PRIVATE_KEY` (`alloy-signer-local`), pre-sign re-vet, KHÔNG BAO GIỜ gửi/broadcast. |
+| `src/transport.rs` | Kết nối RPC (HTTP/WSS, đa URL failover), subscribe pending-tx, `vps.json` fallback, `fetch_raw_tx_verified` (tái tạo raw tx đã ký từ hash). |
 | `src/state.rs` | Enum state bot + `halt.lock`/`*.req`. |
 | `src/logger.rs` | Ghi `logs/bot.jsonl`. |
-| `src/web.rs` | Axum server + toàn bộ route `/api/*`, serve static `web/`. |
+| `src/web.rs` | Axum server + toàn bộ route `/api/*` (kể cả `/api/shadow`), serve static `web/`. |
 | `src/bin/rpc_probe.rs` | Binary phụ đo RTT/`chain_ok` từng URL RPC (không gửi tx), dùng qua `scripts/run_rpc_probe.sh`. |
+| `src/bin/competitor_recon.rs` | Binary phụ trinh sát đối thủ MEV thật qua `eth_getLogs`/`eth_getTransactionByHash` (chỉ đọc, không gửi tx) — cụm `competitor-recon-and-strategy`. |
 
 ### `web/` (dashboard tĩnh, serve qua `axum`)
 
