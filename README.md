@@ -166,8 +166,9 @@ và mode 3 (universal) đang tắt, `pairs.txt` là nguồn candidate DUY NHẤT
 0xTokenAddress # SYMBOL | vetted YYYY-MM-DD | tax b/s | owner renounced|active | note
 ```
 
-- Phần **trước** dấu `#`: địa chỉ token (hoặc `0xToken,0xWBNB` nếu cần chỉ rõ
-  cặp) — đây là phần DUY NHẤT bot dùng để xác định pool.
+- Phần **trước** dấu `#`: địa chỉ token (hoặc `0xToken,0xWBNB`/`0xToken,0xUSDT`
+  nếu cần chỉ rõ cặp — cột 2 phải đúng WBNB hoặc USDT đã pin, sai địa chỉ
+  khác → lỗi dòng) — đây là phần DUY NHẤT bot dùng để xác định pool.
 - Phần **sau** dấu `#`: chỉ có `vetted YYYY-MM-DD` được bot đọc và dùng để
   quyết định (thiếu hẳn, hoặc có chữ `vetted` nhưng không kèm ngày đúng định
   dạng → bot coi là **CHƯA VET**, không sim). Các trường còn lại
@@ -397,7 +398,8 @@ Bảng lý do `tx.skip` (field `reason`):
 | `sell_direction` | Victim đang BÁN token (chưa có model sandwich cho chiều này) |
 | `not_pancake_router` | `tx.to` không phải 1 trong 5 router Pancake đã pin |
 | `venue_unpinned` | Venue chưa pin đủ để sim |
-| `no_pool` | Không tìm thấy pool V2/V3 hoặc lỗi RPC khi resolve pool |
+| `no_pool` | Factory trả `address(0)` — chắc chắn không có pool V2 |
+| `rpc_error` | `eth_call` `getPair`/`getReserves` lỗi mạng/timeout — KHÁC `no_pool` (cụm `hotpath-fix-then-decoder-ur` A3, tách từ `no_pool` cũ) |
 | `thin_liq` | Pool có reserve thấp hơn `min_reserve_wbnb`/`min_reserve_usdt` |
 | `deadline` | Deadline của tx quá gần, không kịp front-run |
 | `nonce_stale` / `nonce_future` | Nonce victim không khớp nonce kỳ vọng on-chain |
