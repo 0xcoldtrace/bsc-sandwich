@@ -62,6 +62,7 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | `real-economics-mode2` cụm B (fix bug tax-gate BAOCAO37, F-03 gas thật, `/api/econ`, F-27 validator, nonce_future test) | 38 | *(xem BAOCAO38 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (gas thật cho `sim_engine="evm"`, V4 sim, decoder-coverage...) |
 | `hotpath-fix-then-decoder-ur` Phần A (A1-A4: pairs.txt quote USDT, tax gate USDT MODE 2 ONLY, tách `rpc_error`/`no_pool`, `known_pair`+`ReserveCache`) | 39 | *(xem BAOCAO39 ô 3)* | XONG — verify paper run 5 phút thật (`/api/pairs` 89/0, `honeypot_or_tax=0`) |
 | `hotpath-fix-then-decoder-ur` Phần B = `decoder-coverage` (cụm 4: UR đa command, `SmartRouter.multicall`, biến thể không-deadline, `exactOutput*`, fix bug pre-existing `exactInput` 2-lớp offset ABI) | 39 | *(xem BAOCAO39 ô 3)* | MỘT PHẦN — xem "decoder-coverage" (`docs/STATE.md`) mục CÒN NỢ (multihop, `*_SWAP_EXACT_OUT` làm command chính trong UR, recipient sentinel) |
+| `econ-truth-latency-vps` (PairBook cache+backoff, FIX BUG GỐC funnel.simulated vs sim.result, `/api/econ` top_pools+USDT bucket, `compete.check`, Sync-event ReserveCache, deploy VPS) | 40 | *(xem BAOCAO40 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (nonce gate v2 vẫn no-op vì thiếu nguồn điền cache, `competitor_profit_bnb`, p95 latency Sync-event chưa đối chiếu số) |
 
 ## Hoãn, lý do (không phải "chưa làm" — có chủ đích, cần lệnh Chủ mới đổi)
 
@@ -163,7 +164,20 @@ chép, mà là giới hạn lịch sử git thật của repo).
   phiên đã xác nhận LẠI toàn bộ nội dung (đọc hết file + so `git` blob
   hash) — NGUYÊN VẸN, không mất dữ liệu. Khuyến nghị Chủ tự mở `pairs.txt`
   đối chiếu 1 lần cho chắc — xem `baocao/BAOCAO37.md`.
-- **Deploy VPS** — bản đang chạy trên VPS (nếu còn) là từ trước
-  `exec-path-traps`/`strategy-lock-mode2`/`docs-cleanup-mode2`; cần deploy
-  lại + xác nhận `git log -1`/`sha256sum` khớp WSL trước khi coi VPS "đã
-  đúng bản mới nhất".
+- **Deploy VPS** — ĐÃ deploy lại ở cụm `econ-truth-latency-vps` (BAOCAO40),
+  commit `5284bd3`, `git rev-parse HEAD` khớp WSL — xem `docs/STATE.md` mục
+  cụm này + BAOCAO40 ô 5/6 cho bảng so sánh 30 phút WSL vs VPS.
+- **`econ-truth-latency-vps` (BAOCAO40) — nợ còn thật**:
+  - Nonce gate v2 hot path (mục 4) đã wire ĐÚNG (`transport::compare_nonce`
+    qua `NonceCache`) nhưng hiện là NO-OP về số liệu — `NonceCache` chỉ
+    được điền bởi `run_evm_decision` (`sim_engine="evm"`, không chạy trên
+    đường nóng v2 mặc định). Cần lệnh riêng nếu Chủ muốn có nguồn điền cache
+    thật cho đường nóng (vd 1 task nền `eth_getTransactionCount` định kỳ).
+  - `compete.check` (mục 2) chưa tính `competitor_profit_bnb` từ Swap log
+    (chỉ so `gas_price`) — cần decode thêm token0/token1 + amountOut của tx
+    nghi ngờ nếu muốn số lãi cụ thể của bot cạnh tranh.
+  - Sync-event `ReserveCache` (mục 3): chưa đo được p95 `seen_to_decision_ms`
+    cải thiện cụ thể nhờ event so với trước (cần paper run dài hơn 6 phút +
+    nhiều pool "nóng" đồng thời để có tín hiệu thống kê rõ) — mục tiêu
+    "p95<500ms giữ vững với 126 pool" CHƯA đối chiếu số cụ thể.
+  - `resolve_reserves_cached`/USDT nhánh chưa có nonce gate (chỉ WBNB).

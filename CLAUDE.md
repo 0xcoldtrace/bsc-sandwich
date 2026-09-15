@@ -324,6 +324,7 @@ GET /api/pairs
 GET /api/tax         # cache tax (token,quote,buy/sell bps,honeypot,TTL) ; POST inject
 GET /api/funnel      # delta mỗi phút theo gate order thật
 GET /api/validate    # validator nhúng: pred vs real, tách isolated / non-isolated
+GET /api/compete      # cụm econ-truth-latency-vps — compete.check: tx liền kề victim có chạm cùng pool + gas so với victim
 POST /api/control    # body {action: halt|disarm|reset} → ghi state file
 ```
 

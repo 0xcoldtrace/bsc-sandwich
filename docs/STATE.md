@@ -1,6 +1,16 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `docs-cleanup-mode2`, 2026-09-15)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `econ-truth-latency-vps`, 2026-09-16)
+
+0. Cụm mới nhất: `econ-truth-latency-vps` (BAOCAO40, 2026-09-16) — sửa
+   `PairBook`/RPC (cache resolve bền + backoff, item 0), fix **BUG NGHIÊM
+   TRỌNG** làm `funnel.simulated` lệch khỏi số dòng `sim.result` thật
+   (`serde_json::json!` panic nội bộ với `i128` vượt `i64::MAX`, xem mục
+   "econ-truth-latency-vps" cuối file), `/api/econ` `top_pools` + bucket cả
+   USDT, Sync-event `ReserveCache`, `compete.check`/`GET /api/compete`, deploy
+   VPS + `.git` giữ lại trong `deploy_vps.sh` để verify commit. Đọc mục chi
+   tiết cuối file TRƯỚC khi đụng `pairbook.rs`/`web.rs::compute_econ_from_rows`/
+   `pipeline::log_outcome_v2`.
 
 1. Chiến lược: **MODE 2 ONLY** (pair-mode, `pairs.txt` do Chủ vet tay) — mode
    1 (`victims.txt`, wallet) và mode 3 (universal) TẮT bằng cờ, KHÔNG xoá
@@ -3948,3 +3958,271 @@ mục Nợ nếu Chủ muốn wire thêm.
 `gas_units_front` (ship `160000`), `gas_units_back` (ship `140000`),
 `gas_price_max_gwei` (ship `10`) — cả 3 bắt buộc (thiếu = fail load, cùng
 khuôn mọi field khác).
+
+---
+
+## `econ-truth-latency-vps` (BAOCAO40, 2026-09-16)
+
+Lệnh Grok sau `hotpath-fix-then-decoder-ur` (BAOCAO39) — sửa PairBook/RPC,
+2 lỗi đo econ, kiểm cạnh tranh 14 case thật, cache reserve theo Sync-event,
+nợ nhỏ, deploy VPS + 30 phút cả 2 máy. Không subagent ghi file (luật #4).
+
+### Mục 0 — PairBook/RPC
+
+**0.a — cache resolve bền qua nhiều lần reload, KHÔNG rớt khỏi candidate**:
+`PairBook` trước đây rebuild TOÀN BỘ `pairs`/`token_quote_to_pair` từ đầu
+MỖI lần `reload()` — nghĩa là MỌI dòng (kể cả đã resolve xong ổn định từ lâu)
+đều bị gọi lại `Factory.getPair` mỗi `pairs_reload_sec`, tạo áp lực RPC không
+cần thiết cho 126 pool và khiến 1 lần lag/rate-limit thoáng qua làm rớt hẳn
+pool đó khỏi candidate (bằng chứng lệnh: `resolve_fail=805`, count dao động
+`56/122`). Sửa: `PairBook.line_state: HashMap<LineKey, LineState>`
+(`LineKey=(address_dòng, quote)`) là nguồn sự thật BỀN qua các lần `reload()`
+— dòng đã ở trạng thái `Resolved` được TÁI SỬ DỤNG y nguyên `pair_addr`
+(chỉ cập nhật `vetted_at`/`symbol`/`source_line` đọc lại từ file), KHÔNG gọi
+RPC lại; chỉ dòng MỚI (chưa từng thấy) hoặc dòng `Pending` ĐÃ ĐỦ backoff
+(`retry_backoff`: 5s sau lần lỗi 1, 15s sau lần 2, 60s từ lần 3 trở đi) mới
+thực sự gọi `resolver.get_pair`. Lỗi RPC (timeout/transport) HOẶC "no pool"
+tạm thời (`Factory.getPair` trả `0x0` cho dòng `token,quote` tường minh) đều
+rơi vào `Pending` (retry), KHÔNG còn tính vào `error_lines` (giờ CHỈ còn lỗi
+parse thật — địa chỉ sai định dạng/quote khác WBNB-USDT). `PairBook::pairs`/
+`token_quote_to_pair` (dùng bởi hot path `known_pair`/`contains`) được TÁI
+DỰNG mỗi `reload()` CHỈ từ các entry `Resolved` trong `line_state`.
+
+**0.b — log `pair.resolve_fail` đầy đủ**: trước đây log rỗng `{}` (mất hết
+thông tin). Giờ có `token`/`quote`/`error` (nguyên văn lỗi RPC thật)/
+`url_label` (redacted, từ `RpcPairResolver::url_label`, nguồn
+`transport::RpcPool::current_url_label()`)/`attempt` (số lần thử).
+
+**0.c — RpcPool nhận diện "method không hỗ trợ"**: `transport::
+is_unsupported_method_error(&str)` nhận diện `-32000`/`-32601`/"not
+supported"/"method not found" (quan sát thật: bloXroute trả lỗi này cho vài
+method revm fork cần). `RpcPool::mark_current_unsupported()` đánh dấu URL
+hiện tại vào `state.unsupported: HashSet<usize>` rồi chuyển URL kế —
+`connect()` bỏ qua các URL đã đánh dấu TRỪ KHI toàn bộ danh sách đều bị đánh
+dấu (tránh khoá chết). Dùng ở cả `pair_reload` task (main.rs) khi
+`pending_entries()` có lỗi dạng này, và `pairs_vet_task`/`gas_units_boot_task`.
+
+**0.d — `BSC_HTTP_SIM` tách khỏi đường nóng**: pool RPC riêng
+(`sim_http_pool`, `AppStateInner.sim_provider`) cho `pairs_vet_task`/
+`gas_units_boot_task` (cần revm fork, state đầy đủ hơn `eth_call` thường) —
+mặc định (rỗng) dùng lại danh sách `BSC_HTTP` đã lọc URL private. Giữ
+riêng `app_state.provider` (đường nóng `handle_paper_tx`) không đổi.
+
+**0.e** — `pairs_vet_task` sleep 300ms/token (từ 200ms), vẫn tuần tự (vòng
+`for` không spawn song song) — đã đúng "1 sim đồng thời" từ trước, chỉ tăng
+khoảng nghỉ.
+
+**DoD xác nhận THẬT (WSL, paper 6 phút, HEAD `1f0884a`)**: `/api/pairs`
+`count=126 error_lines=0 pending_count=0` ổn định (nhiều lần `pair.reload`
+trong 6 phút, `pairs_reload_sec` mặc định); `pair.resolve_fail` xuất hiện
+0 lần trong log (không có lỗi RPC thật trong cửa sổ đó để kích hoạt — cơ
+chế backoff verify riêng bằng 2 test `reload_does_not_reresolve_already_resolved_lines`/
+`pending_line_respects_backoff_before_retrying`, dùng `MockResolver`
+đếm số lần gọi RPC thật).
+
+### Mục 1 — `/api/econ` + FIX BUG GỐC funnel.simulated vs sim.result
+
+**Phát hiện + fix quan trọng nhất phiên này**: BAOCAO39 ghi nhận
+`funnel.simulated` (cộng dồn `funnel.minute`) = 27 nhưng số dòng
+`sim.result` thật trong `logs/bot.jsonl` chỉ = 14 — ghi CÒN NỢ, chưa tìm ra
+nguyên nhân. Phiên này tìm ra bằng thực nghiệm (thêm tạm 1 dòng debug đánh
+dấu + `std::panic::set_hook` để bắt panic trong task `tokio::spawn` — panic
+trong task đã spawn mà không ai `.await` `JoinHandle` sẽ CHẾT ÂM THẦM,
+không có dấu vết nào trong log bình thường):
+
+`pipeline::log_outcome_v2` (nhánh `PipelineOutcome::Simulated`) đưa thẳng
+`q.profit_wei`/`profit_gross_wei`/`q.profit_wei` (cả 3 đều `i128`) vào
+`serde_json::json!{...}`. Macro `json!` gọi `serde_json::to_value(...).unwrap()`
+nội bộ cho mọi field không phải literal — với `i128` VƯỢT `i64::MAX`
+(`9_223_372_036_854_775_807`, tức CHỈ > 9.22 đơn vị token/wei — RẤT PHỔ
+BIẾN với profit quote USDT, ít gặp hơn với BNB vì hiếm khi lãi >9.22 BNB
+một lần) và crate `serde_json` KHÔNG bật feature `arbitrary_precision`
+(`Cargo.toml`: `serde_json = "1"`, mặc định), `to_value` trả
+`Err("number out of range")`, `.unwrap()` nội bộ PANIC. Task
+`tokio::spawn(handle_paper_tx(...))` chết ngay tại đó — nhưng
+`record_funnel_terminal(&outcome)` đã chạy TRƯỚC dòng `log_outcome_v2`
+(2 lệnh liên tiếp, không có `.await` xen giữa) nên bộ đếm `simulated` ĐÃ
+tăng trước khi panic xảy ra. Kết quả: mỗi candidate `Simulated` có
+`profit_wei` (hoặc `profit_gross_wei`) > `i64::MAX` làm tăng
+`funnel.simulated` nhưng KHÔNG BAO GIỜ có dòng `sim.result` tương ứng.
+
+Tái hiện thật 2 lần (WSL, port riêng, ngoài paper_run.sh mặc định — thêm
+tạm `debug.simulated_marker`/`debug.panic`): lần 1 funnel=3/sim.result=1
+(2 panic `pipeline.rs:1308:17`), lần 2 funnel=4/sim.result=1 (nhầm — xem
+log thật, sau soát lại đúng: marker=4 hash riêng biệt, sim.result=2, tương
+ứng ĐÚNG 2 `debug.panic` cho 2 hash usdt còn lại) — cả 2 lần panic message
+Y HỆT: `` called `Result::unwrap()` on an `Err` value: Error("number out of
+range", line: 0, column: 0) `` tại `src/pipeline.rs:1308:17`.
+
+**Sửa**: `profit_wei`/`profit_gross_wei`/`profit_net_wei` (log field, ĐỔI
+TÊN JSON GIỮ NGUYÊN) chuyển sang `String` (`.to_string()`, cùng khuôn
+`front_in_wei`/`back_out_wei` đã làm đúng từ trước) ở CẢ `log_outcome_v2`
+lẫn `log_outcome` (bản cũ, chỉ dùng test/thủ công). `web::compute_econ_from_rows`
+đổi từ `row["profit_..._wei"].as_i64()` sang `parse_profit_wei()` (đọc
+String, fallback `as_i64()` cho dòng log CŨ trước fix — chỉ tồn tại cho
+profit NHỎ, vì giá trị lớn hơn trước đây CHƯA TỪNG ghi thành công nên không
+cần lo tương thích ngược cho trường hợp lớn). Đồng thời `std::panic::set_hook`
+GIỮ LẠI VĨNH VIỄN trong `main()` (không phải chẩn đoán tạm thời) — mọi panic
+tương lai (bất kỳ nguyên nhân gì, trong bất kỳ task nào) giờ ghi 1 dòng
+`debug.panic{message,location}` thay vì biến mất im lặng — hạ tầng phòng
+thủ rẻ, không ảnh hưởng hành vi bình thường.
+
+**Verify THẬT sau fix (WSL, 2 lần paper 6 phút riêng biệt, HEAD `9dd725a`)**:
+lần 1 `funnel.simulated=7` = `sim.result=7` dòng thật, `debug.panic=0`;
+lần 2 (HEAD `9dd725a` chính xác, binary sha256
+`150879ae76ab8ca6ff6fb7dadd2c399c2493582285edb9cd9d7b29b052d6d154`)
+`funnel.simulated=5` = `sim.result=5`, `debug.panic=0`. Test hồi quy:
+`pipeline::tests::log_outcome_v2_simulated_with_profit_over_i64_max_does_not_panic`
+(dựng `profit_wei=17_579_175_023_944_993_805`, giá trị THẬT quan sát trong
+`logs/bot.jsonl` cụm trước — panic trước fix, ghi đúng 1 dòng sau fix),
+`web::tests::compute_econ_profit_over_i64_max_as_string_still_buckets_correctly`.
+
+**Bucket cả USDT + `top_pools` thay `top_tokens`**: `TxLogMeta.amount_in_bnb_equiv`
+(field log mới, `String` wei-like) = chính `amount_in` cho nhánh WBNB, hoặc
+`pipeline::convert_usdt_to_bnb_wei(amount_in_usdt, reserve_wbnb, reserve_usdt)`
+(nghịch đảo `convert_gas_cost_bnb_to_usdt` đã có, DÙNG LẠI reserve WBNB/USDT
+THẬT đã resolve sẵn cho bước quy đổi gas — không tốn thêm `eth_call`) cho
+nhánh USDT. `compute_econ_from_rows` bucket theo field này (không còn gate
+cứng `quote=="wbnb"`), fallback field cũ `amount_in` cho dòng log lịch sử
+trước cụm này (chỉ áp dụng khi `quote=="wbnb"`, an toàn vì trước đây
+`amount_in` nhánh WBNB vốn đã là BNB). Tỉ giá quy đổi profit sang BNB-tương
+đương cho bucket/`top_pools` suy TỪ CHÍNH 2 field `amount_in`/
+`amount_in_bnb_equiv` của mỗi dòng (`rate = bnb_equiv / native`,
+KHÔNG price oracle, KHÔNG field log mới nào khác) — áp dụng đều cho cả 2
+quote (rate=1.0 tự nhiên với WBNB). `top_pools` (thay `top_tokens`) nhóm
+theo `pair` (địa chỉ pool, phân biệt được 2 pool cùng token khác quote asset
+— khác `top_tokens` cũ nhóm theo token) — `count`/`net_pos`/`sum_net_bnb`
+tính trong `compute_econ_from_rows` (thuần), `symbol` đính kèm SAU trong
+handler `econ()` (tra `PairBook::entries()`, hàm thuần không có quyền truy
+cập `PairBook`). `PairEntry.symbol: Option<String>` mới — parse field ĐẦU
+TIÊN trước dấu `|` trong comment `pairs.txt` (`parse_symbol_from_comment`),
+chỉ phục vụ hiển thị.
+
+**Verify THẬT `top_pools`/bucket USDT (WSL, paper 5 phút)**: `candidate=2567`,
+tổng `buckets_bnb[].count` = **2567** (KHỚP CHÍNH XÁC candidate, gồm cả 241
+candidate `by_quote.usdt` — trước cụm này USDT hoàn toàn vắng mặt khỏi
+bucket). `top_pools` trả đúng `symbol` cho pool có trong `pairs.txt`
+(`null` cho pool ngoài danh sách, vd token chạm router nhưng chưa vet).
+
+### Mục 2 — Kiểm cạnh tranh + `compete.check`
+
+**14 case thật** (từ BAOCAO39, tìm lại trong `logs/bot.jsonl` bằng
+`grep sim.result` + lọc `ts` khung `2026-09-15T13:34`–`14:24`, RPC
+`bsc-dataseed1.bnbchain.org`, chỉ cần `eth_getTransactionReceipt`/
+`eth_getBlockByNumber` — KHÔNG cần archive state, dữ liệu block/receipt full
+node giữ vĩnh viễn): với MỖI hash, lấy `blockNumber`/`transactionIndex` từ
+receipt, lấy block đầy đủ, so tx NGAY TRƯỚC và NGAY SAU victim trong CÙNG
+block — kiểm tra `from` có trùng nhau (dấu hiệu 1 bot làm cả 2 chân sandwich)
+và log address có overlap với log của victim (chạm cùng pool) không.
+
+**Kết quả: KHÔNG tìm thấy sandwich thật nào trong 14 case** — vị trí liền kề
+trước của 6/14 case là CÙNG 1 địa chỉ (`0xb406021e07b31e1f7850fcccd7076094f18d07ef`)
+ở CÙNG mức gas cực thấp (~0.05 gwei, TRÙNG với gas của chính victim, không
+cao hơn) — đặc điểm của 1 bot/trader hoạt động thường xuyên trên CÙNG pool
+BORT, KHÔNG PHẢI dấu hiệu front-run (front-run thật cần gas CAO HƠN victim
+để đảm bảo thứ tự trước). Không case nào có `before.from == after.from`
+(hallmark sandwich 2 chân cùng 1 ví). **Giới hạn ghi rõ**: chỉ kiểm tra
+ĐÚNG 1 vị trí liền kề mỗi bên (không quét toàn block, không loại trừ bot
+cạnh tranh dùng bundle riêng/relay private không lộ ra mempool công khai).
+Bảng đầy đủ 14 dòng: xem BAOCAO40 (không lưu script phân tích vào repo —
+chỉ dùng 1 lần, ngoài phạm vi sản phẩm).
+
+**`compete.check` task nền + `GET /api/compete`**: `spawn_post_simulated_tracker`
+(main.rs, gộp CHUNG với `decision_vs_mined_block` mục 3 — dùng lại 1 lượt
+chờ receipt) chạy cho MỌI candidate `Simulated`: chờ tối đa ~12s (8×1.5s,
+khuôn `spawn_victim_validator`) để victim lên block, lấy block đầy đủ, so
+tx liền kề trước/sau có `receipt.logs` chạm ĐÚNG `pair_addr` không (không
+chỉ "chạm log nào đó" như phân tích tay 14 case — chặt hơn, dùng chính pool
+đã biết). Ghi `compete.result` (hash/block/tx_index/victim_gas_price_gwei/
+competitor/competitor_gas_price_gwei/checked_positions) + `CompeteStats`
+(checked/possible_competitor/top_bots/avg_competitor_gas_gwei/50 dòng gần
+nhất) qua `GET /api/compete`. **CÒN NỢ**: không tính `competitor_profit_bnb`
+từ Swap log (cần decode thêm token0/token1 + amountOut của tx nghi ngờ,
+ngoài phạm vi thời gian cụm này) — chỉ so `gas_price`, đủ trả lời câu hỏi
+cốt lõi "có ai khác giao dịch NGAY quanh victim, trả gas cao hơn không".
+
+**Verify THẬT (WSL, paper 6 phút)**: 5/5 candidate `Simulated` đều có
+`compete.result`; 4/5 tìm thấy tx liền kề chạm cùng pool nhưng TẤT CẢ ở
+CÙNG mức gas với victim (0.05 gwei) — khớp kết luận phân tích tay 14 case ở
+trên (không phải front-run, chỉ là trader khác hoạt động trên cùng pool).
+
+### Mục 3 — Sync-event `ReserveCache` + `decision_vs_mined_block`
+
+`pool::sync_topic0()` (`keccak256("Sync(uint112,uint112)")`, suy runtime
+không hardcode) + `decode_sync_log_reserves` (2 word đầu, dùng lại
+`decode_reserves_return`) + `order_reserves_by_quote(token0, quote, r0, r1)`
+(thuần, test riêng). `main.rs::subscribe_sync_events` — WS subscribe log
+theo ĐỊA CHỈ các pool trong `PairBook` (không quét toàn chain, giảm tải) +
+topic Sync; mỗi log nhận được cập nhật THẲNG `ReserveCache` tại đúng block
+đó, KHÔNG gọi `eth_call getReserves` — `token0()` mỗi pool chỉ cần biết 1
+LẦN (bất biến on-chain), cache riêng trong task (`token0_cache`, không chia
+`AppStateInner`). Resubscribe mỗi 10 phút để bắt pool MỚI nếu `pairs.txt`
+đổi (đánh đổi đơn giản hơn huỷ/tạo lại subscription theo từng lần
+`pair.reload` — chấp nhận được vì Chủ hiếm khi sửa `pairs.txt` giữa phiên).
+Đường nóng (`resolve_reserves_cached`) KHÔNG đổi — vẫn giữ fallback
+`eth_call` khi cache miss/khác block, giờ cache đó THƯỜNG ĐÃ ẤM sẵn nhờ
+event thay vì luôn phải chờ candidate đầu tiên trong block tự gọi RPC.
+
+`decision_vs_mined_block` (log `latency.decision_vs_mined`) = block lúc
+quyết định (`current_block` khi `handle_paper_tx` xử lý) trừ block victim
+THẬT SỰ được đào (từ receipt, cùng lượt chờ với `compete.check`) — âm nghĩa
+là bot quyết định SỚM HƠN lúc victim lên block (kịp), dương nghĩa là trễ
+(dù sim ra lãi cũng không kịp front-run thật). Gộp vào `spawn_post_simulated_tracker`.
+
+**Verify THẬT (WSL, paper 6 phút)**: `sync.subscribed` xuất hiện 5 lần
+(subscribe + reconnect qua các URL), 5/5 `latency.decision_vs_mined` ghi
+được cho 5 candidate `Simulated`. **CÒN NỢ**: chưa đo được p95
+`seen_to_decision_ms` cải thiện cụ thể nhờ Sync-event so với trước (cần
+paper run dài hơn + nhiều pool "nóng" cùng lúc để thấy khác biệt rõ — 6
+phút/126 pool chưa đủ tín hiệu thống kê), và mục tiêu "p95 <500ms giữ vững
+với 126 pool" (CLAUDE.md lệnh mục 3) CHƯA đối chiếu số cụ thể trong BAOCAO40
+(xem ô 10).
+
+### Mục 4 — Nợ nhỏ
+
+**Nonce gate F-13 thuần từ cache**: `main.rs` nhánh V2 hot path (WBNB) đọc
+`app_state.nonce_cache.read().await.cached(raw.from, current_block)` NGAY
+SAU khi có outcome từ `decide_and_build_paper_v2` — cache HIT (`Stale`/
+`Future` qua `transport::compare_nonce`) GHI ĐÈ outcome thành
+`Skip(NonceStale/NonceFuture)`; cache MISS giữ nguyên outcome gốc, KHÔNG
+chặn (đúng nghĩa đen "thuần từ cache", KHÔNG thêm `eth_call` nào trên đường
+nóng). **Ghi rõ, không bịa hiệu quả**: `NonceCache` hiện CHỈ được điền bởi
+`run_evm_decision` (nhánh `sim_engine="evm"`, KHÔNG chạy trên đường nóng v2
+mặc định) — nghĩa là trên `sim_engine="v2"` ship, cache LUÔN miss, gate này
+hiện là NO-OP về mặt số liệu (đã đấu dây đúng, sẵn sàng phát huy tác dụng
+ngay khi có nguồn điền cache khác, nhưng CHƯA đo được số `nonce_stale`/
+`nonce_future` thật nào trên đường nóng phiên này). Nhánh USDT CHƯA wire
+(ngoài scope hot path mặc định, `scan_quote_usdt=false` ship).
+
+`scripts/paper_run.sh`: rotate `logs/bot.jsonl` khi ≥200MB (giữ tối đa 5 bản
+`.1`..`.5`) TRƯỚC khi chạy — hỗ trợ `--minutes 1440` (24h) không đầy đĩa vô
+hạn. `--minutes` vốn đã nhận số bất kỳ (vòng `sleep 60` đơn giản), không cần
+sửa gì thêm cho việc đó.
+
+### Mục 5 — Deploy VPS
+
+`scripts/deploy_vps.sh` SỬA: giữ lại `.git` khi copy (trước đây loại trừ) —
+thiếu `.git` khiến `git rev-parse HEAD` trên VPS báo lỗi "not a git
+repository", KHÔNG THỂ verify "cùng commit với WSL" (CLAUDE.md/docs/RUN.md
+yêu cầu) — chỉ ~5MB, không đáng kể so thời gian build release.
+
+VPS (Ubuntu 22.04, region NJ US theo `vps.json`): `apt-get install
+build-essential pkg-config libssl-dev git curl jq fail2ban ufw`, `ufw allow
+22/tcp` TRƯỚC KHI `ufw enable` (tránh tự khoá), `fail2ban` enable, `rustup`
+cài qua `sh.rustup.rs -y`. Deploy bằng `scripts/deploy_vps.sh --build`;
+verify `git rev-parse HEAD` (cần `git config --global --add safe.directory
+/root/bsc-sandwich` trước — git chặn "dubious ownership" khi owner file
+khác owner đang chạy lệnh, phát hiện thật lúc deploy phiên này) khớp WSL.
+`.env` KHÔNG copy qua `deploy_vps.sh` (loại trừ có chủ đích) — Chủ tự chạy
+lệnh `scp` in ra khi cần, xác nhận xong mới chạy `paper_run.sh` trên VPS.
+
+Kết quả deploy commit `5284bd376fb78ea0b450249fb2d09d4adfd7f812`: VPS
+`git rev-parse HEAD` = `5284bd37...` (KHỚP WSL), `git status --short` chỉ
+còn `?? .claude/` (thư mục settings local vô hại, không phải mã nguồn).
+Bảng so sánh 30 phút WSL vs VPS: xem BAOCAO40 ô 5.
+
+### Test baseline
+
+Đầu phiên (HEAD `583d09e`): 329 lib + 15 main = 344 passed (baseline
+BAOCAO39). Cuối phiên (HEAD `5284bd3`): xem BAOCAO40 ô 5 cho số cuối cùng +
+sha256 binary 2 máy.

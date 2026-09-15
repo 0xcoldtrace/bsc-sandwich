@@ -198,6 +198,15 @@ ssh -N -L 8787:127.0.0.1:8787 -p <port> root@<ip_vps>
 
 ### 7. Xác nhận VPS cùng commit với WSL
 
+Cụm `econ-truth-latency-vps` sửa `scripts/deploy_vps.sh` để GIỮ LẠI `.git`
+khi copy (trước đó loại trừ, khiến bước này không chạy được). Nếu VPS báo
+`fatal: detected dubious ownership` khi chạy `git`, chạy 1 lần (owner file
+khác owner đang chạy lệnh — bình thường khi copy qua `tar+ssh` bằng `root`):
+
+```bash
+git config --global --add safe.directory /root/bsc-sandwich   # (hoac duong dan REMOTE_PATH da dung)
+```
+
 ```bash
 # Tren VPS:
 git log -1 --format=%H
