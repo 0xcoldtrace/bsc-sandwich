@@ -121,6 +121,17 @@ pub struct AppStateInner {
     /// gian cố định) trước khi bắt đầu đo gas thật, tránh race đã ghi nhận ở
     /// BAOCAO38 (giveup sớm hơn reload thật chỉ 700ms dù có 60s ngân sách).
     pub pairs_first_reload_done: Arc<tokio::sync::Notify>,
+    /// Cụm `econ-truth-latency-vps` (0.d) — provider RPC RIÊNG cho revm/vet/
+    /// validator (`pairs_vet_task`/`gas_units_boot_task`), KHÁC `provider`
+    /// (đường nóng `handle_paper_tx`) — cho phép Chủ trỏ `BSC_HTTP_SIM` sang
+    /// node hỗ trợ đầy đủ state cho revm fork (một số node như bloXroute trả
+    /// `-32000 not supported` cho vài method cần cho fork). `None` khi chưa
+    /// kết nối được URL nào trong `BSC_HTTP_SIM`/fallback `BSC_HTTP`.
+    pub sim_provider: RwLock<Option<DynProvider>>,
+    /// Cụm `econ-truth-latency-vps` (mục 1) — dedup hash tx DÙNG CHUNG giữa 3
+    /// nguồn tx (WS/txpool/inject), đóng khoảng hở khi WS fallback sang
+    /// txpool giữa chừng (xem `transport::SeenHashSet`).
+    pub seen_hashes: RwLock<crate::transport::SeenHashSet>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -531,6 +542,7 @@ async fn pairs(State(state): State<AppState>) -> Json<Value> {
             json!({
                 "pair_addr": format!("{:#x}", e.pair_addr),
                 "source_line": e.source_line,
+                "symbol": e.symbol,
                 "resolved_from": e.resolved_from.as_str(),
                 "vetted_at": e.vetted_at.map(|d| d.to_string()),
                 "candidate": book.contains(&e.pair_addr),
@@ -541,9 +553,28 @@ async fn pairs(State(state): State<AppState>) -> Json<Value> {
             })
         })
         .collect();
+    // Cum `econ-truth-latency-vps` (0.a) — dòng ĐANG chờ resolve (RPC lỗi/
+    // "no pool" tạm thời, retry backoff 5s/15s/60s) — KHÔNG rớt khỏi
+    // `pairs.txt`/candidate list nếu đã từng resolve trước đó (chỉ dòng MỚI/
+    // chưa từng resolve mới xuất hiện ở đây).
+    let pending: Vec<Value> = book
+        .pending_entries()
+        .into_iter()
+        .map(|(token_or_addr, quote, attempts, last_error, last_attempt_sec_ago)| {
+            json!({
+                "token": format!("{:#x}", token_or_addr),
+                "quote": format!("{:#x}", quote),
+                "attempts": attempts,
+                "last_error": last_error,
+                "last_attempt_sec_ago": last_attempt_sec_ago,
+            })
+        })
+        .collect();
     Json(json!({
         "count": book.len(),
         "error_lines": book.error_lines,
+        "pending_count": pending.len(),
+        "pending": pending,
         "last_reload_sec_ago": book.last_reload_sec_ago(),
         "pairs": entries,
     }))
@@ -655,6 +686,16 @@ fn percentile_f64(values: &[f64], p: f64) -> Option<f64> {
     Some(v[idx])
 }
 
+/// Cụm `econ-truth-latency-vps` (mục 1) — tích luỹ theo POOL (`pair`
+/// address), thay `by_token`/`top_tokens` cũ (đếm theo TOKEN, không phân
+/// biệt được 2 pool cùng token khác quote asset).
+#[derive(Default)]
+struct PoolAcc {
+    count: u64,
+    net_pos: u64,
+    sum_net_bnb: f64,
+}
+
 #[derive(Default)]
 struct BucketAcc {
     count: u64,
@@ -694,7 +735,23 @@ async fn econ(State(state): State<AppState>) -> Json<Value> {
     // thật khi verify 60 phút, BAOCAO38: `lines_scanned` gấp ~4 lần số dòng
     // thật của riêng lần chạy đó).
     let boot_ts = state.boot_wall_clock.to_rfc3339();
-    Json(compute_econ_from_rows(&rows, Some(&boot_ts)))
+    let mut out = compute_econ_from_rows(&rows, Some(&boot_ts));
+    // Cụm `econ-truth-latency-vps` (mục 1) — đính kèm `symbol` (đọc từ
+    // `pairs.txt`, xem `PairBook::entries`/`PairEntry::symbol`) vào từng
+    // `top_pools` — `compute_econ_from_rows` THUẦN (không truy cập PairBook),
+    // nên bước enrich này làm Ở ĐÂY (handler duy nhất có `state.pairbook`).
+    if let Some(top_pools) = out.get_mut("top_pools").and_then(|v| v.as_array_mut()) {
+        let book = state.pairbook.read().await;
+        for entry in top_pools.iter_mut() {
+            let symbol = entry["pair"]
+                .as_str()
+                .and_then(|p| Address::from_str(p).ok())
+                .and_then(|addr| book.entries().find(|e| e.pair_addr == addr))
+                .and_then(|e| e.symbol.clone());
+            entry["symbol"] = json!(symbol);
+        }
+    }
+    Json(out)
 }
 
 /// Lõi THUẦN (không I/O) của `GET /api/econ` — tách riêng để test được bằng
@@ -714,7 +771,7 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     };
     let mut buckets: [BucketAcc; 5] = Default::default();
     let mut by_quote: HashMap<String, u64> = HashMap::new();
-    let mut by_token: HashMap<String, u64> = HashMap::new();
+    let mut by_pool: HashMap<String, PoolAcc> = HashMap::new();
     let mut decode_fail_by_router: HashMap<&'static str, u64> = HashMap::new();
     let mut latency_ms_samples: Vec<f64> = Vec::new();
     let mut nonce_stale_count: u64 = 0;
@@ -732,9 +789,6 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         if let Some(q) = row["quote"].as_str() {
             *by_quote.entry(q.to_string()).or_insert(0) += 1;
         }
-        if let Some(t) = row["token"].as_str() {
-            *by_token.entry(t.to_string()).or_insert(0) += 1;
-        }
         if let Some(ms) = row["seen_to_decision_ms"].as_f64() {
             latency_ms_samples.push(ms);
         }
@@ -750,32 +804,73 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
             }
         }
 
-        // Cum mục 3.a — bucket theo victim_in (chỉ WBNB quote, "quy về BNB"
-        // đúng nghĩa — USDT không quy đổi được sang BNB nếu không có price
-        // oracle, CLAUDE.md cấm oracle giá).
-        if row["quote"].as_str() == Some("wbnb") {
-            if let Some(amount_bnb) = row["amount_in"].as_str().and_then(parse_wei_str_to_bnb) {
-                if let Some(bucket_idx) = BNB_BUCKETS.iter().position(|(_, lo, hi)| amount_bnb >= *lo && amount_bnb < *hi) {
-                    let acc = &mut buckets[bucket_idx];
-                    acc.count += 1;
-                    if let Some(gas_bnb) = row["gas_cost_wei"].as_str().and_then(parse_wei_str_to_bnb) {
-                        acc.gas_cost_bnb_samples.push(gas_bnb);
+        // Cụm `econ-truth-latency-vps` (mục 1) — tỉ giá quote-asset -> BNB
+        // NGẦM ĐỊNH cho CHÍNH dòng này, suy từ 2 field đã log sẵn
+        // (`amount_in` đơn vị quote gốc, `amount_in_bnb_equiv` đã quy đổi ở
+        // `main.rs`/`pipeline::convert_usdt_to_bnb_wei`) — KHÔNG phải price
+        // oracle (CLAUDE.md cấm), chỉ tái dùng đúng tỉ giá reserve THẬT bot
+        // đã tính lúc quyết định. `quote="wbnb"` cho tỉ giá 1.0 tự nhiên
+        // (amount_in_bnb_equiv == amount_in, xem `main.rs`).
+        // Cụm 1 - CẢ 2 giá trị phải quy về đơn vị BNB/USDT thật (chia 1e18,
+        // `parse_wei_str_to_bnb`) TRƯỚC khi tính tỉ giá/so bucket — dùng
+        // thẳng wei thô (chưa chia) sẽ không bao giờ khớp khoảng bucket nhỏ
+        // (0-1) VÀ sai đơn vị hiển thị.
+        let native_amount = row["amount_in"].as_str().and_then(parse_wei_str_to_bnb);
+        // Fallback tương thích ngược: dòng log CŨ (trước cụm này) chưa có
+        // `amount_in_bnb_equiv` — nếu quote đã là "wbnb" thì amount_in TỰ NÓ
+        // đã là BNB, dùng thẳng (rate=1.0) thay vì rớt mất dòng đó.
+        let bnb_equiv_amount = row["amount_in_bnb_equiv"]
+            .as_str()
+            .and_then(parse_wei_str_to_bnb)
+            .or_else(|| if row["quote"].as_str() == Some("wbnb") { native_amount } else { None });
+        let quote_to_bnb_rate = match (native_amount, bnb_equiv_amount) {
+            (Some(n), Some(b)) if n > 0.0 => Some(b / n),
+            (None, Some(_)) if row["quote"].as_str() == Some("wbnb") => Some(1.0),
+            _ => None,
+        };
+
+        let pair = row["pair"].as_str().map(|s| s.to_string());
+        if let Some(pair) = &pair {
+            let acc = by_pool.entry(pair.clone()).or_default();
+            acc.count += 1;
+            if event == "sim.result" {
+                if let (Some(net_wei), Some(rate)) = (row["profit_net_wei"].as_i64(), quote_to_bnb_rate) {
+                    if net_wei > 0 {
+                        acc.net_pos += 1;
+                        acc.sum_net_bnb += (net_wei as f64) * rate / 1e18;
                     }
-                    if event == "sim.result" {
-                        let gross = row["profit_gross_wei"].as_i64();
-                        let net = row["profit_net_wei"].as_i64();
-                        if gross.map(|g| g > 0).unwrap_or(false) {
-                            acc.gross_pos += 1;
-                        }
-                        if let Some(net_wei) = net {
-                            if net_wei > 0 {
-                                acc.net_pos += 1;
-                                net_pos_total += 1;
-                                let net_bnb = net_wei as f64 / 1e18;
-                                acc.sum_net_pos_bnb += net_bnb;
-                                acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net_bnb, |b: f64| b.max(net_bnb)));
-                                best_net_bnb_total = Some(best_net_bnb_total.map_or(net_bnb, |b: f64| b.max(net_bnb)));
-                            }
+                }
+            }
+        }
+
+        // Cum mục 1 (`econ-truth-latency-vps`) — bucket theo victim_in QUY
+        // VỀ BNB cho CẢ 2 quote asset (trước cụm này chỉ `quote="wbnb"` được
+        // bucket — USDT hoàn toàn vắng mặt khỏi `buckets_bnb`, xem
+        // `docs/TASKS.md` mục nợ `hotpath-fix-then-decoder-ur`). Quy đổi qua
+        // `amount_in_bnb_equiv` (đã tính sẵn bằng reserve THẬT, không price
+        // oracle) — KHÔNG còn đọc thẳng `amount_in` (đơn vị quote gốc, sai
+        // đơn vị cho USDT).
+        if let Some(amount_bnb) = bnb_equiv_amount {
+            if let Some(bucket_idx) = BNB_BUCKETS.iter().position(|(_, lo, hi)| amount_bnb >= *lo && amount_bnb < *hi) {
+                let acc = &mut buckets[bucket_idx];
+                acc.count += 1;
+                if let Some(gas_bnb) = row["gas_cost_wei"].as_str().and_then(parse_wei_str_to_bnb) {
+                    acc.gas_cost_bnb_samples.push(gas_bnb);
+                }
+                if event == "sim.result" {
+                    let gross = row["profit_gross_wei"].as_i64();
+                    let net = row["profit_net_wei"].as_i64();
+                    if gross.map(|g| g > 0).unwrap_or(false) {
+                        acc.gross_pos += 1;
+                    }
+                    if let (Some(net_wei), Some(rate)) = (net, quote_to_bnb_rate) {
+                        if net_wei > 0 {
+                            acc.net_pos += 1;
+                            net_pos_total += 1;
+                            let net_bnb = (net_wei as f64) * rate / 1e18;
+                            acc.sum_net_pos_bnb += net_bnb;
+                            acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net_bnb, |b: f64| b.max(net_bnb)));
+                            best_net_bnb_total = Some(best_net_bnb_total.map_or(net_bnb, |b: f64| b.max(net_bnb)));
                         }
                     }
                 }
@@ -783,9 +878,12 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         }
     }
 
-    let mut top_tokens: Vec<(String, u64)> = by_token.into_iter().collect();
-    top_tokens.sort_by(|a, b| b.1.cmp(&a.1));
-    top_tokens.truncate(10);
+    // Cụm `econ-truth-latency-vps` (mục 1) — `top_pools` (pair/count/net_pos/
+    // sum_net_bnb) THAY `top_tokens` cũ — `symbol` được đính kèm SAU (ở
+    // `econ()`, hàm THUẦN này không có quyền truy cập `PairBook`).
+    let mut top_pools: Vec<(String, PoolAcc)> = by_pool.into_iter().collect();
+    top_pools.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+    top_pools.truncate(10);
 
     let p50 = percentile_f64(&latency_ms_samples, 50.0);
     let p95 = percentile_f64(&latency_ms_samples, 95.0);
@@ -808,7 +906,12 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         "candidate": candidate_count,
         "buckets_bnb": buckets.iter().zip(BNB_BUCKETS.iter()).map(|(acc, (label, _, _))| acc.snapshot(label)).collect::<Vec<_>>(),
         "by_quote": by_quote,
-        "top_tokens": top_tokens.into_iter().map(|(t, c)| json!({"token": t, "count": c})).collect::<Vec<_>>(),
+        "top_pools": top_pools.into_iter().map(|(pair, acc)| json!({
+            "pair": pair,
+            "count": acc.count,
+            "net_pos": acc.net_pos,
+            "sum_net_bnb": acc.sum_net_bnb,
+        })).collect::<Vec<_>>(),
         "decode_fail_by_router": decode_fail_by_router,
         "latency_ms": { "p50": p50, "p95": p95, "samples": latency_ms_samples.len() },
         "nonce_stale_pct_of_candidate": stale_pct,
@@ -990,8 +1093,10 @@ mod tests {
         let rows = vec![json!({
             "event": "sim.result",
             "token": "0xtoken1",
+            "pair": "0xpair1",
             "quote": "wbnb",
             "amount_in": wei(0.06),
+            "amount_in_bnb_equiv": wei(0.06),
             "gas_cost_wei": wei(0.002),
             "profit_gross_wei": 5_000_000_000_000_000i64,
             "profit_net_wei": 3_000_000_000_000_000i64,
@@ -1010,9 +1115,25 @@ mod tests {
         assert_eq!(econ["net_pos_total"], 1);
         assert!((econ["best_net_bnb"].as_f64().unwrap() - 0.003).abs() < 1e-9);
         assert_eq!(econ["by_quote"]["wbnb"], 1);
-        assert_eq!(econ["top_tokens"][0]["token"], "0xtoken1");
-        assert_eq!(econ["top_tokens"][0]["count"], 1);
+        assert_eq!(econ["top_pools"][0]["pair"], "0xpair1");
+        assert_eq!(econ["top_pools"][0]["count"], 1);
+        assert_eq!(econ["top_pools"][0]["net_pos"], 1);
+        assert!((econ["top_pools"][0]["sum_net_bnb"].as_f64().unwrap() - 0.003).abs() < 1e-9);
         assert!(econ["summary_line"].as_str().unwrap().contains("candidate=1"));
+    }
+
+    /// Dòng CŨ (trước cụm `econ-truth-latency-vps`) không có
+    /// `amount_in_bnb_equiv` — vẫn phải bucket ĐÚNG cho quote wbnb (fallback
+    /// coi `amount_in` tự nó là BNB, rate=1.0), không rớt mất dòng lịch sử.
+    #[test]
+    fn compute_econ_legacy_wbnb_row_without_bnb_equiv_field_still_buckets() {
+        let rows = vec![json!({
+            "event": "sim.result", "quote": "wbnb", "amount_in": wei(0.06),
+            "profit_gross_wei": 1i64, "profit_net_wei": 1i64,
+        })];
+        let econ = compute_econ_from_rows(&rows, None);
+        let total: i64 = econ["buckets_bnb"].as_array().unwrap().iter().map(|b| b["count"].as_i64().unwrap()).sum();
+        assert_eq!(total, 1, "dong wbnb cu (khong co amount_in_bnb_equiv) van phai bucket duoc");
     }
 
     /// `decode_fail` với `to` = SmartRouter đã pin phải đếm đúng tên hiển thị
@@ -1066,7 +1187,10 @@ mod tests {
     /// quy đổi) — vẫn đếm vào `by_quote`/`candidate` nhưng không rơi vào bất
     /// kỳ bucket BNB nào.
     #[test]
-    fn compute_econ_usdt_quote_not_bucketed_into_bnb_buckets() {
+    fn compute_econ_usdt_quote_without_bnb_equiv_field_is_not_bucketed() {
+        // Dong USDT KHONG co amount_in_bnb_equiv (vd loi quy doi wbnb_usdt
+        // reserve luc do) -> khong the bucket (khac wbnb, khong co fallback
+        // hop le vi USDT amount_in KHONG phai don vi BNB).
         let rows = vec![json!({
             "event": "sim.result", "token": "0xtoken2", "quote": "usdt",
             "profit_gross_wei": 1i64, "profit_net_wei": 1i64,
@@ -1074,7 +1198,37 @@ mod tests {
         let econ = compute_econ_from_rows(&rows, None);
         assert_eq!(econ["by_quote"]["usdt"], 1);
         let total_bucket_count: i64 = econ["buckets_bnb"].as_array().unwrap().iter().map(|b| b["count"].as_i64().unwrap()).sum();
-        assert_eq!(total_bucket_count, 0, "usdt khong duoc quy sang bucket BNB");
+        assert_eq!(total_bucket_count, 0, "thieu amount_in_bnb_equiv thi khong bucket duoc, khong doan mo");
+    }
+
+    /// ĐẠT CẦN DÁN (cụm `econ-truth-latency-vps`, mục 1) — dòng USDT CÓ
+    /// `amount_in_bnb_equiv` (đã quy đổi qua reserve WBNB/USDT thật ở
+    /// `main.rs`) PHẢI bucket được vào `buckets_bnb`, và `sum_net_pos_bnb`
+    /// phải dùng ĐÚNG tỉ giá suy ra từ `amount_in`/`amount_in_bnb_equiv` của
+    /// chính dòng đó (không phải price oracle) — trước cụm này, MỌI candidate
+    /// quote USDT (BAOCAO39: 3279 candidate trong 60 phút) hoàn toàn vắng
+    /// mặt khỏi `buckets_bnb`.
+    #[test]
+    fn compute_econ_usdt_quote_with_bnb_equiv_field_is_bucketed_with_correct_rate() {
+        // 500 USDT ~= 0.8 BNB (ty gia 625 USDT/BNB gia du) -> rate = 0.8/500 = 0.0016.
+        let amount_in_usdt = 500.0 * 1e18;
+        let amount_in_bnb = 0.8 * 1e18;
+        let profit_net_usdt_wei: i64 = 5_000_000_000_000_000_000; // 5 USDT loi
+        let rows = vec![json!({
+            "event": "sim.result", "token": "0xtoken3", "pair": "0xpair3", "quote": "usdt",
+            "amount_in": format!("{amount_in_usdt}"),
+            "amount_in_bnb_equiv": format!("{amount_in_bnb}"),
+            "profit_gross_wei": profit_net_usdt_wei,
+            "profit_net_wei": profit_net_usdt_wei,
+        })];
+        let econ = compute_econ_from_rows(&rows, None);
+        let bucket_02_1 = econ["buckets_bnb"].as_array().unwrap().iter().find(|b| b["bucket"] == "0.2-1").unwrap();
+        assert_eq!(bucket_02_1["count"], 1, "0.8 BNB-equivalent phai roi dung bucket 0.2-1");
+        assert_eq!(bucket_02_1["net_pos"], 1);
+        // sum_net_pos_bnb = 5 USDT * rate(0.0016) = 0.008 BNB-equivalent.
+        assert!((bucket_02_1["sum_net_pos_bnb"].as_f64().unwrap() - 0.008).abs() < 1e-6);
+        assert_eq!(econ["top_pools"][0]["pair"], "0xpair3");
+        assert!((econ["top_pools"][0]["sum_net_bnb"].as_f64().unwrap() - 0.008).abs() < 1e-6);
     }
 
     #[test]

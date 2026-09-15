@@ -111,6 +111,14 @@ BSC_WS=wss://bsc-rpc.publicnode.com
 - `PRIVATE_KEY` và `PRIVATE_TX_URL` để **trống** ở giai đoạn paper — chưa
   cần, và bot cũng chưa có tính năng ký/gửi tx thật để dùng tới chúng.
 - Không commit `.env` (đã có trong `.gitignore`).
+- `BSC_HTTP_SIM` (cụm `econ-truth-latency-vps`, **tuỳ chọn**) — pool RPC
+  RIÊNG cho revm fork (`pairs_vet_task`/`gas_units_boot_task`/validator),
+  KHÁC `BSC_HTTP` (đường nóng). Rỗng = dùng lại danh sách `BSC_HTTP`. Điền
+  riêng khi thấy log `pair.vet_error`/`gas.units_measure_error` báo lỗi dạng
+  `-32000`/`not supported`/`method not found` (quan sát thật với một số node
+  bloXroute/RPC riêng không hỗ trợ đủ method cho revm) — bot tự đánh dấu URL
+  đó (`rpc.method_unsupported`) và chuyển URL kế trong `BSC_HTTP_SIM`, không
+  cần restart.
 
 ### `config.toml` — ngưỡng vận hành
 
@@ -274,9 +282,18 @@ EVM (revm), KHÔNG tin tưởng mù quáng vào bước vet tay:
 curl -s http://127.0.0.1:8787/api/pairs | jq
 ```
 
-Kỳ vọng: mỗi pool có thêm cột `vetted_at`, `candidate`, `buy_bps`,
+Kỳ vọng: mỗi pool có thêm cột `vetted_at`, `symbol`, `candidate`, `buy_bps`,
 `sell_bps`, `honeypot`, `last_vet_sec_ago`. `candidate:true` nghĩa là pool
 đang thực sự được dùng để sim (đã vet VÀ vet nền chưa phát hiện vấn đề).
+
+`/api/pairs` còn có `pending_count`/`pending` (cụm `econ-truth-latency-vps`,
+0.a) — dòng CHƯA resolve xong (RPC lỗi/timeout, hoặc "no pool" tạm thời),
+mỗi dòng có `token`/`quote`/`attempts`/`last_error`/`last_attempt_sec_ago`.
+Dòng pending tự retry backoff 5s/15s/60s ở các lần `pairs_reload_sec` kế
+tiếp — KHÔNG rớt khỏi danh sách nếu trước đó ĐÃ resolve thành công (chỉ dòng
+mới/chưa từng resolve mới rơi vào đây). `pending` cao kéo dài + `last_error`
+lặp lại "not supported"/"-32000" → điền `BSC_HTTP_SIM` (xem mục 3) hoặc kiểm
+tra `getPair` cho đúng cặp token/quote đã khai trong `pairs.txt`.
 
 File `state/pairs_vetted.json` là bản chụp nhanh cùng dữ liệu (đọc nhanh
 không cần `jq`/API):

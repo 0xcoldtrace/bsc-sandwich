@@ -79,6 +79,24 @@ mkdir -p state logs
 rm -f state/halt.lock state/disarm.req state/reset.req
 echo "da xoa state/halt.lock (neu co)"
 
+# ---- cum `econ-truth-latency-vps` (muc 4, no nho) — rotate logs/bot.jsonl
+# khi vuot 200MB, ho tro --minutes dai (vd 1440 = 24h) ma khong day dia. Giu
+# TOI DA 5 ban cu (.1 .. .5), xoa ban cu nhat khi vuot. Rotate TRUOC khi bot
+# moi ghi dong nao — khong lam mat du lieu dang ghi giua chung.
+ROTATE_MAX_BYTES=$((200 * 1024 * 1024))
+if [ -f logs/bot.jsonl ]; then
+  CUR_SIZE=$(stat -c%s logs/bot.jsonl 2>/dev/null || stat -f%z logs/bot.jsonl 2>/dev/null || echo 0)
+  if [ "$CUR_SIZE" -ge "$ROTATE_MAX_BYTES" ]; then
+    echo "== logs/bot.jsonl >= 200MB ($CUR_SIZE bytes) - rotate truoc khi chay =="
+    [ -f logs/bot.jsonl.5 ] && rm -f logs/bot.jsonl.5
+    for i in 4 3 2 1; do
+      [ -f "logs/bot.jsonl.$i" ] && mv "logs/bot.jsonl.$i" "logs/bot.jsonl.$((i + 1))"
+    done
+    mv logs/bot.jsonl logs/bot.jsonl.1
+    touch logs/bot.jsonl
+  fi
+fi
+
 # ---- config TAM: CHI nguong ve 0 + doi port ----
 # Cum `strategy-lock-mode2` (Chu chot 2026-09-15): KHONG con ep
 # pair_scan_universal=true / scan_quote_usdt=true / sim_engine="evm" nua -

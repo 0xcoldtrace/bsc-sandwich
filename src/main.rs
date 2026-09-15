@@ -107,7 +107,17 @@ async fn main() -> anyhow::Result<()> {
             http_urls.push(v);
         }
     }
-    let http_pool = Arc::new(transport::RpcPool::new(transport::filter_read_urls(http_urls)));
+    let http_urls_filtered = transport::filter_read_urls(http_urls);
+    let http_pool = Arc::new(transport::RpcPool::new(http_urls_filtered.clone()));
+    // Cum `econ-truth-latency-vps` (0.d) - pool RPC RIENG cho revm/vet/
+    // validator (pairs_vet_task/gas_units_boot_task): mac dinh dung LAI danh
+    // sach BSC_HTTP filtered (khong URL private) - Chu co the tro rieng
+    // BSC_HTTP_SIM (vd node ho tro getStorageAt/state day du hon, tranh loi
+    // "-32000 not supported" quan sat that tu bloXroute tren mot so RPC
+    // public/private khong ho tro het state can cho revm fork).
+    let sim_urls_raw = transport::collect_rpc_urls_from_env("BSC_HTTP_SIM");
+    let sim_urls = if sim_urls_raw.is_empty() { http_urls_filtered } else { transport::filter_read_urls(sim_urls_raw) };
+    let sim_http_pool = Arc::new(transport::RpcPool::new(sim_urls));
     let initial_gas_units = (cfg.gas_units_front, cfg.gas_units_back);
 
     let app_state = Arc::new(AppStateInner {
@@ -133,6 +143,8 @@ async fn main() -> anyhow::Result<()> {
         gas_units: RwLock::new(initial_gas_units),
         reserve_cache: RwLock::new(transport::ReserveCache::new()),
         pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
+        sim_provider: RwLock::new(None),
+        seen_hashes: RwLock::new(transport::SeenHashSet::new()),
     });
 
     {
@@ -188,6 +200,7 @@ async fn main() -> anyhow::Result<()> {
     // - chua co provider (chua connect_rpc xong/dang failover) thi bo qua tick
     // nay, log skip, thu lai o tick sau (KHONG halt bot).
     let pair_reload_state = app_state.clone();
+    let pair_reload_http_pool = http_pool.clone();
     tokio::spawn(async move {
         let factory =
             Address::from_str(V2_FACTORY_ADDRESS).expect("V2_FACTORY_ADDRESS da pin phai la address hop le");
@@ -218,7 +231,8 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
             };
-            let resolver = RpcPairResolver { provider, factory };
+            let url_label = pair_reload_http_pool.current_url_label().await.unwrap_or_default();
+            let resolver = RpcPairResolver { provider, factory, url_label };
             // Cum `strategy-lock-mode2` - doc `pairs_require_vetted` THAT tu
             // config hien hanh (hot-reload duoc, khong hardcode) truoc moi
             // lan reload - gate vet nam trong PairBook::reload chinh no.
@@ -234,6 +248,25 @@ async fn main() -> anyhow::Result<()> {
                     require_vetted,
                 )
                 .await;
+            // Cum `econ-truth-latency-vps` (0.c) - neu bat ky dong pending nao
+            // vua loi vi "method khong ho tro" (-32000/not supported/method
+            // not found) tren URL HTTP hien tai - danh dau URL do, chuyen URL
+            // HTTP KE trong pool ngay (khong doi health-check phat hien),
+            // tranh ca 90+ dong pairs.txt lap lai cung 1 loi tren cung 1 URL
+            // hong o tick sau.
+            if did_reload {
+                let hit_unsupported = book
+                    .pending_entries()
+                    .iter()
+                    .any(|(_, _, _, err, _)| transport::is_unsupported_method_error(err));
+                if hit_unsupported {
+                    if let Some(new_provider) =
+                        pair_reload_http_pool.mark_current_unsupported(&pair_reload_state.logger, "http").await
+                    {
+                        *pair_reload_state.provider.write().await = Some(new_provider);
+                    }
+                }
+            }
             drop(book);
             // Cum B5 - bao hieu lan reload THAT DAU TIEN (co provider, thuc
             // su chay PairBook::reload) da xong - gas_units_boot_task cho tin
@@ -246,16 +279,20 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Cum `econ-truth-latency-vps` (0.d) - giu sim_http_pool song (provider
+    // RIENG cho revm/vet/validator, tach khoi duong nong).
+    tokio::spawn(sim_pool_health_check(app_state.clone(), sim_http_pool.clone(), Duration::from_secs(5)));
+
     // Cum `strategy-lock-mode2` - vet NEN dinh ky (revm that, KHONG chan
     // duong nong) cho moi entry `pairs.txt` da co `vetted` - xem
     // `pairs_vet_task` duoi day.
-    tokio::spawn(pairs_vet_task(app_state.clone()));
+    tokio::spawn(pairs_vet_task(app_state.clone(), sim_http_pool.clone()));
 
     // Cum `real-economics-mode2` (F-03) - do gas UNIT that 1 lan luc boot
     // bang revm tren 1 pair da vet trong pairs.txt (fallback config
     // gas_units_front/back neu do loi/khong co pair nao san sang) - xem
     // gas_units_boot_task duoi day.
-    tokio::spawn(gas_units_boot_task(app_state.clone()));
+    tokio::spawn(gas_units_boot_task(app_state.clone(), sim_http_pool.clone()));
 
     // Cum A6 - bo dem funnel gio nam trong `app_state.funnel`
     // (AppStateInner, src/web.rs) - moi ham spawn tx doc/ghi truc tiep qua
@@ -489,6 +526,12 @@ async fn subscribe_pending_txs(app_state: AppState, ws_urls: Vec<String>, http_p
                         // KHONG spawn handle_paper_tx (paper loop dung THAT,
                         // khong chi hien thi tren dashboard). halt_watch_task
                         // lo viec log chuyen trang thai/cap nhat bot_state.
+                    } else if !dedup_allows_processing(&app_state, raw.hash).await {
+                        // Cum `econ-truth-latency-vps` (muc 1) - tx nay DA
+                        // duoc xu ly qua nguon khac (vd truoc do qua WS, gio
+                        // fallback txpool lay lai cung hash con trong mempool)
+                        // - khong spawn lai, tranh dem trung funnel/log 2 lan
+                        // sim.result cho cung 1 victim.
                     } else {
                         log_tx_seen(&app_state.logger, "pending_ws", &raw);
                         tokio::spawn(handle_paper_tx(app_state.clone(), raw));
@@ -644,6 +687,16 @@ async fn poll_txpool_pending(app_state: AppState, http_pool: Arc<transport::RpcP
                 if app_state.state_files.is_halted() {
                     continue;
                 }
+                // Cum `econ-truth-latency-vps` (muc 1) - dedup CHUNG voi
+                // nguon WS: tx nay co the DA duoc xu ly qua WS truoc do (WS
+                // van song, hoac vua fallback xuong day) - `seen_set` CUC BO
+                // o tren chi chan trung giua CAC LAN POLL txpool voi nhau,
+                // KHONG biet gi ve WS - can lop thu 2 nay de dong khoang ho
+                // xuyen-nguon (nghi van gop phan lech funnel.simulated vs
+                // sim.result, BAOCAO39).
+                if !dedup_allows_processing(&app_state, raw.hash).await {
+                    continue;
+                }
                 log_tx_seen(&app_state.logger, "txpool", &raw);
                 tokio::spawn(handle_paper_tx(app_state.clone(), raw));
             }
@@ -693,6 +746,33 @@ async fn http_pool_health_check(app_state: AppState, http_pool: Arc<transport::R
                 *app_state.provider.write().await = None;
             }
         }
+    }
+}
+
+/// Cụm `econ-truth-latency-vps` (0.d) — health-check RIÊNG cho `sim_http_pool`
+/// (`BSC_HTTP_SIM`/fallback `BSC_HTTP`), giữ `app_state.sim_provider` sống —
+/// KHÔNG dùng chung `app_state.provider` (đường nóng) vì mục đích khác nhau
+/// (revm fork cần state đầy đủ, một số node public/riêng KHÔNG hỗ trợ đủ
+/// method cho việc đó, xem `pairs_vet_task`/`gas_units_boot_task`). Không đọc/
+/// ghi `app_state.last_block` (đã có `http_pool_health_check` lo việc đó).
+async fn sim_pool_health_check(app_state: AppState, sim_http_pool: Arc<transport::RpcPool>, interval: Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let current = sim_http_pool.current().await;
+        let alive = match &current {
+            Some(p) => p.get_block_number().await.is_ok(),
+            None => false,
+        };
+        if alive {
+            continue;
+        }
+        let reconnected = if current.is_some() {
+            sim_http_pool.advance_and_reconnect(&app_state.logger, "sim").await
+        } else {
+            sim_http_pool.connect(&app_state.logger, "sim").await
+        };
+        *app_state.sim_provider.write().await = reconnected;
     }
 }
 
@@ -869,14 +949,17 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
 /// (mảng đầy đủ, dùng cho Chủ/Grok đọc nhanh không cần đọc `logs/bot.jsonl`).
 /// Bỏ qua cả vòng nếu chưa có provider HTTP hoặc chưa có `last_block` (boot
 /// chưa xong) — thử lại ở vòng kế tiếp, không panic/không giả số block.
-async fn pairs_vet_task(app_state: AppState) {
+async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPool>) {
     loop {
         let (interval_sec, max_tax_bps) = {
             let cfg = app_state.config.read().await;
             (cfg.pairs_vet_interval_sec.max(1), cfg.max_roundtrip_tax_bps())
         };
 
-        let provider_opt = app_state.provider.read().await.clone();
+        // Cum `econ-truth-latency-vps` (0.d) - dung provider RIENG
+        // (sim_provider, tu BSC_HTTP_SIM/fallback BSC_HTTP) cho revm fork,
+        // KHONG dung chung provider duong nong.
+        let provider_opt = app_state.sim_provider.read().await.clone();
         let current_block = app_state.last_block.read().await.unwrap_or(0);
         if let (Some(provider), true) = (provider_opt, current_block > 0) {
             // Cum `hotpath-fix-then-decoder-ur` (A1) - tokens_to_vet gio tra
@@ -929,17 +1012,34 @@ async fn pairs_vet_task(app_state: AppState) {
                         }));
                     }
                     Err(e) => {
+                        let err_str = e.to_string();
                         app_state.logger.log(
                             "pair.vet_error",
                             serde_json::json!({
                                 "pair": format!("{pair_addr:#x}"),
                                 "token": format!("{token:#x}"),
-                                "error": e.to_string(),
+                                "error": err_str,
                             }),
                         );
+                        // Cum 0.c/0.d - loi "method khong ho tro" (quan sat
+                        // that: bloXroute "-32000 not supported" khi revm fork
+                        // can eth_getStorageAt/state day du) -> danh dau URL
+                        // sim hien tai, chuyen URL ke NGAY (khong cho het het
+                        // 90+ token cung loi tren cung 1 URL hong).
+                        if transport::is_unsupported_method_error(&err_str) {
+                            if let Some(new_provider) =
+                                sim_http_pool.mark_current_unsupported(&app_state.logger, "sim").await
+                            {
+                                *app_state.sim_provider.write().await = Some(new_provider);
+                            }
+                        }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                // Cum `econ-truth-latency-vps` (0.e) - 300ms/token (tang tu
+                // 200ms), giu dung "1 sim dong thoi, tuan tu" (vong for tren
+                // KHONG spawn song song, moi lan lap doi 1 lan `.await` het),
+                // giam ap luc RPC tren pool sim khi pairs.txt co hang tram dong.
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             if !results.is_empty() {
                 let _ = tokio::fs::create_dir_all("state").await;
@@ -963,7 +1063,7 @@ async fn pairs_vet_task(app_state: AppState) {
 /// sẵn sàng (poll mỗi 5s, tối đa `MAX_ATTEMPTS` lần) — đo lỗi (revert/RPC lỗi)
 /// thì thử lại; hết số lần thử vẫn giữ fallback config, log rõ, KHÔNG panic,
 /// KHÔNG chặn boot (task nền độc lập, `main()` không `.await` task này).
-async fn gas_units_boot_task(app_state: AppState) {
+async fn gas_units_boot_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPool>) {
     // Cum `hotpath-fix-then-decoder-ur` (B5, no BAOCAO38) - cho pair.reload
     // LAN DAU xong THAT SU (event-driven qua Notify, khong doan thoi luong co
     // dinh) truoc khi bat dau vong lap do gas - BAOCAO38 ghi nhan giveup som
@@ -974,7 +1074,9 @@ async fn gas_units_boot_task(app_state: AppState) {
     const MAX_ATTEMPTS: u32 = 12; // 12 * 5s = 60s THEM sau khi reload lan dau xong (vong lap goc)
     let probe_in = alloy::primitives::U256::from(50_000_000_000_000_000u128); // 0.05 BNB
     for attempt in 1..=MAX_ATTEMPTS {
-        let provider_opt = app_state.provider.read().await.clone();
+        // Cum 0.d - provider RIENG (sim_provider), khong dung chung duong
+        // nong (giong pairs_vet_task).
+        let provider_opt = app_state.sim_provider.read().await.clone();
         let current_block = app_state.last_block.read().await.unwrap_or(0);
         let target = app_state.pairbook.read().await.tokens_to_vet().into_iter().next();
         if let (Some(provider), true, Some((_pair_addr, token, _quote))) = (provider_opt, current_block > 0, target) {
@@ -995,10 +1097,16 @@ async fn gas_units_boot_task(app_state: AppState) {
                     return;
                 }
                 Err(e) => {
+                    let err_str = e.to_string();
                     app_state.logger.log(
                         "gas.units_measure_error",
-                        serde_json::json!({ "token": format!("{token:#x}"), "error": e.to_string(), "attempt": attempt }),
+                        serde_json::json!({ "token": format!("{token:#x}"), "error": err_str, "attempt": attempt }),
                     );
+                    if transport::is_unsupported_method_error(&err_str) {
+                        if let Some(new_provider) = sim_http_pool.mark_current_unsupported(&app_state.logger, "sim").await {
+                            *app_state.sim_provider.write().await = Some(new_provider);
+                        }
+                    }
                 }
             }
         }
@@ -1103,6 +1211,18 @@ fn passes_router_gate(to: Option<Address>, source: &str) -> bool {
     }
 }
 
+/// Cụm `econ-truth-latency-vps` (mục 1) — dedup DÙNG CHUNG giữa 3 nguồn tx
+/// (xem `transport::SeenHashSet`). Hash `B256::ZERO` (định dạng cũ
+/// `state/inject_tx.jsonl`, không có cột hash thật) KHÔNG bị dedup — mỗi
+/// dòng inject là 1 quyết định tường minh của Chủ/test, không phải tx thật
+/// trùng lặp ngẫu nhiên.
+async fn dedup_allows_processing(app_state: &AppState, hash: alloy::primitives::B256) -> bool {
+    if hash == alloy::primitives::B256::ZERO {
+        return true;
+    }
+    app_state.seen_hashes.write().await.insert_if_new(hash)
+}
+
 fn selector_hex_of(input: &[u8]) -> Option<String> {
     input.get(0..4).map(|s| format!("0x{}", s.iter().map(|b| format!("{b:02x}")).collect::<String>()))
 }
@@ -1131,6 +1251,7 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         gas_cost_wei: None,
         gas_price_gwei: None,
         seen_to_decision_ms: None,
+        amount_in_bnb_equiv: None,
     }
 }
 
@@ -1245,6 +1366,9 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // duong nong).
     meta.quote = Some("wbnb".to_string());
     meta.amount_in = Some(raw.value.to_string());
+    // Cum `econ-truth-latency-vps` (muc 1) - nhanh WBNB: amount_in DA la BNB,
+    // quy doi = chinh no (khong can reserve nao).
+    meta.amount_in_bnb_equiv = Some(raw.value.to_string());
 
     // Cum pair-mode - precheck CHI decode + xac dinh chieu (KHONG loc theo
     // victims.txt som nhu 5.1, vi pair-mode khong quan tam dia chi `from` -
@@ -1348,7 +1472,26 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                             current_block,
                             gas_cost_wei,
                         };
-                        pipeline::decide_and_build_paper_v2(&victims, &pairbook, &tax_cache, &cfg, &risk, &app_state.logger, &input)
+                        let (v2_outcome, v2_source) =
+                            pipeline::decide_and_build_paper_v2(&victims, &pairbook, &tax_cache, &cfg, &risk, &app_state.logger, &input);
+                        // Cum `econ-truth-latency-vps` (muc 4, no nho) - gate
+                        // nonce THUAN TU CACHE (khong them eth_call nao tren
+                        // duong nong, ap dung SAU khi co outcome/source that de
+                        // khong phai lap lai logic routing wallet/pair/none cua
+                        // decide_paper_v2): cache CO du lieu (vd tu
+                        // run_evm_decision neu tung chay, hoac tuong lai co
+                        // task nen dien) -> ap dung nonce_stale/nonce_future
+                        // that su, GHI DE outcome; cache MISS (thuc te hien tai
+                        // LUON miss voi sim_engine="v2" vi chua co nguon nao
+                        // dien no tren duong nong - ghi ro, khong bia hieu qua)
+                        // -> giu nguyen outcome goc, khong chan.
+                        let nonce_verdict =
+                            app_state.nonce_cache.read().await.cached(raw.from, current_block).map(|expected| transport::compare_nonce(raw.nonce, expected));
+                        match nonce_verdict {
+                            Some(transport::NonceCheck::Stale) => (PipelineOutcome::Skip(pipeline::PipelineSkip::NonceStale), v2_source),
+                            Some(transport::NonceCheck::Future) => (PipelineOutcome::Skip(pipeline::PipelineSkip::NonceFuture), v2_source),
+                            Some(transport::NonceCheck::Ok) | None => (v2_outcome, v2_source),
+                        }
                     }
                     }
                 }
@@ -1413,18 +1556,35 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                                 // pool nay da co san trong pairs.txt, xem dong
                                 // "USDT | vetted ... quote asset") - giam them
                                 // 1 eth_call getPair moi candidate USDT.
-                                let gas_cost_usdt_wei =
+                                let (gas_cost_usdt_wei, amount_in_bnb_equiv) =
                                     match resolve_reserves_cached(&app_state, provider, venues::usdt_addr(), venues::wbnb_addr(), &pairbook, current_block)
                                         .await
                                     {
-                                        Ok((_p, wbnb_usdt_reserves)) => pipeline::convert_gas_cost_bnb_to_usdt(
-                                            gas_cost_bnb_wei,
-                                            wbnb_usdt_reserves.reserve_wbnb,
-                                            wbnb_usdt_reserves.reserve_token,
-                                        ),
-                                        Err(_) => u128::MAX, // khong quy doi duoc -> coi gas vo cung dat, an toan
+                                        Ok((_p, wbnb_usdt_reserves)) => {
+                                            let gas_usdt = pipeline::convert_gas_cost_bnb_to_usdt(
+                                                gas_cost_bnb_wei,
+                                                wbnb_usdt_reserves.reserve_wbnb,
+                                                wbnb_usdt_reserves.reserve_token,
+                                            );
+                                            // Cum `econ-truth-latency-vps` (muc 1) - quy
+                                            // doi amount_in USDT (da decode o tren) sang
+                                            // BNB-equivalent CUNG 1 cap reserve vua lay,
+                                            // khong ton them eth_call nao.
+                                            let amount_bnb_equiv = meta.amount_in.as_deref().and_then(|s| s.parse::<u128>().ok()).map(
+                                                |amt_usdt| {
+                                                    pipeline::convert_usdt_to_bnb_wei(
+                                                        amt_usdt,
+                                                        wbnb_usdt_reserves.reserve_wbnb,
+                                                        wbnb_usdt_reserves.reserve_token,
+                                                    )
+                                                },
+                                            );
+                                            (gas_usdt, amount_bnb_equiv)
+                                        }
+                                        Err(_) => (u128::MAX, None), // khong quy doi duoc -> coi gas vo cung dat, an toan
                                     };
                                 meta.gas_cost_wei = Some(gas_cost_usdt_wei.to_string());
+                                meta.amount_in_bnb_equiv = amount_in_bnb_equiv.map(|v| v.to_string());
                                 meta.gas_price_gwei = Some(gas_price_wei as f64 / 1e9);
                                 let tax_cache = app_state.tax_cache.read().await;
                                 let (o, _tag) = pipeline::decide_paper_quote(
@@ -1847,6 +2007,8 @@ mod tests {
             gas_units: RwLock::new((160_000, 140_000)),
             reserve_cache: RwLock::new(transport::ReserveCache::new()),
         pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
+        sim_provider: RwLock::new(None),
+        seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         });
 
         let task_state = app_state.clone();

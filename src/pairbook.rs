@@ -86,6 +86,58 @@ pub struct PairEntry {
     /// vẫn khoá theo `pair_addr` (không đổi) — field này chỉ phục vụ
     /// `tokens_to_vet`/`known_pair` cần biết ĐÚNG quote để gọi RPC.
     pub quote: Address,
+    /// Cụm `econ-truth-latency-vps` (mục 1) — SYMBOL đọc từ comment
+    /// (`# SYMBOL | vetted ...`, field ĐẦU TIÊN trước dấu `|`), chỉ phục vụ
+    /// hiển thị (`GET /api/econ` `top_pools`, `GET /api/pairs`) — KHÔNG dùng
+    /// cho bất kỳ quyết định nào. `None` khi comment rỗng/không có field nào
+    /// trước `|` đầu tiên (không bịa symbol).
+    pub symbol: Option<String>,
+}
+
+/// Cụm `econ-truth-latency-vps` (mục 0.a) — trạng thái 1 dòng `pairs.txt`
+/// CHƯA resolve xong (RPC lỗi/timeout, hoặc "no pool" tạm thời) — giữ qua
+/// NHIỀU lần `reload()` với backoff tăng dần, KHÔNG rớt khỏi
+/// `PairBook`/candidate list nếu trước đó ĐÃ TỪNG resolve thành công (xem
+/// `LineState`/`reload`).
+#[derive(Debug, Clone)]
+pub struct PendingRetry {
+    pub attempts: u32,
+    pub last_attempt: Instant,
+    pub last_error: String,
+}
+
+/// Backoff 5s/15s/60s (CLAUDE.md lệnh mục 0.a) theo số lần lỗi LIÊN TIẾP đã
+/// có (`attempts`, 0 = chưa từng thử) — THUẦN, test được không cần `Instant`
+/// thật trôi qua.
+fn retry_backoff(attempts: u32) -> Duration {
+    match attempts {
+        0 => Duration::ZERO,
+        1 => Duration::from_secs(5),
+        2 => Duration::from_secs(15),
+        _ => Duration::from_secs(60),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum LineState {
+    Resolved(PairEntry),
+    Pending(PendingRetry),
+}
+
+/// Khoá 1 dòng `pairs.txt` xuyên suốt nhiều lần `reload()` — dòng "0xAddress"
+/// trần dùng `(addr, wbnb())` (quote ngầm định), dòng "token,quote" dùng
+/// chính `(token, quote)` đã khai báo. Đây là khoá DUY NHẤT quyết định "dòng
+/// này đã từng resolve/đang chờ retry" — KHÁC `token_quote_to_pair` (chỉ
+/// index cho entry ĐÃ resolve xong, phục vụ tra cứu nhanh ở hot path).
+type LineKey = (Address, Address);
+
+fn parse_symbol_from_comment(comment: &str) -> Option<String> {
+    let first = comment.split('|').next()?.trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
 }
 
 /// Cụm `strategy-lock-mode2` — tách field `vetted YYYY-MM-DD` khỏi comment
@@ -124,6 +176,13 @@ pub struct VetResult {
 
 #[derive(Debug, Default)]
 pub struct PairBook {
+    /// Cụm `econ-truth-latency-vps` (0.a) — trạng thái BỀN qua nhiều lần
+    /// `reload()`, khoá theo `LineKey` (xem doc-comment type đó): nguồn sự
+    /// thật DUY NHẤT quyết định dòng nào đã resolve/đang chờ. `pairs`/
+    /// `token_quote_to_pair` bên dưới được TÁI DỰNG từ đây mỗi lần `reload()`
+    /// (chỉ chứa các entry `Resolved`), giữ để không phải sửa mọi call site
+    /// đang dùng 2 map đó.
+    line_state: HashMap<LineKey, LineState>,
     pairs: HashMap<Address, PairEntry>,
     /// Cụm `strategy-lock-mode2` — kết quả vet nền gần nhất/thời điểm đo,
     /// khoá theo `pair_addr` (cùng khoá với `pairs`).
@@ -184,6 +243,13 @@ pub trait PairResolver: Clone + Send + Sync + 'static {
     /// `quote` tường minh (dòng "0xAddress" trần luôn dùng `wbnb()`, xem
     /// `parse_pairs_line`/`reload`).
     fn get_pair(&self, token: Address, quote: Address) -> impl std::future::Future<Output = Result<Address, String>> + Send;
+
+    /// Cụm `econ-truth-latency-vps` (0.b) — nhãn URL (đã redact) đang dùng để
+    /// resolve, đính kèm vào log `pair.resolve_fail`. Mặc định rỗng (test
+    /// resolver không cần override).
+    fn url_label(&self) -> String {
+        String::new()
+    }
 }
 
 /// Resolver PRODUCTION — bọc `DynProvider` (owned, `Clone` rẻ vì bên trong là
@@ -194,6 +260,11 @@ pub trait PairResolver: Clone + Send + Sync + 'static {
 pub struct RpcPairResolver {
     pub provider: DynProvider,
     pub factory: Address,
+    /// Cụm `econ-truth-latency-vps` (0.b) — nhãn URL (đã redact, xem
+    /// `transport::RpcPool::current_url_label`) ĐANG dùng cho `provider` này
+    /// — chỉ phục vụ đính kèm log `pair.resolve_fail`, không ảnh hưởng logic
+    /// resolve. Rỗng khi không xác định được (vd test dùng resolver giả).
+    pub url_label: String,
 }
 
 impl PairResolver for RpcPairResolver {
@@ -203,6 +274,10 @@ impl PairResolver for RpcPairResolver {
             Ok(Err(_)) => Ok(Address::ZERO),
             Err(e) => Err(e),
         }
+    }
+
+    fn url_label(&self) -> String {
+        self.url_label.clone()
     }
 }
 
@@ -318,6 +393,26 @@ impl PairBook {
         self.last_reload.map(|t| t.elapsed().as_secs())
     }
 
+    /// Cụm `econ-truth-latency-vps` (0.a) — số dòng ĐANG chờ retry (resolve
+    /// chưa xong, đang chờ backoff hoặc chờ lượt resolve tiếp theo) — KHÁC
+    /// `error_lines` (parse lỗi thật, không retry).
+    pub fn pending_count(&self) -> u64 {
+        self.line_state.values().filter(|s| matches!(s, LineState::Pending(_))).count() as u64
+    }
+
+    /// Chi tiết từng dòng đang pending: `(token_hoac_addr, quote, attempts,
+    /// last_error, last_attempt_sec_ago)` — dùng cho `GET /api/pairs`
+    /// ("4 dòng đang lỗi: ghi token + lý do", CLAUDE.md lệnh mục 0 DoD).
+    pub fn pending_entries(&self) -> Vec<(Address, Address, u32, String, u64)> {
+        self.line_state
+            .iter()
+            .filter_map(|(key, state)| match state {
+                LineState::Pending(p) => Some((key.0, key.1, p.attempts, p.last_error.clone(), p.last_attempt.elapsed().as_secs())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Nạp lại toàn bộ `pairs.txt` — resolve tối đa `MAX_CONCURRENT_RESOLVE`
     /// dòng đồng thời qua `tokio::spawn` (resolver `Clone + Send + Sync +
     /// 'static` nên mỗi task giữ 1 bản clone riêng, không tranh chấp
@@ -341,7 +436,12 @@ impl PairBook {
         require_vetted: bool,
     ) {
         let started = Instant::now();
-        let mut parsed_lines: Vec<(String, ParsedLine, Option<NaiveDate>)> = Vec::new();
+        // Cum `econ-truth-latency-vps` (0.a) - khac ban cu: gio giu THEM
+        // LineKey de doi chieu voi `self.line_state` (trang thai BEN qua
+        // nhieu lan reload) - dong nao DA resolve xong tu truoc thi KHONG
+        // resolve lai (0 eth_call), dong dang Pending thi cho backoff, chi
+        // dong MOI/den han retry moi thuc su goi RPC.
+        let mut parsed_lines: Vec<(LineKey, String, ParsedLine, Option<NaiveDate>, Option<String>)> = Vec::new();
         let mut errors = 0u64;
         let mut unvetted = 0u64;
         for raw_line in content.lines() {
@@ -361,13 +461,18 @@ impl PairBook {
             // `vetted YYYY-MM-DD` rieng, tach doc lap voi phan dia chi.
             let comment = raw_line.splitn(2, '#').nth(1).unwrap_or("");
             let vetted_at = parse_vetted_from_comment(comment);
+            let symbol = parse_symbol_from_comment(comment);
             match parse_pairs_line(line) {
                 Ok(p) => {
                     if require_vetted && vetted_at.is_none() {
                         unvetted += 1;
                         continue;
                     }
-                    parsed_lines.push((line.to_string(), p, vetted_at));
+                    let key: LineKey = match p {
+                        ParsedLine::TokenQuote(t, q) => (t, q),
+                        ParsedLine::Direct(a) => (a, wbnb()),
+                    };
+                    parsed_lines.push((key, line.to_string(), p, vetted_at, symbol));
                 }
                 Err(e) => {
                     errors += 1;
@@ -379,69 +484,138 @@ impl PairBook {
             logger.log("pair.unvetted", serde_json::json!({ "count": unvetted, "require_vetted": require_vetted }));
         }
 
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RESOLVE));
-        let mut handles = Vec::new();
-        for (line, parsed, vetted_at) in parsed_lines {
-            let sem = semaphore.clone();
-            let resolver = resolver.clone();
-            handles.push(tokio::spawn(async move {
-                let _permit = sem.acquire_owned().await.ok()?;
-                let resolved = match parsed {
-                    ParsedLine::TokenQuote(token, quote) => {
-                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(token, quote)).await {
-                            Ok(Ok(pair)) if pair != Address::ZERO => Some((pair, ResolvedFrom::Token, quote)),
-                            _ => None,
-                        }
-                    }
-                    ParsedLine::Direct(addr) => {
-                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(addr, wbnb())).await {
-                            Ok(Ok(pair)) if pair != Address::ZERO => Some((pair, ResolvedFrom::Token, wbnb())),
-                            Ok(Ok(_zero)) => Some((addr, ResolvedFrom::Direct, wbnb())),
-                            _ => None,
-                        }
-                    }
-                };
-                resolved.map(|(pair_addr, resolved_from, quote)| PairEntry {
-                    pair_addr,
-                    source_line: line,
-                    resolved_from,
-                    vetted_at,
-                    quote,
-                })
-            }));
-        }
+        let mut new_line_state: HashMap<LineKey, LineState> = HashMap::new();
+        let mut to_resolve: Vec<(LineKey, String, ParsedLine, Option<NaiveDate>, Option<String>, u32)> = Vec::new();
 
-        let mut new_map = HashMap::new();
-        let mut new_token_quote_index = HashMap::new();
-        for h in handles {
-            match h.await {
-                Ok(Some(entry)) => {
-                    if entry.resolved_from == ResolvedFrom::Token {
-                        let token_str = entry.source_line.split(',').next().unwrap_or("").trim();
-                        if let Ok(token) = Address::from_str(token_str) {
-                            new_token_quote_index.insert((token, entry.quote), entry.pair_addr);
-                        }
+        for (key, line, parsed, vetted_at, symbol) in parsed_lines {
+            match self.line_state.get(&key) {
+                Some(LineState::Resolved(old_entry)) => {
+                    // Da resolve tu truoc - GIU pair_addr/resolved_from/quote
+                    // CU, chi cap nhat phan doc tu file MOI (vetted_at/symbol/
+                    // source_line co the doi) - KHONG goi RPC lai.
+                    let mut updated = old_entry.clone();
+                    updated.source_line = line;
+                    updated.vetted_at = vetted_at;
+                    updated.symbol = symbol;
+                    new_line_state.insert(key, LineState::Resolved(updated));
+                }
+                Some(LineState::Pending(p)) => {
+                    if now.saturating_duration_since(p.last_attempt) >= retry_backoff(p.attempts) {
+                        to_resolve.push((key, line, parsed, vetted_at, symbol, p.attempts));
+                    } else {
+                        new_line_state.insert(key, LineState::Pending(p.clone()));
                     }
-                    new_map.insert(entry.pair_addr, entry);
                 }
-                Ok(None) => {
-                    errors += 1;
-                    logger.log("pair.resolve_fail", serde_json::json!({}));
-                }
-                Err(_) => {
-                    errors += 1;
+                None => {
+                    to_resolve.push((key, line, parsed, vetted_at, symbol, 0));
                 }
             }
         }
 
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_RESOLVE));
+        let mut handles = Vec::new();
+        for (key, line, parsed, vetted_at, symbol, prior_attempts) in to_resolve {
+            let sem = semaphore.clone();
+            let resolver = resolver.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await.ok();
+                let url_label = resolver.url_label();
+                // Cum 0.a - phan biet RO 3 tinh huong (truoc day gop chung
+                // thanh 1 `None` roi mat het thong tin):
+                // (1) resolve THANH CONG (Ok(pair_addr,...))
+                // (2) "khong co pool" that (Factory tra 0x0 cho dong
+                //     token,quote tuong minh) - VAN cho retry (co the do
+                //     factory chua index kip/RPC tra thieu, khong coi la loi
+                //     vinh vien) - KHAC ban cu "Direct" fallback (dong tran
+                //     tu resolve ra 0x0 la THANH CONG, tu no la pair).
+                // (3) loi RPC that (timeout/transport) - retry.
+                let outcome: Result<(Address, ResolvedFrom, Address), String> = match parsed {
+                    ParsedLine::TokenQuote(token, quote) => {
+                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(token, quote)).await {
+                            Ok(Ok(pair)) if pair != Address::ZERO => Ok((pair, ResolvedFrom::Token, quote)),
+                            Ok(Ok(_zero)) => Err("factory tra 0x0 (chua co pool cho token,quote nay)".to_string()),
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(format!("timeout sau {}s", RESOLVE_TIMEOUT.as_secs())),
+                        }
+                    }
+                    ParsedLine::Direct(addr) => {
+                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(addr, wbnb())).await {
+                            Ok(Ok(pair)) if pair != Address::ZERO => Ok((pair, ResolvedFrom::Token, wbnb())),
+                            Ok(Ok(_zero)) => Ok((addr, ResolvedFrom::Direct, wbnb())),
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(format!("timeout sau {}s", RESOLVE_TIMEOUT.as_secs())),
+                        }
+                    }
+                };
+                (key, line, vetted_at, symbol, prior_attempts, outcome, url_label)
+            }));
+        }
+
+        for h in handles {
+            match h.await {
+                Ok((key, line, vetted_at, symbol, prior_attempts, outcome, url_label)) => match outcome {
+                    Ok((pair_addr, resolved_from, quote)) => {
+                        new_line_state.insert(
+                            key,
+                            LineState::Resolved(PairEntry { pair_addr, source_line: line, resolved_from, vetted_at, quote, symbol }),
+                        );
+                    }
+                    Err(err) => {
+                        // Cum 0.b - log day du token/quote/error/url_label (truoc
+                        // day log rong `{}`, mat het thong tin de doi chieu).
+                        logger.log(
+                            "pair.resolve_fail",
+                            serde_json::json!({
+                                "token": format!("{:#x}", key.0),
+                                "quote": format!("{:#x}", key.1),
+                                "error": err,
+                                "url_label": url_label,
+                                "attempt": prior_attempts + 1,
+                            }),
+                        );
+                        new_line_state
+                            .insert(key, LineState::Pending(PendingRetry { attempts: prior_attempts + 1, last_attempt: now, last_error: err }));
+                    }
+                },
+                Err(e) => {
+                    // Task panic that (bug thuc su, khong phai loi RPC) -
+                    // khong co key de giu pending, dem vao error_lines that.
+                    errors += 1;
+                    logger.log("pair.resolve_task_panic", serde_json::json!({ "error": e.to_string() }));
+                }
+            }
+        }
+
+        let mut new_map = HashMap::new();
+        let mut new_token_quote_index = HashMap::new();
+        let mut pending_count = 0u64;
+        for (key, state) in &new_line_state {
+            match state {
+                LineState::Resolved(entry) => {
+                    if entry.resolved_from == ResolvedFrom::Token {
+                        new_token_quote_index.insert(*key, entry.pair_addr);
+                    }
+                    new_map.insert(entry.pair_addr, entry.clone());
+                }
+                LineState::Pending(_) => pending_count += 1,
+            }
+        }
+
         let count = new_map.len();
+        self.line_state = new_line_state;
         self.pairs = new_map;
         self.token_quote_to_pair = new_token_quote_index;
         self.error_lines = errors;
         self.last_reload = Some(now);
         logger.log(
             "pair.reload",
-            serde_json::json!({ "count": count, "error_lines": errors, "unvetted": unvetted, "elapsed_ms": started.elapsed().as_millis() as u64 }),
+            serde_json::json!({
+                "count": count,
+                "error_lines": errors,
+                "pending": pending_count,
+                "unvetted": unvetted,
+                "elapsed_ms": started.elapsed().as_millis() as u64,
+            }),
         );
     }
 
@@ -485,7 +659,7 @@ impl PairBook {
     pub fn insert_test_entry(&mut self, pair_addr: Address, source_line: &str, resolved_from: ResolvedFrom) {
         self.pairs.insert(
             pair_addr,
-            PairEntry { pair_addr, source_line: source_line.to_string(), resolved_from, vetted_at: None, quote: wbnb() },
+            PairEntry { pair_addr, source_line: source_line.to_string(), resolved_from, vetted_at: None, quote: wbnb(), symbol: None },
         );
         self.last_reload = Some(Instant::now());
     }
@@ -504,6 +678,7 @@ impl PairBook {
                 resolved_from: ResolvedFrom::Token,
                 vetted_at: NaiveDate::from_ymd_opt(2026, 9, 16),
                 quote,
+                symbol: None,
             },
         );
         self.last_reload = Some(Instant::now());
@@ -540,6 +715,22 @@ mod tests {
                 return Err("mock rpc loi".to_string());
             }
             Ok(self.map.get(&token).copied().unwrap_or(Address::ZERO))
+        }
+    }
+
+    /// Cụm `econ-truth-latency-vps` (0.a) — bọc `MockResolver`, đếm số lần
+    /// `get_pair` THẬT được gọi — chứng minh dòng đã resolve xong không bị
+    /// gọi RPC lại ở các lần `reload()` sau.
+    #[derive(Clone)]
+    struct CountingResolver {
+        inner: MockResolver,
+        calls: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl PairResolver for CountingResolver {
+        async fn get_pair(&self, token: Address, quote: Address) -> Result<Address, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.get_pair(token, quote).await
         }
     }
 
@@ -678,13 +869,88 @@ mod tests {
 
     #[tokio::test]
     async fn pairbook_resolve_rpc_error_is_skipped_not_crash() {
+        // Cum `econ-truth-latency-vps` (0.a) - THAY DOI HANH VI co chu dich:
+        // loi RPC (timeout/transport) khi resolve KHONG con tinh la
+        // `error_lines` (loi vinh vien) nua - gio la `pending` (cho retry
+        // backoff 5s/15s/60s), khong crash, khong bao gio bi mat khoi
+        // PairBook truoc khi tung resolve thanh cong (khac ban cu coi day la
+        // 1 "error" giong loi parse dia chi that).
         let (_dir, logger) = test_logger();
         let token = addr("0x2222222222222222222222222222222222222222");
         let resolver = MockResolver { map: HashMap::new(), err_for: vec![token] };
         let mut book = PairBook::new();
         book.reload(&format!("{token:#x}\n"), &resolver, &logger, Instant::now(), false).await;
         assert_eq!(book.len(), 0);
-        assert_eq!(book.error_lines, 1);
+        assert_eq!(book.error_lines, 0, "loi RPC khong con tinh vao error_lines (chi loi parse that moi tinh)");
+        assert_eq!(book.pending_count(), 1, "dong loi RPC phai roi vao pending, cho retry");
+        let pending = book.pending_entries();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, token);
+        assert!(pending[0].3.contains("mock rpc loi"), "last_error phai giu nguyen van thong bao loi that");
+
+        let tail = logger.tail(10);
+        let row = tail.iter().find(|l| l["event"] == "pair.resolve_fail").expect("phai co dong pair.resolve_fail");
+        assert_eq!(row["token"], format!("{token:#x}"));
+        assert!(row["error"].as_str().unwrap_or("").contains("mock rpc loi"));
+    }
+
+    /// ĐẠT CẦN DÁN (0.a) — dòng ĐÃ resolve thành công ở lần reload trước
+    /// KHÔNG bị resolve lại (0 lần gọi `get_pair` thêm) ở các lần reload sau,
+    /// dù resolver có đổi map/lỗi — chứng minh cache bền qua nhiều lần
+    /// reload, đúng yêu cầu "chỉ resolve dòng MỚI/đổi".
+    #[tokio::test]
+    async fn reload_does_not_reresolve_already_resolved_lines() {
+        let (_dir, logger) = test_logger();
+        let token = addr("0x00000000000000000000000000000000cafe1234");
+        let pair = addr("0x00000000000000000000000000000000cafeaaaa");
+        let mut map = HashMap::new();
+        map.insert(token, pair);
+        let counting = CountingResolver { inner: MockResolver { map, err_for: vec![] }, calls: Arc::new(std::sync::atomic::AtomicU64::new(0)) };
+        let mut book = PairBook::new();
+        let content = format!("{token:#x}\n");
+        book.reload(&content, &counting, &logger, Instant::now(), false).await;
+        assert_eq!(book.len(), 1);
+        assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Lan reload SAU, cung content - resolver gio se LOI cho MOI token
+        // (mo phong RPC chet) nhung dong nay DA resolve tu truoc nen KHONG
+        // duoc goi lai - van con nguyen trong book, KHONG rot xuong pending.
+        let failing = CountingResolver {
+            inner: MockResolver { map: HashMap::new(), err_for: vec![token] },
+            calls: counting.calls.clone(),
+        };
+        book.reload(&content, &failing, &logger, Instant::now() + Duration::from_secs(1), false).await;
+        assert_eq!(book.len(), 1, "dong da resolve khong duoc resolve lai, khong bi mat");
+        assert!(book.contains(&pair));
+        assert_eq!(book.pending_count(), 0);
+        assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "khong co eth_call THEM nao cho dong da resolve xong");
+    }
+
+    /// Backoff: dòng pending mới thất bại lần 1 (attempts=1) KHÔNG được retry
+    /// ngay ở lần reload kế tiếp (chưa đủ 5s) — retry đúng sau khi đủ thời
+    /// gian backoff.
+    #[tokio::test]
+    async fn pending_line_respects_backoff_before_retrying() {
+        let (_dir, logger) = test_logger();
+        let token = addr("0x00000000000000000000000000000000cafe999a");
+        let counting =
+            CountingResolver { inner: MockResolver { map: HashMap::new(), err_for: vec![token] }, calls: Arc::new(std::sync::atomic::AtomicU64::new(0)) };
+        let mut book = PairBook::new();
+        let content = format!("{token:#x}\n");
+        let t0 = Instant::now();
+        book.reload(&content, &counting, &logger, t0, false).await;
+        assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(book.pending_entries()[0].2, 1, "attempts phai la 1 sau lan loi dau tien");
+
+        // Reload lai chi 2s sau (chua du backoff 5s cho attempts=1) - KHONG
+        // duoc goi RPC them.
+        book.reload(&content, &counting, &logger, t0 + Duration::from_secs(2), false).await;
+        assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "chua du 5s backoff, khong duoc retry");
+
+        // Reload lai 6s sau lan dau (du 5s backoff) - PHAI goi RPC lai.
+        book.reload(&content, &counting, &logger, t0 + Duration::from_secs(6), false).await;
+        assert_eq!(counting.calls.load(std::sync::atomic::Ordering::SeqCst), 2, "du 5s backoff, phai retry");
+        assert_eq!(book.pending_entries()[0].2, 2, "attempts tang len 2 sau lan retry that bai thu 2");
     }
 
     /// ĐẠT CẦN DÁN (cụm A5, fix bug parse) — định dạng file THẬT
@@ -757,6 +1023,17 @@ mod tests {
     fn parse_vetted_from_comment_valid_date() {
         let d = parse_vetted_from_comment(" CAKE | vetted 2026-09-15 | tax 0/0 | owner renounced | note ");
         assert_eq!(d, Some(NaiveDate::from_ymd_opt(2026, 9, 15).unwrap()));
+    }
+
+    #[test]
+    fn parse_symbol_from_comment_reads_first_field() {
+        assert_eq!(
+            parse_symbol_from_comment(" CAKE | vetted 2026-09-15 | tax 0/0 | owner renounced | note "),
+            Some("CAKE".to_string())
+        );
+        assert_eq!(parse_symbol_from_comment(""), None);
+        assert_eq!(parse_symbol_from_comment("   "), None);
+        assert_eq!(parse_symbol_from_comment("BORT reserve_wbnb~=100 BNB"), Some("BORT reserve_wbnb~=100 BNB".to_string()));
     }
 
     #[test]

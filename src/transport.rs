@@ -176,10 +176,27 @@ pub fn filter_read_urls(urls: Vec<String>) -> Vec<String> {
     urls.into_iter().filter(|u| !is_private_send_url(u)).collect()
 }
 
+/// Cụm `econ-truth-latency-vps` (mục 0.c) — nhận diện lỗi JSON-RPC dạng "node
+/// KHÔNG HỖ TRỢ method này" (`-32000`/`-32601` "method not found", hoặc chuỗi
+/// "not supported" — quan sát thật từ bloXroute khi gọi các method cần state
+/// đầy đủ cho revm fork, xem `pairs_vet_task`), KHÁC lỗi nghiệp vụ thật (vd
+/// "execution reverted", timeout mạng). Dùng để quyết định "đánh dấu URL này
+/// không dùng được cho method đó, chuyển URL kế" thay vì tính là lỗi kinh tế/
+/// resolve_fail thông thường.
+pub fn is_unsupported_method_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("-32000") || lower.contains("-32601") || lower.contains("not supported") || lower.contains("method not found")
+}
+
 #[derive(Debug, Default)]
 struct RpcPoolState {
     idx: usize,
     provider: Option<DynProvider>,
+    /// Cụm `econ-truth-latency-vps` (0.c) — chỉ số URL (trong `self.urls`) đã
+    /// từng trả lỗi "method không hỗ trợ" cho pool này — `connect()` bỏ qua
+    /// các URL này TRỪ KHI toàn bộ danh sách đều bị đánh dấu (tránh khoá chết
+    /// hoàn toàn khi mọi URL đều từng lỗi 1 method nào đó không liên quan).
+    unsupported: std::collections::HashSet<usize>,
 }
 
 /// Cụm `5.3` — pool nhiều URL HTTP, failover round-robin khi 1 node chết/sai
@@ -211,9 +228,19 @@ impl RpcPool {
         if self.urls.is_empty() {
             return None;
         }
-        let start_idx = self.state.read().await.idx;
+        let (start_idx, unsupported) = {
+            let st = self.state.read().await;
+            (st.idx, st.unsupported.clone())
+        };
+        // Cum 0.c - bo qua URL da danh dau "method khong ho tro" TRU KHI ca
+        // danh sach deu bi danh dau (khi do bo qua het se khong con URL nao
+        // de thu - tha ra thu lai tat ca thay vi khoa chet vinh vien).
+        let skip_unsupported = unsupported.len() < self.urls.len();
         for step in 0..self.urls.len() {
             let idx = (start_idx + step) % self.urls.len();
+            if skip_unsupported && unsupported.contains(&idx) {
+                continue;
+            }
             let url = &self.urls[idx];
             let redacted = redact_rpc_url(url);
             match connect_and_verify(url).await {
@@ -257,6 +284,38 @@ impl RpcPool {
             st.provider = None;
         }
         self.connect(logger, transport_label).await
+    }
+
+    /// Cụm `econ-truth-latency-vps` (0.c) — URL HIỆN TẠI vừa trả lỗi "method
+    /// không hỗ trợ" (`transport::is_unsupported_method_error`) cho 1 method
+    /// cụ thể (vd `eth_getStorageAt` cần cho revm fork trên node bloXroute) —
+    /// đánh dấu KHÔNG dùng URL này nữa cho pool này, log `rpc.method_unsupported`,
+    /// rồi chuyển sang URL kế (giống `advance_and_reconnect`, nhưng nhớ lại
+    /// lâu dài thay vì chỉ đổi tạm 1 lần).
+    pub async fn mark_current_unsupported(&self, logger: &BotLogger, transport_label: &str) -> Option<DynProvider> {
+        if self.urls.is_empty() {
+            return None;
+        }
+        let marked_idx = {
+            let mut st = self.state.write().await;
+            let current_idx = st.idx;
+            st.unsupported.insert(current_idx);
+            st.provider = None;
+            st.idx = (current_idx + 1) % self.urls.len();
+            current_idx
+        };
+        logger.log(
+            "rpc.method_unsupported",
+            serde_json::json!({ "transport": transport_label, "pool_index": marked_idx, "pool_size": self.urls.len() }),
+        );
+        self.connect(logger, transport_label).await
+    }
+
+    /// Nhãn (redacted) của URL hiện đang connect — dùng để đính kèm log
+    /// `pair.resolve_fail` (`url_label`) mà KHÔNG lộ URL thật/token.
+    pub async fn current_url_label(&self) -> Option<String> {
+        let st = self.state.read().await;
+        self.urls.get(st.idx).map(|u| redact_rpc_url(u))
     }
 }
 
@@ -439,6 +498,48 @@ impl NonceCache {
 
     pub fn insert(&mut self, from: Address, block: u64, nonce: u64) {
         self.entries.insert((from, block), nonce);
+    }
+}
+
+/// Cụm `econ-truth-latency-vps` (mục 1) — dedup hash tx pending DÙNG CHUNG
+/// giữa CẢ 3 nguồn tx (`subscribe_pending_txs` WS, `poll_txpool_pending`,
+/// `watch_inject_file`) — trước cụm này, `poll_txpool_pending` có `seen_set`
+/// RIÊNG của chính nó (khởi tạo RỖNG khi hàm bắt đầu), nên nếu WS subscription
+/// rớt giữa chừng rồi rơi xuống fallback `poll_txpool_pending` (đúng thiết kế
+/// `5.2`), 1 tx VỪA được xử lý qua WS (đã tăng `funnel.simulated` +
+/// `log_outcome_v2`) có thể vẫn còn NẰM TRONG mempool và bị `txpool_content`
+/// lấy lại, xử lý (và tăng funnel) LẦN NỮA — nghi vấn góp phần vào lệch
+/// `funnel.simulated` vs số dòng `sim.result` thật quan sát ở BAOCAO39 (27 vs
+/// 14, xem `docs/TASKS.md`). Cùng khuôn cap+xoá-theo-tuổi như
+/// `poll_txpool_pending::seen_set` cũ.
+const SEEN_HASH_CAP: usize = 50_000;
+
+#[derive(Debug, Default)]
+pub struct SeenHashSet {
+    set: std::collections::HashSet<B256>,
+    order: std::collections::VecDeque<B256>,
+}
+
+impl SeenHashSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `true` nếu hash CHƯA từng thấy (và ghi nhận NGAY — gọi 1 lần duy nhất
+    /// cho quyết định "có xử lý tx này không", không tách `contains`+`insert`
+    /// riêng để tránh race giữa 2 bước đó).
+    pub fn insert_if_new(&mut self, hash: B256) -> bool {
+        if self.set.contains(&hash) {
+            return false;
+        }
+        self.set.insert(hash);
+        self.order.push_back(hash);
+        if self.order.len() > SEEN_HASH_CAP {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            }
+        }
+        true
     }
 }
 
@@ -1174,5 +1275,76 @@ mod tests {
         // nhung khong assert cung 0 (khong bia bat bien on-chain vinh vien
         // chua tung tu verify se khong bao gio doi) - chi assert goi RPC
         // thanh cong va tra ve so hop le.
+    }
+
+    // ===== Cụm `econ-truth-latency-vps` (0.c) — is_unsupported_method_error / RpcPool.mark_current_unsupported =====
+
+    // ===== Cụm `econ-truth-latency-vps` (mục 1) — SeenHashSet =====
+
+    #[test]
+    fn seen_hash_set_insert_if_new_true_once_false_after() {
+        let mut set = SeenHashSet::new();
+        let h = B256::from([1u8; 32]);
+        assert!(set.insert_if_new(h), "lan dau thay hash nay phai tra true");
+        assert!(!set.insert_if_new(h), "lan 2 tro di phai tra false, khong xu ly lai");
+        let h2 = B256::from([2u8; 32]);
+        assert!(set.insert_if_new(h2), "hash khac van phai tra true doc lap");
+    }
+
+    #[test]
+    fn is_unsupported_method_error_detects_known_shapes() {
+        assert!(is_unsupported_method_error("-32000: method not supported"));
+        assert!(is_unsupported_method_error("JsonRpc error -32601 method not found"));
+        assert!(is_unsupported_method_error("this Method is NOT SUPPORTED by this node"));
+        assert!(!is_unsupported_method_error("execution reverted: TRANSFER_FROM_FAILED"));
+        assert!(!is_unsupported_method_error("timeout 10s"));
+    }
+
+    /// ĐẠT CẦN DÁN — URL hiện tại lỗi "method không hỗ trợ" -> đánh dấu
+    /// KHÔNG dùng lại, `connect()` sau đó luôn bỏ qua URL đó (không chỉ 1 lần
+    /// như `advance_and_reconnect`, mà nhớ mãi qua nhiều lần connect lại).
+    #[tokio::test]
+    async fn mark_current_unsupported_is_remembered_across_reconnects() {
+        let (_dir, logger) = test_logger();
+        let unsupported_url = mock_rpc_server("0x38").await;
+        let good_url = mock_rpc_server("0x38").await;
+        let pool = RpcPool::new(vec![unsupported_url.clone(), good_url.clone()]);
+
+        // Connect lan dau -> chon URL 1 (idx 0, dau danh sach).
+        let p0 = pool.connect(&logger, "sim").await;
+        assert!(p0.is_some());
+
+        // URL 0 vua tra loi "method khong ho tro" -> danh dau, chuyen URL ke.
+        let p1 = pool.mark_current_unsupported(&logger, "sim").await;
+        assert!(p1.is_some(), "phai chuyen sang URL 2 thanh cong");
+        let tail = logger.tail(10);
+        assert!(tail.iter().any(|l| l["event"] == "rpc.method_unsupported" && l["pool_index"] == 0));
+
+        // Goi lai connect() (vd health-check dinh ky sau nay) tu dau danh
+        // sach van phai BO QUA URL 0 (da nho, khong quay lai) - chon URL 1.
+        let p2 = pool.connect(&logger, "sim").await;
+        assert!(p2.is_some());
+        assert_eq!(pool.current_url_label().await, Some(redact_rpc_url(&good_url)));
+    }
+
+    /// Nếu TẤT CẢ URL trong pool đều bị đánh dấu unsupported (edge case hiếm)
+    /// -> `connect()` KHÔNG khoá chết, thử lại toàn bộ danh sách như bình
+    /// thường (thà thử lại còn hơn không bao giờ kết nối được nữa).
+    #[tokio::test]
+    async fn connect_falls_back_to_all_urls_when_every_url_marked_unsupported() {
+        let (_dir, logger) = test_logger();
+        let url = mock_rpc_server("0x38").await;
+        let pool = RpcPool::new(vec![url.clone()]);
+        assert!(pool.connect(&logger, "sim").await.is_some());
+        // Chi 1 URL duy nhat, danh dau no unsupported -> unsupported.len() ==
+        // urls.len() -> phai boi qua co che "skip", van thu lai duoc.
+        let after_mark = pool.mark_current_unsupported(&logger, "sim").await;
+        assert!(after_mark.is_some(), "chi 1 URL duy nhat, van phai connect lai duoc du da danh dau unsupported");
+    }
+
+    #[tokio::test]
+    async fn current_url_label_none_before_any_connect() {
+        let pool = RpcPool::new(vec!["http://127.0.0.1:1/".to_string()]);
+        assert_eq!(pool.current_url_label().await, Some("http://127.0.0.1:1/***".to_string()));
     }
 }

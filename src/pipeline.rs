@@ -953,6 +953,27 @@ pub fn convert_gas_cost_bnb_to_usdt(gas_cost_bnb_wei: u128, reserve_wbnb: U256, 
     }
 }
 
+/// Cụm `econ-truth-latency-vps` (mục 1) — chiều NGƯỢC lại
+/// `convert_gas_cost_bnb_to_usdt`: quy đổi 1 lượng USDT (wei, 18 decimal) ra
+/// BNB-equivalent qua tỉ giá reserve THẬT của pool WBNB/USDT tại block hiện
+/// tại (KHÔNG price oracle) — dùng để bucket candidate quote USDT vào CÙNG
+/// 5 khoảng BNB với `GET /api/econ` (trước cụm này, `by_quote.usdt` không hề
+/// xuất hiện trong `buckets_bnb`, xem `docs/TASKS.md` mục nợ
+/// `hotpath-fix-then-decoder-ur`). `reserve_usdt=0` (không thể xảy ra với
+/// pool USDT thật đã pin, tự vệ input rác) → trả `u128::MAX` (sentinel
+/// "không quy đổi được" — bucket sẽ bỏ qua field này, KHÔNG suy diễn số 0
+/// giả).
+pub fn convert_usdt_to_bnb_wei(amount_usdt_wei: u128, reserve_wbnb: U256, reserve_usdt: U256) -> u128 {
+    if reserve_usdt.is_zero() {
+        return u128::MAX;
+    }
+    let amount_u256 = U256::from(amount_usdt_wei);
+    match amount_u256.checked_mul(reserve_wbnb).map(|n| n / reserve_usdt) {
+        Some(v) => u128::try_from(v).unwrap_or(u128::MAX),
+        None => u128::MAX,
+    }
+}
+
 pub fn decide_paper(victims: &VictimBook, tax_cache: &TaxCache, cfg: &Config, input: &PaperDecision) -> PipelineOutcome {
     let (decoded, token) = match decode_and_prefilter(victims, input.from, input.calldata, input.tx_value) {
         Ok(v) => v,
@@ -1218,6 +1239,15 @@ pub struct TxLogMeta {
     /// được log — độ trễ giữa 2 mốc này là chi phí `tokio::spawn`, không
     /// đáng kể ở mức ms) tới lúc quyết định CUỐI CÙNG (outcome terminal).
     pub seen_to_decision_ms: Option<f64>,
+    /// Cụm `econ-truth-latency-vps` (mục 1) — `amount_in` quy đổi sang
+    /// BNB-equivalent (wei): nhánh WBNB thì bằng CHÍNH `amount_in` (đã là
+    /// BNB); nhánh USDT quy đổi qua reserve THẬT pool WBNB/USDT tại block
+    /// hiện tại (`pipeline::convert_usdt_to_bnb_wei`, KHÔNG price oracle).
+    /// Cho phép `GET /api/econ` bucket được CẢ 2 quote asset vào cùng 5
+    /// khoảng BNB (trước cụm này chỉ `quote="wbnb"` được bucket — xem
+    /// `docs/TASKS.md` mục nợ `hotpath-fix-then-decoder-ur`). `None` khi
+    /// chưa tính tới bước đó, hoặc không quy đổi được (`u128::MAX` sentinel).
+    pub amount_in_bnb_equiv: Option<String>,
 }
 
 /// Cụm pair-mode — bản `log_outcome` có thêm field `source` ("wallet"/"pair"/
@@ -1257,6 +1287,7 @@ pub fn log_outcome_v2(
                     "gas_cost_wei": meta.gas_cost_wei,
                     "gas_price_gwei": meta.gas_price_gwei,
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
+                    "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
                 }),
             );
         }
@@ -1295,6 +1326,7 @@ pub fn log_outcome_v2(
                     "profit_gross_wei": profit_gross_wei,
                     "profit_net_wei": q.profit_wei,
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
+                    "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
                 }),
             );
         }
@@ -3103,5 +3135,28 @@ mod tests {
         };
         let (outcome, _source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "gas_cost_wei == tran (khong vuot) khong duoc gas_cap, got {outcome:?}");
+    }
+
+    // ===== Cụm `econ-truth-latency-vps` (mục 1) — convert_usdt_to_bnb_wei =====
+
+    #[test]
+    fn convert_usdt_to_bnb_wei_is_inverse_of_gas_to_usdt() {
+        // Pool WBNB/USDT gia du: 1000 WBNB doi 600_000 USDT (18 decimal ca
+        // hai, dung quy uoc token BSC) -> ty gia 1 WBNB = 600 USDT.
+        let reserve_wbnb = U256::from(1000u64) * U256::from(10u64).pow(U256::from(18u64));
+        let reserve_usdt = U256::from(600_000u64) * U256::from(10u64).pow(U256::from(18u64));
+        let one_bnb_wei: u128 = 1_000_000_000_000_000_000;
+        let usdt_equiv = convert_gas_cost_bnb_to_usdt(one_bnb_wei, reserve_wbnb, reserve_usdt);
+        // 1 BNB -> ~600 USDT.
+        let expected_usdt: u128 = 600_000_000_000_000_000_000;
+        assert_eq!(usdt_equiv, expected_usdt);
+
+        let back_to_bnb = convert_usdt_to_bnb_wei(usdt_equiv, reserve_wbnb, reserve_usdt);
+        assert_eq!(back_to_bnb, one_bnb_wei, "quy doi 2 chieu phai khop lai dung so goc (khong lam tron sai)");
+    }
+
+    #[test]
+    fn convert_usdt_to_bnb_wei_zero_reserve_usdt_is_sentinel_max() {
+        assert_eq!(convert_usdt_to_bnb_wei(1_000_000, U256::from(100u64), U256::ZERO), u128::MAX);
     }
 }
