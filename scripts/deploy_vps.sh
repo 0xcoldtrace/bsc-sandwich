@@ -81,8 +81,13 @@ ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" '
   fi
 '
 
-echo "== 3/4: copy source (khong .git/target/state/logs/artifacts/.env) qua tar+ssh =="
-tar --exclude='.git' --exclude='target' --exclude='state' --exclude='logs' \
+echo "== 3/4: copy source (khong target/state/logs/artifacts/.env) qua tar+ssh =="
+# Cum `econ-truth-latency-vps` (muc 5) - GIU LAI .git (truoc day loai tru) -
+# docs/RUN.md/CLAUDE.md yeu cau xac nhan "VPS cung git commit voi WSL" bang
+# `git rev-parse HEAD` CHAY TREN VPS - thieu .git thi lenh do bao loi "not a
+# git repository", khong the nao verify duoc (phat hien that khi deploy phien
+# nay). .git chi ~5MB, khong dang ke so voi thoi gian build release.
+tar --exclude='target' --exclude='state' --exclude='logs' \
     --exclude='artifacts' --exclude='.env' -czf - . \
   | ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" "tar -xzf - -C '${REMOTE_PATH}'"
 echo "da copy xong vao ${SSH_USER}@${HOST}:${REMOTE_PATH}"
