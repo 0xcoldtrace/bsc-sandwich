@@ -70,6 +70,16 @@ pub enum PipelineSkip {
     VenueUnpinned,
     ThinLiq,
     NoPool,
+    /// Cụm `hotpath-fix-then-decoder-ur` (A3) — `eth_call` `getPair`/
+    /// `getReserves` LỖI THẬT (timeout/RPC mạng) — KHÁC `NoPool` (Factory trả
+    /// `address(0)`, CHẮC CHẮN không có pool). Trước fix, cả 2 tình huống bị
+    /// gộp chung vào `NoPool` ở `resolve_v2_reserves`/`resolve_reserves_for_quote`
+    /// (quyết định cũ từ `5.1`) — paper run 5 phút phát hiện USDC/WBNB (pool
+    /// CÓ THẬT, 294 BNB) bị `no_pool` 419 lần vì lỗi RPC thoáng qua, che mất
+    /// tín hiệu "RPC quá tải/cần retry" khỏi "token không có pool V2 thật".
+    /// `FunnelCounters::rpc_error` (đã có sẵn field DÀNH SẴN từ `foundation-fix-then-real-sim`,
+    /// luôn 0 tới giờ) bắt đầu có số thật từ cụm này.
+    RpcError,
     /// Cụm `exec-path-traps` (F-14) — `decoded.deadline` (khi có, `None` cho
     /// command Universal Router `V2_SWAP_EXACT_IN`/`V3_SWAP_EXACT_IN` — UR
     /// không mang tham số `deadline` per-swap, xem `decoder.rs`) đã hết hạn
@@ -123,6 +133,7 @@ impl PipelineSkip {
             PipelineSkip::VenueUnpinned => "venue_unpinned",
             PipelineSkip::ThinLiq => "thin_liq",
             PipelineSkip::NoPool => "no_pool",
+            PipelineSkip::RpcError => "rpc_error",
             PipelineSkip::Deadline => "deadline",
             PipelineSkip::VictimWouldRevert => "victim_would_revert",
             PipelineSkip::Unprofitable => "unprofitable",
@@ -292,13 +303,32 @@ pub fn precheck_without_reserves(
 /// so với `5.1` — chỉ đổi kiểu trả về.
 pub async fn resolve_v2_reserves(provider: &dyn Provider, token: Address) -> Result<(Address, PoolReserves), PipelineSkip> {
     let factory = Address::from_str(V2_FACTORY_ADDRESS).expect("V2_FACTORY_ADDRESS da pin phai la address hop le");
+    // Cum `hotpath-fix-then-decoder-ur` (A3) - tach RIENG "Factory tra ve
+    // address(0), CHAC CHAN khong co pool" (Ok(Err)) khoi "eth_call THAT su
+    // loi mang/timeout" (Err) - truoc fix ca 2 gop chung thanh NoPool, khien
+    // USDC/WBNB (pool co that, 294 BNB) bi dem nham no_pool khi RPC choang tai.
     let pair = match pool::resolve_v2_pair(provider, factory, token).await {
         Ok(Ok(p)) => p,
-        Ok(Err(_)) | Err(_) => return Err(PipelineSkip::NoPool),
+        Ok(Err(_)) => return Err(PipelineSkip::NoPool),
+        Err(_) => return Err(PipelineSkip::RpcError),
     };
     match pool::get_reserves_vs_wbnb(provider, pair).await {
         Ok((reserve_wbnb, reserve_token)) => Ok((pair, PoolReserves { reserve_wbnb, reserve_token })),
-        Err(_) => Err(PipelineSkip::NoPool),
+        // pair != address(0) (da qua nhanh tren) -> pool CHAC CHAN ton tai,
+        // getReserves that bai o day CHI co the la loi RPC that.
+        Err(_) => Err(PipelineSkip::RpcError),
+    }
+}
+
+/// Cụm `hotpath-fix-then-decoder-ur` (A4a) — như `resolve_v2_reserves` nhưng
+/// `pair_addr` ĐÃ BIẾT TRƯỚC (từ `PairBook::known_pair`) — bỏ hẳn `eth_call
+/// getPair` (1 round-trip RPC/candidate), chỉ còn `getReserves`. Lỗi RPC ở
+/// đây LUÔN `RpcError` (không có nhánh `NoPool` — pool đã biết chắc tồn tại
+/// vì từng resolve thành công lúc `PairBook::reload`).
+pub async fn resolve_v2_reserves_known_pair(provider: &dyn Provider, pair: Address, quote: Address) -> Result<PoolReserves, PipelineSkip> {
+    match pool::get_reserves_vs_quote(provider, pair, quote).await {
+        Ok((reserve_quote, reserve_token)) => Ok(PoolReserves { reserve_wbnb: reserve_quote, reserve_token }),
+        Err(_) => Err(PipelineSkip::RpcError),
     }
 }
 
@@ -736,13 +766,15 @@ pub async fn resolve_reserves_for_quote(
         QuoteAsset::Wbnb => wbnb(),
         QuoteAsset::Usdt => usdt(),
     };
+    // Cum A3 - tach no_pool/rpc_error, cung nguyen tac resolve_v2_reserves.
     let pair = match pool::resolve_v2_pair_for_quote(provider, factory, token, quote_addr).await {
         Ok(Ok(p)) => p,
-        Ok(Err(_)) | Err(_) => return Err(PipelineSkip::NoPool),
+        Ok(Err(_)) => return Err(PipelineSkip::NoPool),
+        Err(_) => return Err(PipelineSkip::RpcError),
     };
     match pool::get_reserves_vs_quote(provider, pair, quote_addr).await {
         Ok((reserve_quote, reserve_token)) => Ok((pair, PoolReserves { reserve_wbnb: reserve_quote, reserve_token })),
-        Err(_) => Err(PipelineSkip::NoPool),
+        Err(_) => Err(PipelineSkip::RpcError),
     }
 }
 
@@ -774,6 +806,7 @@ fn evaluate_candidate_quote(
     cfg: &Config,
     gas_cost_bnb_wei: u128,
     gas_cost_in_quote_wei: u128,
+    skip_tax_gate: bool,
 ) -> PipelineOutcome {
     // F-14 - cung gate deadline nhu evaluate_candidate, ap dung ca 2 quote asset.
     if deadline_expired(deadline, now_unix()) {
@@ -790,7 +823,13 @@ fn evaluate_candidate_quote(
 
     // Cụm `evm-validate-fixed-then-wire` — cùng lý do `evaluate_candidate`:
     // sim_engine=evm thì để EVM tự đo tax (tránh deadlock cache rỗng).
-    if !cfg.sim_engine_is_evm() {
+    // Cụm `hotpath-fix-then-decoder-ur` (A2) — `skip_tax_gate` (true CHỈ khi
+    // `PairBook::is_tax_ok` xác nhận pool USDT đã vet tay + chưa bị vet nền
+    // loại, xem `decide_paper_quote`) bỏ qua TaxCache, ÁP DỤNG ĐÚNG luật
+    // BAOCAO38 mục 0 cho nhánh USDT — trước fix, nhánh này KHÔNG hề tra
+    // PairBook nên MỌI candidate USDT rơi vào honeypot_or_tax giả (TaxCache
+    // luôn rỗng, không ai tự động điền).
+    if !cfg.sim_engine_is_evm() && !skip_tax_gate {
         let measurement = match tax_cache.get_fresh(token, current_block, cfg.tax_cache_blocks) {
             Some(m) => m,
             None => return PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax),
@@ -840,7 +879,20 @@ fn evaluate_candidate_quote(
 /// caller sang đúng đơn vị quote asset (bằng chính `gas_cost_bnb_wei` khi
 /// `quote=Wbnb` — không cần quy đổi; quy đổi qua reserve WBNB/USDT thật khi
 /// `quote=Usdt`, xem `main.rs::handle_paper_tx`).
+/// Cụm `hotpath-fix-then-decoder-ur` (A2) — thêm `pairbook`/`pair_addr` (so
+/// với bản gốc `usdt-quote-asset` không hề biết `PairBook`). Nhánh `Usdt` áp
+/// ĐÚNG luật MODE 2 ONLY/BAOCAO38 mục 0 (giống nhánh "pair" của
+/// `decide_paper_v2`): pool KHÔNG có trong `pairs.txt` -> `not_in_list` (KHÔNG
+/// còn hành vi "universal" ngầm định cho USDT — trái `strategy-lock-mode2`);
+/// vet nền vừa loại -> `honeypot_or_tax` (giữ visibility, không rơi im lặng);
+/// đã vet tay + chưa vet_fail -> bỏ qua TaxCache. Nhánh `Wbnb` (KHÔNG dùng
+/// trong production qua hàm này — `main.rs` luôn xử lý WBNB qua
+/// `decide_paper_v2` trước, hàm này chỉ còn nhánh WBNB cho mục đích đối
+/// chứng/test) GIỮ NGUYÊN hành vi cũ (luôn tra TaxCache), không đụng
+/// `pair_addr`/`pairbook`.
 pub fn decide_paper_quote(
+    pairbook: &PairBook,
+    pair_addr: Address,
     tax_cache: &TaxCache,
     cfg: &Config,
     calldata: &[u8],
@@ -854,6 +906,19 @@ pub fn decide_paper_quote(
         Ok(v) => v,
         Err(skip) => return (PipelineOutcome::Skip(skip), "none"),
     };
+
+    let skip_tax_gate = if quote == QuoteAsset::Usdt {
+        if !pairbook.knows_pool(&pair_addr) {
+            return (PipelineOutcome::Skip(PipelineSkip::NotInList), "none");
+        }
+        if pairbook.is_vet_failed(&pair_addr) {
+            return (PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax), "usdt");
+        }
+        pairbook.is_tax_ok(&pair_addr)
+    } else {
+        false
+    };
+
     let outcome = evaluate_candidate_quote(
         quote,
         token,
@@ -866,6 +931,7 @@ pub fn decide_paper_quote(
         cfg,
         gas_cost_bnb_wei,
         gas_cost_in_quote_wei,
+        skip_tax_gate,
     );
     (outcome, quote.as_str())
 }
@@ -1888,7 +1954,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct DirectPairResolver;
     impl crate::pairbook::PairResolver for DirectPairResolver {
-        async fn get_pair(&self, _token: Address) -> Result<Address, String> {
+        async fn get_pair(&self, _token: Address, _quote: Address) -> Result<Address, String> {
             Ok(Address::ZERO)
         }
     }
@@ -2671,39 +2737,94 @@ mod tests {
         let calldata = build_tokens_for_tokens(50_000_000_000_000_000, 0, usdt(), token);
         let cache = TaxCache::new();
         let cfg = test_config();
+        let pairbook = PairBook::new();
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
         assert!(!cfg.scan_quote_usdt, "ship default phai la false");
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "none");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotQuotePair)), "got {outcome:?}");
     }
 
-    /// Bật `scan_quote_usdt=true` nhưng pool quá mỏng (`fixture_reserves()` =
-    /// 1 WBNB-tương-đương, dưới `min_reserve_usdt=15000` ship) -> `thin_liq`,
-    /// chứng minh ngưỡng USDT ĐÚNG field (`min_reserve_usdt`, không lẫn
-    /// `min_reserve_wbnb`).
+    /// Cụm `hotpath-fix-then-decoder-ur` (A2) — ĐẠT CẦN DÁN: pool USDT KHÔNG
+    /// có trong `pairs.txt` (`PairBook` rỗng) -> `not_in_list`, KHÔNG còn hành
+    /// vi "universal" ngầm định như trước fix (mọi pool USDT đủ sâu đều thành
+    /// candidate). Đúng `strategy-lock-mode2`: pairs.txt là nguồn candidate
+    /// DUY NHẤT, áp dụng CẢ 2 quote asset.
+    #[test]
+    fn usdt_quote_pool_not_in_pairs_txt_is_not_in_list() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_tokens_for_tokens(USDT_VICTIM_1000_WEI, 0, usdt(), token);
+        let cache = TaxCache::new();
+        let cfg = cfg_usdt_enabled(&[]);
+        let pairbook = PairBook::new(); // rong - khong biet pool nao
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        assert_eq!(tag, "none");
+        assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::NotInList)), "got {outcome:?}");
+    }
+
+    /// Bật `scan_quote_usdt=true`, pool ĐÃ VET trong `pairs.txt` nhưng quá
+    /// mỏng (`fixture_reserves()` = 1 WBNB-tương-đương, dưới
+    /// `min_reserve_usdt=15000` ship) -> `thin_liq`, chứng minh ngưỡng USDT
+    /// ĐÚNG field (`min_reserve_usdt`, không lẫn `min_reserve_wbnb`).
     #[test]
     fn usdt_quote_enabled_thin_liq_when_pool_reserve_below_min_reserve_usdt() {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_tokens_for_tokens(50_000_000_000_000_000, 0, usdt(), token);
         let cache = TaxCache::new();
         let cfg = cfg_usdt_enabled(&[]);
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::ThinLiq)), "got {outcome:?}");
     }
 
-    /// Pool đủ sâu (`usdt_deep_reserves`, qua khỏi `thin_liq`) nhưng token
-    /// chưa đo tax -> `honeypot_or_tax`, y hệt hành vi WBNB (tax cache gate
-    /// dùng CHUNG bất kể quote asset nào funding front-run).
+    /// Cụm `hotpath-fix-then-decoder-ur` (A2) — ĐẠT CẦN DÁN, tái hiện ĐÚNG bug
+    /// BAOCAO38 mục 0 cho nhánh USDT: pool ĐÃ VET (`is_tax_ok=true`) + pool
+    /// đủ sâu, `TaxCache` RỖNG hoàn toàn (giống đường nóng thật, không ai tự
+    /// động điền) -> PHẢI tới `Simulated`, KHÔNG được rơi vào `honeypot_or_tax`
+    /// giả như trước fix (paper run 5 phút: `honeypot_or_tax≈240/phút` ≈ toàn
+    /// bộ `by_quote.usdt`).
     #[test]
-    fn usdt_quote_enabled_honeypot_or_tax_when_unmeasured() {
+    fn usdt_quote_vetted_pair_skips_tax_cache_even_when_cache_empty() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_tokens_for_tokens(USDT_VICTIM_1000_WEI, 0, usdt(), token);
+        let cache = TaxCache::new(); // RONG - dung y, mo phong duong nong that
+        let cfg = cfg_usdt_enabled(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")]);
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        assert_eq!(tag, "usdt");
+        assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "got {outcome:?} - pool da vet KHONG duoc tra TaxCache");
+    }
+
+    /// Đối chứng — pool ĐÃ BIẾT trong `pairs.txt` nhưng vet NỀN vừa loại
+    /// (`set_vet_result(ok=false)`) -> `honeypot_or_tax` rõ ràng (KHÔNG rơi
+    /// vào `not_in_list`, giữ visibility, cùng cơ chế nhánh "pair" của
+    /// `decide_paper_v2`).
+    #[test]
+    fn usdt_quote_vet_failed_pool_is_honeypot_or_tax() {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_tokens_for_tokens(USDT_VICTIM_1000_WEI, 0, usdt(), token);
         let cache = TaxCache::new();
-        // Cong tax cong-thuc-dong nay CHI ap dung khi sim_engine="v2" (evm thi
-        // EVM tu do tax, xem `evaluate_candidate_quote`) - override ve "v2".
         let cfg = cfg_usdt_enabled(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")]);
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
+        pairbook.set_vet_result(
+            pair_addr,
+            crate::pairbook::VetResult { buy_bps: 0, sell_bps: 2000, honeypot: false, block: 1 },
+            false,
+        );
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax)), "got {outcome:?}");
     }
@@ -2723,12 +2844,17 @@ mod tests {
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = cfg_usdt_enabled(&[]);
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
         let gas_cost_bnb_wei = cfg.gas_wei();
         // Gia tri gia lap "da quy doi sang USDT" (0.5 USDT, 18dp) - trong test
         // nay chi can KHAC 0 va nho hon loi nhuan du de van con Simulated.
         let gas_cost_usdt_wei: u128 = 500_000_000_000_000_000u128;
 
         let (outcome, tag) = decide_paper_quote(
+            &pairbook,
+            pair_addr,
             &cache,
             &cfg,
             &calldata,
@@ -2772,8 +2898,12 @@ mod tests {
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = cfg_usdt_enabled(&[]);
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
         let gas_cost_bnb_wei = cfg.gas_wei() + 1; // vuot tran dung 1 wei
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, gas_cost_bnb_wei, 1u128);
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, gas_cost_bnb_wei, 1u128);
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::GasCap)), "got {outcome:?}");
     }
@@ -2788,13 +2918,19 @@ mod tests {
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = cfg_usdt_enabled(&[("min_profit_usdt = 3.0", "min_profit_usdt = 1000000.0")]);
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "usdt");
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::Unprofitable)), "got {outcome:?}");
     }
 
     /// Đối chứng — quote WBNB đi qua ĐÚNG entrypoint MỚI (`decide_paper_quote`)
     /// vẫn hoạt động y hệt (không bị phá bởi việc thêm nhánh USDT song song).
+    /// Nhánh WBNB không đụng `pairbook`/`pair_addr` (xem doc-comment
+    /// `decide_paper_quote`) nên truyền `PairBook` rỗng + địa chỉ bất kỳ.
     #[test]
     fn decide_paper_quote_wbnb_branch_still_works_when_usdt_disabled() {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
@@ -2803,7 +2939,10 @@ mod tests {
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = test_config(); // scan_quote_usdt=false ship
-        let (outcome, tag) = decide_paper_quote(&cache, &cfg, &calldata, tx_value, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+        let pairbook = PairBook::new();
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let (outcome, tag) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, tx_value, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "wbnb");
         match outcome {
             PipelineOutcome::Simulated(q) => assert!(q.profit_wei > 0),

@@ -1,6 +1,12 @@
 # pairs.txt — cum pair-mode (MODE 2 ONLY, Chu chot 2026-09-15).
 # Dong bat dau bang # la comment. Dinh dang 1 dong:
 #   0xTokenAddress # SYMBOL | vetted YYYY-MM-DD | tax b/s | owner ... | note
+#   0xTokenAddress,0xQuoteAddress # SYMBOL | vetted YYYY-MM-DD | ... | note
+# Cot 2 (neu co) PHAI la WBNB (0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c)
+# HOAC USDT (0x55d398326f99059fF775485246999027B3197955) da pin - dia chi
+# khac -> loi dong (error_lines), khong sim. Khong co cot 2 -> quote mac
+# dinh la WBNB. (Cum hotpath-fix-then-decoder-ur, A1 - truoc do chi nhan
+# WBNB, 7 dong quote USDT ben duoi tung bi coi la loi.)
 # Bot CHI doc "vetted YYYY-MM-DD". Thieu ngay -> CHUA VET -> khong sim.
 # Bot van tu do lai tax bang revm (pairs_vet_task, moi 600s) va loai dong nao
 # tax>0/honeypot (log pair.vet_fail) - day la luoi an toan, KHONG thay vet tay.

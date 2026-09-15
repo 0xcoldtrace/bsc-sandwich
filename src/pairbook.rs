@@ -9,8 +9,11 @@
 //!   `addr` là TOKEN (pair = kết quả); trả về 0x0 -> `addr` TỰ NÓ là pair
 //!   address (không cần resolve thêm bước nào khác — tránh phải phân biệt
 //!   "pair vs token" bằng heuristic ngoài chuỗi, đúng ý lệnh).
-//! - `tokenAddr,WBNB` — resolve thẳng `getPair(tokenAddr, WBNB)`. Địa chỉ thứ
-//!   2 PHẢI đúng WBNB đã pin (`venues::WBNB_ADDRESS`), sai -> lỗi dòng, skip.
+//! - `tokenAddr,WBNB` hoặc `tokenAddr,USDT` — resolve thẳng `getPair(tokenAddr,
+//!   quote)`. Địa chỉ thứ 2 PHẢI đúng WBNB HOẶC USDT đã pin
+//!   (`venues::WBNB_ADDRESS`/`venues::USDT_ADDRESS` — cụm `hotpath-fix-then-decoder-ur`,
+//!   A1: trước đó chỉ nhận WBNB, khiến 7 dòng `pairs.txt` dùng quote USDT rơi
+//!   vào `error_lines`), sai địa chỉ khác -> lỗi dòng, skip.
 //!
 //! Global `min_swap` (`config.toml::pairs_min_swap_bnb`) áp dụng cho MỌI
 //! entry — không có `min_swap` riêng theo từng pool (khác `victims.txt`, nơi
@@ -36,7 +39,7 @@ use tokio::sync::Semaphore;
 
 use crate::logger::BotLogger;
 use crate::pool;
-use crate::venues::WBNB_ADDRESS;
+use crate::venues::{USDT_ADDRESS, WBNB_ADDRESS};
 
 /// Resolve tối đa 10 dòng đồng thời (CLAUDE.md lệnh pair-mode), timeout 3s/dòng.
 const MAX_CONCURRENT_RESOLVE: usize = 10;
@@ -44,6 +47,11 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn wbnb() -> Address {
     Address::from_str(WBNB_ADDRESS).expect("WBNB_ADDRESS da pin phai hop le")
+}
+
+/// Cụm `hotpath-fix-then-decoder-ur` (A1) — USDT parse ngang hàng WBNB.
+fn usdt() -> Address {
+    Address::from_str(USDT_ADDRESS).expect("USDT_ADDRESS da pin phai hop le")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +79,13 @@ pub struct PairEntry {
     /// Cụm `strategy-lock-mode2` — ngày Chủ vet tay (`vetted YYYY-MM-DD`
     /// trong comment), `None` = CHƯA VET. Xem doc-comment đầu file.
     pub vetted_at: Option<NaiveDate>,
+    /// Cụm `hotpath-fix-then-decoder-ur` (A1) — quote asset THẬT của pool này
+    /// (WBNB hoặc USDT). Dòng "0xAddress" trần (không dấu phẩy, cả `Token` lẫn
+    /// `Direct`) LUÔN `wbnb()` (giữ đúng hành vi cũ — chỉ dòng `token,quote`
+    /// tường minh mới có thể là USDT). `is_tax_ok`/`knows_pool`/`is_vet_failed`
+    /// vẫn khoá theo `pair_addr` (không đổi) — field này chỉ phục vụ
+    /// `tokens_to_vet`/`known_pair` cần biết ĐÚNG quote để gọi RPC.
+    pub quote: Address,
 }
 
 /// Cụm `strategy-lock-mode2` — tách field `vetted YYYY-MM-DD` khỏi comment
@@ -118,15 +133,23 @@ pub struct PairBook {
     /// vẫn nằm trong `pairs` (vẫn hiện trên `/api/pairs`) nhưng `contains()`
     /// trả `false` — không thành candidate cho tới lần vet PASS kế tiếp.
     vet_failed: std::collections::HashSet<Address>,
+    /// Cụm `hotpath-fix-then-decoder-ur` (A4a) — reverse index `(token, quote)
+    /// -> pair_addr` cho MỌI entry `resolved_from=Token` (token biết được từ
+    /// `source_line`) — cho phép `main.rs` bỏ qua `Factory.getPair` (1
+    /// `eth_call`) khi token đã có sẵn trong `pairs.txt`, chỉ còn cần
+    /// `getReserves` (xem `known_pair`). Khoá theo CẢ `quote` (không chỉ
+    /// `token`) vì 1 token có thể xuất hiện 2 lần với 2 quote asset khác nhau
+    /// (vd CAKE có cả pool WBNB lẫn USDT trong `pairs.txt`).
+    token_quote_to_pair: HashMap<(Address, Address), Address>,
     pub error_lines: u64,
     pub last_reload: Option<Instant>,
 }
 
 enum ParsedLine {
-    /// "0xAddress" trần — chưa biết token hay pair.
+    /// "0xAddress" trần — chưa biết token hay pair, quote LUÔN WBNB.
     Direct(Address),
-    /// "tokenAddr,WBNB" — đã biết chắc là token.
-    TokenWbnb(Address),
+    /// "tokenAddr,quote" — đã biết chắc là token, quote = WBNB hoặc USDT.
+    TokenQuote(Address, Address),
 }
 
 fn parse_pairs_line(line: &str) -> Result<ParsedLine, String> {
@@ -135,14 +158,14 @@ fn parse_pairs_line(line: &str) -> Result<ParsedLine, String> {
         let rest = &rest[1..];
         let token = Address::from_str(addr_str.trim())
             .map_err(|e| format!("token address khong hop le '{addr_str}': {e}"))?;
-        let wbnb_candidate = Address::from_str(rest.trim())
+        let quote_candidate = Address::from_str(rest.trim())
             .map_err(|e| format!("dia chi thu 2 khong hop le '{rest}': {e}"))?;
-        if wbnb_candidate != wbnb() {
+        if quote_candidate != wbnb() && quote_candidate != usdt() {
             return Err(format!(
-                "dia chi thu 2 '{rest}' khong phai WBNB da pin ({WBNB_ADDRESS})"
+                "dia chi thu 2 '{rest}' khong phai WBNB ({WBNB_ADDRESS}) hoac USDT ({USDT_ADDRESS}) da pin"
             ));
         }
-        Ok(ParsedLine::TokenWbnb(token))
+        Ok(ParsedLine::TokenQuote(token, quote_candidate))
     } else {
         let addr = Address::from_str(line.trim()).map_err(|e| format!("address khong hop le '{line}': {e}"))?;
         Ok(ParsedLine::Direct(addr))
@@ -155,7 +178,12 @@ fn parse_pairs_line(line: &str) -> Result<ParsedLine, String> {
 /// chạy được trong `cargo test` mặc định (đúng quy ước repo: test không bắt
 /// RPC sống trừ khi `#[ignore]`).
 pub trait PairResolver: Clone + Send + Sync + 'static {
-    fn get_pair(&self, token: Address) -> impl std::future::Future<Output = Result<Address, String>> + Send;
+    /// Cụm `hotpath-fix-then-decoder-ur` (A1) — thêm tham số `quote` (WBNB
+    /// hoặc USDT) — trước đó hardcode WBNB, khiến mọi dòng `token,USDT` không
+    /// thể resolve đúng pool. Mọi implementor/test caller cũ phải truyền
+    /// `quote` tường minh (dòng "0xAddress" trần luôn dùng `wbnb()`, xem
+    /// `parse_pairs_line`/`reload`).
+    fn get_pair(&self, token: Address, quote: Address) -> impl std::future::Future<Output = Result<Address, String>> + Send;
 }
 
 /// Resolver PRODUCTION — bọc `DynProvider` (owned, `Clone` rẻ vì bên trong là
@@ -169,8 +197,8 @@ pub struct RpcPairResolver {
 }
 
 impl PairResolver for RpcPairResolver {
-    async fn get_pair(&self, token: Address) -> Result<Address, String> {
-        match pool::resolve_v2_pair(&self.provider, self.factory, token).await {
+    async fn get_pair(&self, token: Address, quote: Address) -> Result<Address, String> {
+        match pool::resolve_v2_pair_for_quote(&self.provider, self.factory, token, quote).await {
             Ok(Ok(pair)) => Ok(pair),
             Ok(Err(_)) => Ok(Address::ZERO),
             Err(e) => Err(e),
@@ -258,15 +286,28 @@ impl PairBook {
     /// PAIR, không phải token) bị bỏ qua ở đây — không đủ thông tin để gọi
     /// `measure_tax_evm(token, ...)` mà không thêm 1 `eth_call`
     /// `token0()/token1()` (ngoài phạm vi cụm này, ghi rõ thay vì đoán).
-    pub fn tokens_to_vet(&self) -> Vec<(Address, Address)> {
+    /// Cụm `hotpath-fix-then-decoder-ur` (A1) — trả kèm `quote` (WBNB hoặc
+    /// USDT, từ `PairEntry::quote`) — trước đó chỉ trả `(pair_addr, token)`,
+    /// khiến `pairs_vet_task` hardcode `quote=WBNB` cho MỌI token kể cả 7
+    /// pool USDT (đo tax sai pool/luôn lỗi vì pool đó không có phía WBNB).
+    pub fn tokens_to_vet(&self) -> Vec<(Address, Address, Address)> {
         self.pairs
             .values()
             .filter(|e| e.vetted_at.is_some() && e.resolved_from == ResolvedFrom::Token)
             .filter_map(|e| {
                 let token_str = e.source_line.split(',').next().unwrap_or("").trim();
-                Address::from_str(token_str).ok().map(|t| (e.pair_addr, t))
+                Address::from_str(token_str).ok().map(|t| (e.pair_addr, t, e.quote))
             })
             .collect()
+    }
+
+    /// Cụm `hotpath-fix-then-decoder-ur` (A4a) — `pair_addr` ĐÃ BIẾT cho
+    /// `(token, quote)` từ `pairs.txt` (đã resolve khi `reload`), tránh caller
+    /// (`main.rs`) phải gọi lại `Factory.getPair` cho tx chạm token đã có
+    /// trong danh sách. `None` khi token/quote này chưa từng resolve thành
+    /// công (main.rs vẫn phải tự resolve qua RPC như cũ).
+    pub fn known_pair(&self, token: Address, quote: Address) -> Option<Address> {
+        self.token_quote_to_pair.get(&(token, quote)).copied()
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &PairEntry> {
@@ -346,33 +387,41 @@ impl PairBook {
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire_owned().await.ok()?;
                 let resolved = match parsed {
-                    ParsedLine::TokenWbnb(token) => {
-                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(token)).await {
-                            Ok(Ok(pair)) if pair != Address::ZERO => Some((pair, ResolvedFrom::Token)),
+                    ParsedLine::TokenQuote(token, quote) => {
+                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(token, quote)).await {
+                            Ok(Ok(pair)) if pair != Address::ZERO => Some((pair, ResolvedFrom::Token, quote)),
                             _ => None,
                         }
                     }
                     ParsedLine::Direct(addr) => {
-                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(addr)).await {
-                            Ok(Ok(pair)) if pair != Address::ZERO => Some((pair, ResolvedFrom::Token)),
-                            Ok(Ok(_zero)) => Some((addr, ResolvedFrom::Direct)),
+                        match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.get_pair(addr, wbnb())).await {
+                            Ok(Ok(pair)) if pair != Address::ZERO => Some((pair, ResolvedFrom::Token, wbnb())),
+                            Ok(Ok(_zero)) => Some((addr, ResolvedFrom::Direct, wbnb())),
                             _ => None,
                         }
                     }
                 };
-                resolved.map(|(pair_addr, resolved_from)| PairEntry {
+                resolved.map(|(pair_addr, resolved_from, quote)| PairEntry {
                     pair_addr,
                     source_line: line,
                     resolved_from,
                     vetted_at,
+                    quote,
                 })
             }));
         }
 
         let mut new_map = HashMap::new();
+        let mut new_token_quote_index = HashMap::new();
         for h in handles {
             match h.await {
                 Ok(Some(entry)) => {
+                    if entry.resolved_from == ResolvedFrom::Token {
+                        let token_str = entry.source_line.split(',').next().unwrap_or("").trim();
+                        if let Ok(token) = Address::from_str(token_str) {
+                            new_token_quote_index.insert((token, entry.quote), entry.pair_addr);
+                        }
+                    }
                     new_map.insert(entry.pair_addr, entry);
                 }
                 Ok(None) => {
@@ -387,6 +436,7 @@ impl PairBook {
 
         let count = new_map.len();
         self.pairs = new_map;
+        self.token_quote_to_pair = new_token_quote_index;
         self.error_lines = errors;
         self.last_reload = Some(now);
         logger.log(
@@ -435,7 +485,26 @@ impl PairBook {
     pub fn insert_test_entry(&mut self, pair_addr: Address, source_line: &str, resolved_from: ResolvedFrom) {
         self.pairs.insert(
             pair_addr,
-            PairEntry { pair_addr, source_line: source_line.to_string(), resolved_from, vetted_at: None },
+            PairEntry { pair_addr, source_line: source_line.to_string(), resolved_from, vetted_at: None, quote: wbnb() },
+        );
+        self.last_reload = Some(Instant::now());
+    }
+
+    /// Cụm `hotpath-fix-then-decoder-ur` (A2) — helper test CHỈ DÙNG bởi
+    /// `pipeline.rs` (test `decide_paper_quote` nhánh USDT): chèn thẳng 1 pool
+    /// ĐÃ VET (`vetted_at=Some`, `is_tax_ok=true` ngay), khác `insert_test_entry`
+    /// (luôn `vetted_at=None`) — mô phỏng đúng trạng thái `pairs.txt` sau khi
+    /// Chủ vet tay + `reload` xong.
+    pub fn insert_test_vetted_pair(&mut self, pair_addr: Address, quote: Address) {
+        self.pairs.insert(
+            pair_addr,
+            PairEntry {
+                pair_addr,
+                source_line: "0xtest".to_string(),
+                resolved_from: ResolvedFrom::Token,
+                vetted_at: NaiveDate::from_ymd_opt(2026, 9, 16),
+                quote,
+            },
         );
         self.last_reload = Some(Instant::now());
     }
@@ -466,7 +535,7 @@ mod tests {
     }
 
     impl PairResolver for MockResolver {
-        async fn get_pair(&self, token: Address) -> Result<Address, String> {
+        async fn get_pair(&self, token: Address, _quote: Address) -> Result<Address, String> {
             if self.err_for.contains(&token) {
                 return Err("mock rpc loi".to_string());
             }
@@ -539,6 +608,72 @@ mod tests {
         book.reload(&content, &resolver, &logger, Instant::now(), false).await;
         assert_eq!(book.len(), 0);
         assert_eq!(book.error_lines, 1);
+    }
+
+    /// ĐẠT CẦN DÁN (cụm `hotpath-fix-then-decoder-ur`, A1) — 3 dòng
+    /// `token,WBNB` / `token,USDT` / `token,dia_chi_sai` -> ĐÚNG 2 entry
+    /// (WBNB + USDT) + 1 `error_lines` (địa chỉ thứ 2 không phải WBNB/USDT).
+    /// Trước fix: dòng USDT bị coi lỗi (chỉ nhận WBNB) -> 1 entry + 2 error.
+    #[tokio::test]
+    async fn pairbook_load_wbnb_and_usdt_quote_lines_two_entries_one_error() {
+        let (_dir, logger) = test_logger();
+        let token_wbnb = addr("0xaaaa00000000000000000000000000000000aaaa");
+        let pair_wbnb = addr("0xbbbb00000000000000000000000000000000bbbb");
+        let token_usdt = addr("0xcccc00000000000000000000000000000000cccc");
+        let pair_usdt = addr("0xdddd00000000000000000000000000000000dddd");
+        let token_bad = addr("0xeeee00000000000000000000000000000000eeee");
+        let bad_quote = addr("0x1111111111111111111111111111111111111111");
+
+        let mut map = HashMap::new();
+        map.insert(token_wbnb, pair_wbnb);
+        map.insert(token_usdt, pair_usdt);
+        let resolver = MockResolver { map, err_for: vec![] };
+
+        let content = format!(
+            "{token_wbnb:#x},{WBNB_ADDRESS}\n{token_usdt:#x},{USDT_ADDRESS}\n{token_bad:#x},{bad_quote:#x}\n"
+        );
+        let mut book = PairBook::new();
+        book.reload(&content, &resolver, &logger, Instant::now(), false).await;
+
+        assert_eq!(book.len(), 2, "dung 2 entry (WBNB + USDT), dong sai dia chi bi loai");
+        assert_eq!(book.error_lines, 1, "chi dong dia chi thu 2 sai moi tinh loi");
+        assert!(book.contains(&pair_wbnb));
+        assert!(book.contains(&pair_usdt));
+        let entry_wbnb = book.entries().find(|e| e.pair_addr == pair_wbnb).unwrap();
+        let entry_usdt = book.entries().find(|e| e.pair_addr == pair_usdt).unwrap();
+        assert_eq!(entry_wbnb.quote, wbnb());
+        assert_eq!(entry_usdt.quote, usdt());
+        assert_eq!(book.known_pair(token_wbnb, wbnb()), Some(pair_wbnb));
+        assert_eq!(book.known_pair(token_usdt, usdt()), Some(pair_usdt));
+        assert_eq!(book.known_pair(token_usdt, wbnb()), None, "khac quote -> khong khop");
+    }
+
+    /// `tokens_to_vet` phải trả ĐÚNG quote cho từng entry (không hardcode
+    /// WBNB) — mấu chốt để `pairs_vet_task` gọi `measure_tax_evm` đúng pool.
+    #[tokio::test]
+    async fn tokens_to_vet_carries_correct_quote_per_entry() {
+        let (_dir, logger) = test_logger();
+        let token_wbnb = addr("0xaaaa00000000000000000000000000000000aaaa");
+        let pair_wbnb = addr("0xbbbb00000000000000000000000000000000bbbb");
+        let token_usdt = addr("0xcccc00000000000000000000000000000000cccc");
+        let pair_usdt = addr("0xdddd00000000000000000000000000000000dddd");
+        let mut map = HashMap::new();
+        map.insert(token_wbnb, pair_wbnb);
+        map.insert(token_usdt, pair_usdt);
+        let resolver = MockResolver { map, err_for: vec![] };
+        let content = format!(
+            "{token_wbnb:#x},{WBNB_ADDRESS} # A | vetted 2026-09-16 |\n{token_usdt:#x},{USDT_ADDRESS} # B | vetted 2026-09-16 |\n"
+        );
+        let mut book = PairBook::new();
+        book.reload(&content, &resolver, &logger, Instant::now(), true).await;
+
+        let mut vet = book.tokens_to_vet();
+        vet.sort_by_key(|(pair, _, _)| *pair);
+        assert_eq!(vet.len(), 2);
+        let wbnb_entry = vet.iter().find(|(p, _, _)| *p == pair_wbnb).unwrap();
+        assert_eq!(wbnb_entry.2, wbnb());
+        let usdt_entry = vet.iter().find(|(p, _, _)| *p == pair_usdt).unwrap();
+        assert_eq!(usdt_entry.2, usdt());
     }
 
     #[tokio::test]

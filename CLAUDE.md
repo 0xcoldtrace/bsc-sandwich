@@ -65,7 +65,10 @@ Dòng KHÔNG có `vetted YYYY-MM-DD` hợp lệ (thiếu hẳn, hoặc có chữ
 nhưng không kèm ngày) → bot coi là **CHƯA VET**, không thành candidate
 (`pairs_require_vetted=true` mặc định). Chủ tự điền ngày sau khi vet tay
 (`scripts/vet_goplus.sh` lọc thô + tự soát bằng mắt). Địa chỉ/format phần
-trước `#` GIỮ NGUYÊN như trước (`0xAddress` hoặc `0xToken,0xWBNB`).
+trước `#`: `0xAddress` (quote ngầm định WBNB) hoặc `0xToken,0xQuote` — cột 2
+PHẢI là WBNB hoặc USDT đã pin (cụm `hotpath-fix-then-decoder-ur`, A1 — trước
+đó cột 2 chỉ nhận WBNB, khiến mọi dòng quote USDT rơi vào `error_lines`), địa
+chỉ khác → lỗi dòng, không sim.
 
 ### Decode được phép
 
@@ -138,10 +141,14 @@ KHÔNG thêm cột cho wallet-mode ở cụm này.
 
 Nhiều pool WBNB: sim version `scan_*=true` đã pin, chọn **1 profit max**.
 
-Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error | gas_cap`
+Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | rpc_error | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error | gas_cap`
 (`gas_cap` thêm ở cụm `real-economics-mode2` — F-03: `gas_cost_wei` đo thật
 vượt trần `front_max_gas_bnb_wei+back_max_gas_bnb_wei`, HOẶC `eth_gasPrice`
 đo được vượt `gas_price_max_gwei`.)
+(`rpc_error` thêm ở cụm `hotpath-fix-then-decoder-ur` A3 — `eth_call`
+`getPair`/`getReserves` LỖI THẬT (timeout/mạng), TÁCH khỏi `no_pool` (Factory
+trả `address(0)`, chắc chắn không pool) — trước đó 2 tình huống gộp chung vào
+`no_pool`.)
 (`nonce_stale`/`nonce_future` thêm ở cụm 1. `deadline` phải có code path sinh ra thật, không chỉ khai báo.)
 
 ---

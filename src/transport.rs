@@ -442,6 +442,34 @@ impl NonceCache {
     }
 }
 
+/// Cụm `hotpath-fix-then-decoder-ur` (A4b) — cache `(pair, block) -> reserves`
+/// để KHÔNG gọi lặp lại `token0()`/`getReserves()` (2 `eth_call`) cho CÙNG 1
+/// pool trong CÙNG 1 block — nhiều tx chạm cùng pool nóng (vd CAKE/WBNB)
+/// trong 1 block là bình thường ở mempool BSC thật (BAOCAO38: 12657 candidate/
+/// phút qua đúng ~44 pool). Cùng khuôn `NonceCache` (không tự khoá, caller tự
+/// `RwLock`). `block` đổi -> entry cũ (block khác) đơn giản là cache-miss (key
+/// gồm cả block), KHÔNG cần dọn dẹp chủ động — `HashMap` không bao giờ được
+/// xoá entry cũ (chấp nhận được: số pool trong `pairs.txt` cố định ~90, không
+/// tăng vô hạn theo thời gian, khác nếu cache theo TỪNG token thấy trên chain).
+#[derive(Debug, Default)]
+pub struct ReserveCache {
+    entries: std::collections::HashMap<(Address, u64), crate::sim_v2::PoolReserves>,
+}
+
+impl ReserveCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cached(&self, pair: Address, block: u64) -> Option<crate::sim_v2::PoolReserves> {
+        self.entries.get(&(pair, block)).copied()
+    }
+
+    pub fn insert(&mut self, pair: Address, block: u64, reserves: crate::sim_v2::PoolReserves) {
+        self.entries.insert((pair, block), reserves);
+    }
+}
+
 // ============================================================================
 // Cụm `real-economics-mode2` (F-03) — GasOracle: `eth_gasPrice` cache theo
 // block, fallback median gas_price tx trong block MINED gần nhất khi
@@ -547,6 +575,20 @@ mod tests {
     #[test]
     fn redact_handles_garbage_without_panic() {
         assert_eq!(redact_rpc_url("not a url"), "***invalid_url***");
+    }
+
+    /// Cụm `hotpath-fix-then-decoder-ur` (A4b) — ĐẠT CẦN DÁN: cùng `(pair,
+    /// block)` -> hit cache; đổi `block` -> miss (khác `(pair, block)` là entry
+    /// khác trong `HashMap`, không phải "invalidate theo block" chủ động).
+    #[test]
+    fn reserve_cache_hits_same_pair_and_block_misses_different_block() {
+        let pair = Address::from_str("0x111111111111111111111111111111111111beef").unwrap();
+        let reserves = crate::sim_v2::PoolReserves { reserve_wbnb: U256::from(20u64), reserve_token: U256::from(1000u64) };
+        let mut cache = ReserveCache::new();
+        assert_eq!(cache.cached(pair, 100), None);
+        cache.insert(pair, 100, reserves);
+        assert_eq!(cache.cached(pair, 100), Some(reserves));
+        assert_eq!(cache.cached(pair, 101), None, "block khac -> cache miss, khong dung reserve cu");
     }
 
     #[test]

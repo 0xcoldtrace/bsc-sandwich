@@ -173,6 +173,8 @@ pub const SKIP_REASONS: &[&str] = &[
     "not_pancake_router",
     "venue_unpinned",
     "no_pool",
+    // Cum `hotpath-fix-then-decoder-ur` (A3) - tach khoi "no_pool".
+    "rpc_error",
     "thin_liq",
     "deadline",
     "victim_would_revert",

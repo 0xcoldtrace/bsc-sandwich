@@ -7,6 +7,7 @@ use bsc_sandwich::decoder::SwapVenue;
 use bsc_sandwich::logger::BotLogger;
 use bsc_sandwich::pairbook::{PairBook, RpcPairResolver};
 use bsc_sandwich::pipeline::{self, PipelineOutcome, TxLogMeta};
+use bsc_sandwich::sim_v2::PoolReserves;
 use bsc_sandwich::state::{BotState, StateFiles};
 use bsc_sandwich::tax::{self, TaxCache};
 use bsc_sandwich::transport::{self, PendingTxRaw};
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         funnel: FunnelCounters::new(),
         gas_oracle: transport::GasOracle::new(),
         gas_units: RwLock::new(initial_gas_units),
+        reserve_cache: RwLock::new(transport::ReserveCache::new()),
     });
 
     {
@@ -823,6 +825,8 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
             }
             pipeline::PipelineSkip::VenueUnpinned => funnel.record_venue_v3(),
             pipeline::PipelineSkip::NoPool => funnel.record_no_pool(),
+            // Cum `hotpath-fix-then-decoder-ur` (A3)
+            pipeline::PipelineSkip::RpcError => funnel.record_rpc_error(),
             pipeline::PipelineSkip::BelowMin => funnel.record_below_min(),
             pipeline::PipelineSkip::ThinLiq => funnel.record_thin_liq(),
             pipeline::PipelineSkip::HoneypotOrTax => funnel.record_honeypot_or_tax(),
@@ -865,11 +869,15 @@ async fn pairs_vet_task(app_state: AppState) {
         let provider_opt = app_state.provider.read().await.clone();
         let current_block = app_state.last_block.read().await.unwrap_or(0);
         if let (Some(provider), true) = (provider_opt, current_block > 0) {
+            // Cum `hotpath-fix-then-decoder-ur` (A1) - tokens_to_vet gio tra
+            // THEM quote THAT cua tung entry (truoc day hardcode WBNB cho MOI
+            // token, khien 7 pool USDT trong pairs.txt bi do sai pool/loi).
             let targets = app_state.pairbook.read().await.tokens_to_vet();
             let mut results = Vec::with_capacity(targets.len());
-            let quote = venues::wbnb_addr();
-            let probe_in = probe_in_for_quote(pipeline::QuoteAsset::Wbnb);
-            for (pair_addr, token) in targets {
+            for (pair_addr, token, quote) in targets {
+                let quote_asset =
+                    if quote == venues::usdt_addr() { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };
+                let probe_in = probe_in_for_quote(quote_asset);
                 match bsc_sandwich::sim_evm::measure_tax_evm(provider.clone(), current_block, token, quote, probe_in)
                     .await
                 {
@@ -952,7 +960,7 @@ async fn gas_units_boot_task(app_state: AppState) {
         let provider_opt = app_state.provider.read().await.clone();
         let current_block = app_state.last_block.read().await.unwrap_or(0);
         let target = app_state.pairbook.read().await.tokens_to_vet().into_iter().next();
-        if let (Some(provider), true, Some((_pair_addr, token))) = (provider_opt, current_block > 0, target) {
+        if let (Some(provider), true, Some((_pair_addr, token, _quote))) = (provider_opt, current_block > 0, target) {
             match bsc_sandwich::sim_evm::measure_gas_units(provider, current_block, token, probe_in).await {
                 Ok((front, back)) => {
                     *app_state.gas_units.write().await = (front, back);
@@ -1143,6 +1151,44 @@ fn log_tx_seen(logger: &BotLogger, source: &str, raw: &PendingTxRaw) {
 /// đúng USDT (chiều MUA) -> `resolve_reserves_for_quote` -> `decide_paper_quote`.
 /// `scan_quote_usdt=false` (ship mặc định) -> nhánh 2 không bao giờ chạy ->
 /// hành vi tổng thể KHÔNG đổi 1 bit so với trước phiên này.
+///
+/// Cụm `hotpath-fix-then-decoder-ur` (A4) — resolve `(pair_addr, reserves)`
+/// với 2 lớp giảm RPC, DÙNG CHUNG cho cả nhánh WBNB lẫn USDT:
+/// (a) token đã có sẵn trong `PairBook` (`known_pair`, từ `pairs.txt` đã
+///     resolve lúc `reload`) -> bỏ hẳn `eth_call getPair`, chỉ còn
+///     `getReserves` (`resolve_v2_reserves_known_pair`).
+/// (b) `(pair_addr, current_block)` đã có trong `ReserveCache` (candidate
+///     KHÁC cùng pool, cùng block, tới trước) -> bỏ luôn `getReserves`, dùng
+///     lại reserves đã đo.
+/// Token KHÔNG có trong `PairBook` (chưa vet/ngoài `pairs.txt`) vẫn resolve
+/// đầy đủ như cũ (`resolve_v2_reserves`/`resolve_reserves_for_quote`) — 2 lớp
+/// trên KHÔNG đổi kết quả cuối cùng, chỉ đổi SỐ `eth_call` cần thiết để tới
+/// được kết quả đó.
+async fn resolve_reserves_cached(
+    app_state: &AppState,
+    provider: &dyn Provider,
+    token: Address,
+    quote_addr: Address,
+    pairbook: &PairBook,
+    current_block: u64,
+) -> Result<(Address, PoolReserves), pipeline::PipelineSkip> {
+    if let Some(pair_addr) = pairbook.known_pair(token, quote_addr) {
+        if let Some(reserves) = app_state.reserve_cache.read().await.cached(pair_addr, current_block) {
+            return Ok((pair_addr, reserves));
+        }
+        let reserves = pipeline::resolve_v2_reserves_known_pair(provider, pair_addr, quote_addr).await?;
+        app_state.reserve_cache.write().await.insert(pair_addr, current_block, reserves);
+        return Ok((pair_addr, reserves));
+    }
+    let (pair_addr, reserves) = if quote_addr == venues::wbnb_addr() {
+        pipeline::resolve_v2_reserves(provider, token).await?
+    } else {
+        pipeline::resolve_reserves_for_quote(provider, token, pipeline::QuoteAsset::Usdt).await?
+    };
+    app_state.reserve_cache.write().await.insert(pair_addr, current_block, reserves);
+    Ok((pair_addr, reserves))
+}
+
 async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // Cum `real-economics-mode2` (muc 2) - moc thoi gian NHAN tx (proxy cho
     // luc "tx.seen" duoc log - do lech giua 2 moc nay la chi phi tokio::spawn,
@@ -1233,7 +1279,15 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
             let provider_guard = app_state.provider.read().await;
             match provider_guard.as_ref() {
                 None => (PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool), "none"),
-                Some(provider) => match pipeline::resolve_v2_reserves(provider, token).await {
+                Some(provider) => {
+                    // Cum A4 - doc PairBook TRUOC de tan dung known_pair (bo
+                    // eth_call getPair khi token da co san trong pairs.txt).
+                    let pairbook_for_resolve = app_state.pairbook.read().await;
+                    let resolve_result =
+                        resolve_reserves_cached(&app_state, provider, token, venues::wbnb_addr(), &pairbook_for_resolve, current_block)
+                            .await;
+                    drop(pairbook_for_resolve);
+                    match resolve_result {
                     Err(skip) => (PipelineOutcome::Skip(skip), "none"),
                     Ok((pair_addr, reserves)) => {
                         // Cum `real-economics-mode2` (F-03) - gas that: gia
@@ -1279,7 +1333,8 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                         };
                         pipeline::decide_and_build_paper_v2(&victims, &pairbook, &tax_cache, &cfg, &risk, &app_state.logger, &input)
                     }
-                },
+                    }
+                }
             }
         }
     };
@@ -1303,7 +1358,10 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                 let usdt_outcome = match provider_guard.as_ref() {
                     None => PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool),
                     Some(provider) => {
-                        match pipeline::resolve_reserves_for_quote(provider, token, pipeline::QuoteAsset::Usdt).await {
+                        // Cum A4/A2 - doc PairBook 1 LAN, dung chung cho
+                        // known_pair (giam RPC) VA cong tax_ok (decide_paper_quote).
+                        let pairbook = app_state.pairbook.read().await;
+                        match resolve_reserves_cached(&app_state, provider, token, venues::usdt_addr(), &pairbook, current_block).await {
                             Err(skip) => PipelineOutcome::Skip(skip),
                             Ok((pair_addr, reserves)) => {
                                 // Cum `real-economics-mode2` (muc 1.d) - gas
@@ -1314,6 +1372,12 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                                 // cua pool do.
                                 meta.pair = Some(format!("{pair_addr:#x}"));
                                 meta.reserve_quote = Some(reserves.reserve_wbnb.to_string());
+                                // Cum `real-economics-mode2` (muc 0) - cung
+                                // danh dau "vet_fail" nhu nhanh WBNB (giu
+                                // visibility thay vi roi im lang qua not_in_list).
+                                if pairbook.is_vet_failed(&pair_addr) {
+                                    meta.detail = Some("vet_fail".to_string());
+                                }
                                 let gas_price_wei = app_state.gas_oracle.gas_price_wei(provider, current_block, &app_state.logger).await;
                                 let (units_front, units_back) = *app_state.gas_units.read().await;
                                 let victim_gas_price: u128 = u128::try_from(raw.gas_price).unwrap_or(u128::MAX);
@@ -1324,18 +1388,28 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                                     victim_gas_price,
                                     cfg.gas_price_max_wei(),
                                 );
-                                let gas_cost_usdt_wei = match pipeline::resolve_v2_reserves(provider, venues::usdt_addr()).await {
-                                    Ok((_p, wbnb_usdt_reserves)) => pipeline::convert_gas_cost_bnb_to_usdt(
-                                        gas_cost_bnb_wei,
-                                        wbnb_usdt_reserves.reserve_wbnb,
-                                        wbnb_usdt_reserves.reserve_token,
-                                    ),
-                                    Err(_) => u128::MAX, // khong quy doi duoc -> coi gas vo cung dat, an toan
-                                };
+                                // Cum A4 - pool WBNB/USDT (dung de quy doi gas)
+                                // cung di qua resolve_reserves_cached (chinh
+                                // pool nay da co san trong pairs.txt, xem dong
+                                // "USDT | vetted ... quote asset") - giam them
+                                // 1 eth_call getPair moi candidate USDT.
+                                let gas_cost_usdt_wei =
+                                    match resolve_reserves_cached(&app_state, provider, venues::usdt_addr(), venues::wbnb_addr(), &pairbook, current_block)
+                                        .await
+                                    {
+                                        Ok((_p, wbnb_usdt_reserves)) => pipeline::convert_gas_cost_bnb_to_usdt(
+                                            gas_cost_bnb_wei,
+                                            wbnb_usdt_reserves.reserve_wbnb,
+                                            wbnb_usdt_reserves.reserve_token,
+                                        ),
+                                        Err(_) => u128::MAX, // khong quy doi duoc -> coi gas vo cung dat, an toan
+                                    };
                                 meta.gas_cost_wei = Some(gas_cost_usdt_wei.to_string());
                                 meta.gas_price_gwei = Some(gas_price_wei as f64 / 1e9);
                                 let tax_cache = app_state.tax_cache.read().await;
                                 let (o, _tag) = pipeline::decide_paper_quote(
+                                    &pairbook,
+                                    pair_addr,
                                     &tax_cache,
                                     &cfg,
                                     &raw.input,
@@ -1751,6 +1825,7 @@ mod tests {
             funnel: FunnelCounters::new(),
             gas_oracle: transport::GasOracle::new(),
             gas_units: RwLock::new((160_000, 140_000)),
+            reserve_cache: RwLock::new(transport::ReserveCache::new()),
         });
 
         let task_state = app_state.clone();
@@ -1908,6 +1983,7 @@ mod tests {
             (pipeline::PipelineSkip::NotQuotePair, "not_wbnb_pair"),
             (pipeline::PipelineSkip::SellDirection, "not_wbnb_pair"),
             (pipeline::PipelineSkip::NoPool, "no_pool"),
+            (pipeline::PipelineSkip::RpcError, "rpc_error"),
             (pipeline::PipelineSkip::BelowMin, "below_min"),
             (pipeline::PipelineSkip::ThinLiq, "thin_liq"),
             (pipeline::PipelineSkip::HoneypotOrTax, "honeypot_or_tax"),

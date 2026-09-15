@@ -110,6 +110,11 @@ pub struct AppStateInner {
     /// được `main.rs::gas_units_boot_task` ghi đè bằng số ĐO THẬT (revm, 1
     /// lần lúc boot trên 1 pair đã vet) nếu đo thành công.
     pub gas_units: RwLock<(u64, u64)>,
+    /// Cụm `hotpath-fix-then-decoder-ur` (A4b) — cache `(pair, block) ->
+    /// reserves` để KHÔNG gọi lặp lại `eth_call getReserves`/`token0` cho
+    /// CÙNG 1 pool trong CÙNG 1 block (nhiều candidate cùng pool nóng rất phổ
+    /// biến, xem `transport::ReserveCache`).
+    pub reserve_cache: RwLock<crate::transport::ReserveCache>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -237,11 +242,13 @@ async fn validate_list(State(state): State<AppState>) -> Json<Value> {
 ///   tx V2 luôn cộng `venue_v2` VÀ đúng 1 trong số {no_pool, below_min,
 ///   thin_liq, honeypot_or_tax, unprofitable, victim_would_revert,
 ///   simulated} — khác các bucket khác vốn loại trừ lẫn nhau).
-/// - `rpc_error`: DÀNH SẴN, LUÔN `0` phiên này — `pipeline::resolve_v2_reserves`
-///   gộp "không có pool" VÀ "eth_call lỗi mạng" thành CÙNG 1 `PipelineSkip::NoPool`
-///   (quyết định có chủ đích từ `5.1`, xem `docs/STATE.md`) nên chưa có tín
-///   hiệu nào tách riêng lỗi RPC khỏi "chắc chắn không pool" — không bịa số,
-///   để `0` + ghi rõ lý do trong BAOCAO thay vì giả vờ đã đo được.
+/// - `rpc_error`: cụm `hotpath-fix-then-decoder-ur` (A3) — trước đó DÀNH SẴN,
+///   LUÔN `0` (`pipeline::resolve_v2_reserves` gộp "không có pool" VÀ
+///   "eth_call lỗi mạng" thành CÙNG 1 `PipelineSkip::NoPool`, quyết định có
+///   chủ đích từ `5.1`). Từ cụm này, `resolve_v2_reserves`/
+///   `resolve_reserves_for_quote`/`resolve_v2_reserves_known_pair` tách RIÊNG
+///   `PipelineSkip::RpcError` (timeout/lỗi mạng) khỏi `NoPool` (Factory trả
+///   `address(0)`, chắc chắn không pool) — field này giờ có số THẬT.
 /// - `below_min`/`thin_liq`/`honeypot_or_tax`/`unprofitable`/`victim_would_revert`:
 ///   terminal, khớp `PipelineSkip` cùng tên (áp dụng chung cho CẢ nhánh V2
 ///   wallet/pair/universal LẪN nhánh USDT fallback — 2 nhánh dùng chung ý
@@ -305,6 +312,12 @@ impl FunnelCounters {
     }
     pub fn record_no_pool(&self) {
         self.no_pool.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Cụm `hotpath-fix-then-decoder-ur` (A3) — field đã DÀNH SẴN từ
+    /// `foundation-fix-then-real-sim` (luôn 0 tới giờ), lần đầu có số thật khi
+    /// `PipelineSkip::RpcError` phát sinh.
+    pub fn record_rpc_error(&self) {
+        self.rpc_error.fetch_add(1, Ordering::Relaxed);
     }
     pub fn record_below_min(&self) {
         self.below_min.fetch_add(1, Ordering::Relaxed);
