@@ -254,3 +254,55 @@ chép, mà là giới hạn lịch sử git thật của repo).
   KHÔNG được sửa file đó).
 - **Dashboard tĩnh** (`web/app.js`) vẫn chưa vẽ các khối mới (`shadow`,
   `bribe`, `competitor`, `buckets_front_in_bnb`) — API đã đủ.
+
+---
+
+## Cụm `truth-victim-ok-and-memleak` (BAOCAO44, 2026-09-16)
+
+### ĐÃ XONG
+
+- **Mục 1 — PHÂN ĐỊNH `victim_ok=false`.** Cả 2 giả thuyết ghi ở
+  `docs/STATE.md` mục 5b đều SAI; nguyên nhân thật là **chân front của ta
+  giết victim**, đo trên 14 victim thật (`real_rpc_victim_ok_verdict_ladder`):
+  `front_in=0` thì 14/14 victim sống, `front_in` theo V2-math thì 13/14 chết,
+  5 dòng revert đúng chữ `PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT`.
+- **Mục 2 — SỬA.** `sim_v2::max_front_in_victim_ok` +
+  `search_max_front_in_victim_ok`; áp cho cả 3 đường quyết định. 4/5 case
+  `INSUFFICIENT_OUTPUT_AMOUNT` được CỨU thành giao dịch victim-sống và CÓ LÃI.
+- **Mục 3 — RÒ RỈ BỘ NHỚ.** `src/mem.rs`, `GET /api/mem`, log `mem.rss_mb`
+  mỗi phút; đặt trần thật cho `ReserveCache`/`NonceCache`/
+  `CompeteStats.top_bots`/`.gas_samples`; 3 handler HTTP thôi đọc cả
+  `bot.jsonl` vào RAM (`read_log_tail`).
+- **Mục 4** — `pairs_vet_task` lấy `eth_blockNumber` 1 lần mỗi 10 pool.
+- **Mục 5** — `scripts/bsc-sandwich-paper.service` +
+  `scripts/bsc-sandwich.logrotate` + `scripts/install_systemd_vps.sh`; đã cài
+  và ĐANG CHẠY trên VPS, `Restart=always` đã chứng minh bằng `kill -9`.
+- **Mục 6** — mọi `net_pos` kèm `victim_ok_v2`/`victim_ok_evm`; khối
+  `victim_ok` trong `/api/econ`, tiền chỉ cộng khi CẢ HAI `true`.
+- **2 BUG THẬT lộ ra giữa phiên** (việc dính liền, xem `docs/STATE.md`):
+  task `pair.reload` giữ khoá GHI `pairbook` xuyên `.await` hàng trăm
+  `eth_call`; và `mem_watch_task` chết vì chính bug đó.
+
+### CÒN NỢ (mới, của chính cụm này)
+
+- **Chạy 6 giờ trên VPS CHƯA XONG trong phiên này** — unit systemd đã chạy từ
+  07:35 UTC nhưng phiên kết thúc trước mốc 6 giờ. Bảng 1b/1d tính lại trên
+  cửa sổ đó là việc của phiên sau (log nằm ở `logs/bot.jsonl` trên VPS, log
+  10,92 h cũ đã đổi tên thành `logs/bot.jsonl.24h_baocao43`, KHÔNG xoá).
+- **Không tính lại được kinh tế 10,92 h theo cổng mới** — log cũ KHÔNG có
+  `amount_out_min` (field chỉ có từ cụm này), nên không dựng lại được biên
+  `max_front_in_victim_ok` cho 610 dòng `victim_would_revert`. Chỉ nói được
+  số ĐẾM (610 dòng, 570 USDT, 552 dòng dồn vào ĐÚNG 1 pool `0xd69aeb83…`),
+  không nói được số tiền.
+- **0/524 cơ hội "có lãi" của 10,92 h từng được EVM kiểm** (`shadow.sim` = 0
+  dòng trong cả file). Theo luật mục 6 thì lãi XÁC NHẬN được của cửa sổ đó
+  bằng **0**.
+- **`p95 seen_to_decision` chưa đo lại được sau khi sửa** — mục 4 sửa vet
+  task, nhưng nghi phạm LỚN HƠN (bug khoá `pairbook`) chỉ lộ ra sau đó; cần
+  1 lần chạy dài để có p95 tin cậy.
+- **Thang ladder lấy mẫu TOÀN mempool**, không chỉ pool trong `pairs.txt`,
+  nên phần lớn "ERR" là token honeypot/anti-bot chưa vet (back-sell revert) —
+  đúng như mong đợi nhưng làm tỉ lệ trong bảng KHÔNG đại diện cho tập pool bot
+  thật sự giao dịch. Cần một lần chạy ladder giới hạn trong `pairs.txt`.
+- **Tỉ lệ THẮNG cuộc đua: vẫn MISSING** (nợ cũ, không đụng ở cụm này).
+- **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ cũ).

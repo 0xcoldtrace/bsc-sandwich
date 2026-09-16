@@ -741,10 +741,31 @@ impl ReserveCache {
 // RPC": chỉ số tx ĐÃ LÊN BLOCK gần nhất + nonce ví shadow prefetch theo block.
 // ============================================================================
 
-/// Số block gần nhất giữ lại trong `MinedTxIndex`. 3 block BSC ≈ 9 giây —
-/// thừa sức phủ khoảng thời gian từ lúc bot thấy tx pending tới lúc nó quyết
-/// định (p95 ~350 ms, xem BAOCAO41), nhưng vẫn đủ ngắn để bộ nhớ không phình.
-pub const MINED_INDEX_DEPTH: usize = 3;
+/// Số block gần nhất giữ lại trong `MinedTxIndex`.
+///
+/// # Vì sao 3 là SAI (đo thật, cụm `truth-victim-ok-and-memleak`)
+///
+/// Lý lẽ cũ: *"3 block BSC ≈ 9 giây — thừa sức phủ khoảng thời gian từ lúc
+/// bot thấy tx pending tới lúc nó quyết định (p95 ~350 ms)"*. Lý lẽ đó đúng
+/// với p50 nhưng cổng này tồn tại CHÍNH LÀ để chặn phần đuôi. Đo thật trên
+/// `latency.decision_vs_mined` (22 mẫu shadow, WSL):
+///
+/// ```text
+/// delta = decision_block - mined_block
+///   -3:1  -2:1  -1:8  +0:8  +3:1  +4:1  +15:1  +19:1
+///   -> 4/22 (18%) quyet dinh SAU khi victim DA LEN BLOCK
+/// ```
+///
+/// `delta = +15` và `+19` nằm NGOÀI cửa sổ 3 block, nên cổng "victim còn
+/// pending không" trả `false` (không thấy trong index ⇒ tưởng còn pending) và
+/// bot ký bundle cho một tx ĐÃ NẰM TRÊN CHAIN. Hậu quả quan sát được:
+/// `shadow.sim` trả `victim_ok=false` với `TransferHelper: TRANSFER_FROM_FAILED`
+/// — victim không còn tiền vì chính nó đã tiêu rồi.
+///
+/// 32 block ≈ 70 giây, phủ được cả `delta = +19`. Chi phí bộ nhớ: BSC ~150–300
+/// tx/block ⇒ ~10k hash ⇒ dưới 1 MB, và vẫn là trần CỐ ĐỊNH (không tăng theo
+/// thời gian chạy) nên không mâu thuẫn mục 3 của chính cụm này.
+pub const MINED_INDEX_DEPTH: usize = 32;
 
 /// Cụm `bugfix-presign-and-contract-plan` (A4) — "mempool view" của bot: tập
 /// hash tx đã xuất hiện trong `MINED_INDEX_DEPTH` block gần nhất, nạp bởi 1
@@ -1005,6 +1026,36 @@ mod tests {
         assert_eq!(PendingSource::Ws.as_str(), "ws");
         assert_eq!(PendingSource::Txpool.as_str(), "txpool");
         assert_eq!(PendingSource::InjectOnly.as_str(), "inject_only");
+    }
+
+    /// Cụm `truth-victim-ok-and-memleak` — hồi quy cho ĐÚNG con số đã đo:
+    /// `latency.decision_vs_mined` có mẫu `delta = +19`, tức victim đã lên
+    /// block 19 block TRƯỚC lúc bot quyết định. Với `MINED_INDEX_DEPTH = 3`
+    /// cũ, cổng "victim còn pending không" KHÔNG thấy hash đó và bot ký bundle
+    /// cho một tx đã nằm trên chain (biểu hiện: `shadow.sim` trả
+    /// `TransferHelper: TRANSFER_FROM_FAILED`).
+    #[test]
+    fn mined_index_phai_phu_duoc_do_tre_19_block_da_do_that() {
+        let mut idx = MinedTxIndex::new();
+        // Hash victim PHAI khac moi hash don khac ben duoi (dung 0xff, cac block
+        // don dung 1..=37) - neu trung, block don se vo tinh nap lai chinh victim.
+        let victim = B256::repeat_byte(0xff);
+        let mined_at = 1_000_000u64;
+        idx.insert_block(mined_at, std::collections::HashSet::from([victim]));
+        // 19 block troi qua, moi block co tx khac.
+        for i in 1..=19u64 {
+            idx.insert_block(mined_at + i, std::collections::HashSet::from([B256::repeat_byte(i as u8)]));
+        }
+        assert!(
+            idx.contains(victim),
+            "victim dao cach day 19 block PHAI van nam trong index - neu khong, bot se ky bundle cho tx da len chain"
+        );
+        // Ngoai cua so thi duoc phep quen (index van co TRAN, dung muc 3).
+        for i in 20..=(MINED_INDEX_DEPTH as u64 + 5) {
+            idx.insert_block(mined_at + i, std::collections::HashSet::from([B256::repeat_byte(i as u8)]));
+        }
+        assert!(!idx.contains(victim), "ngoai cua so {MINED_INDEX_DEPTH} block thi duoc phep quen");
+        assert!(idx.len() <= MINED_INDEX_DEPTH, "index phai co tran that, khong phinh vo han");
     }
 
     #[test]

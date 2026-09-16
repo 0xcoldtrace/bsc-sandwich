@@ -2663,10 +2663,29 @@ fn spawn_shadow_bundle_sim(
                 None => return,
             },
         };
+        // ---------------------------------------------------------------
+        // Cum `truth-victim-ok-and-memleak` - BUG THAT, sua o day.
+        //
+        // `fork_block` truyen vao la `current_block` = block bot DANG THAY luc
+        // quyet dinh. Nhung `AlloyDB` doc state o CUOI block do. Neu victim
+        // duoc dao NGAY TRONG block day (`decision_vs_mined_block = 0`, do
+        // that: 8/22 mau) thi state cuoi block DA BAO GOM chinh giao dich cua
+        // victim -> replay lai no lan nua tat nhien hong voi
+        // `TransferHelper: TRANSFER_FROM_FAILED` (tien da tieu roi).
+        //
+        // Do that tren 2 victim shadow: bot fork tai block dao +4 va +15, ca
+        // 2 deu `TRANSFER_FROM_FAILED` o CA `front_in = 0` - tuc khong lien
+        // quan gi toi chan front cua ta.
+        //
+        // Sua: fork tai `fork_block - 1`. Victim con pending khi bot nhin thay
+        // no, nen no chi co the duoc dao o `current_block` hoac sau do =>
+        // `current_block - 1` LUON la state TRUOC victim. Doi lai reserve gia
+        // hon dung 1 block (~3 giay) - re hon nhieu so voi mot ket qua sim sai.
+        let sim_fork_block = fork_block.saturating_sub(1);
         let t0 = std::time::Instant::now();
         match bsc_sandwich::sim_evm::simulate_sandwich_quote(
             provider.clone(),
-            fork_block,
+            sim_fork_block,
             front_in,
             token,
             quote_addr,
@@ -2681,7 +2700,8 @@ fn spawn_shadow_bundle_sim(
                         "victim_hash": format!("{victim_hash:#x}"),
                         "token": format!("{token:#x}"),
                         "quote": quote_asset.as_str(),
-                        "fork_block": fork_block,
+                        "fork_block": sim_fork_block,
+                        "decision_block": fork_block,
                         "front_in_wei": o.front_in.to_string(),
                         "profit_sim_wei": o.profit_wei.to_string(),
                         // Don vi = quote cua pool (BNB hoac USDT), xem `quote`.
@@ -2707,7 +2727,7 @@ fn spawn_shadow_bundle_sim(
                     let t1 = std::time::Instant::now();
                     match bsc_sandwich::sim_evm::diagnose_victim_ok(
                         provider,
-                        fork_block,
+                        sim_fork_block,
                         token,
                         quote_addr,
                         &victim,
@@ -2751,7 +2771,7 @@ fn spawn_shadow_bundle_sim(
                             "shadow.victim_diag",
                             serde_json::json!({
                                 "victim_hash": format!("{victim_hash:#x}"),
-                                "fork_block": fork_block,
+                                "fork_block": sim_fork_block,
                                 "error": e.to_string(),
                                 "diag_ms": t1.elapsed().as_secs_f64() * 1000.0,
                             }),

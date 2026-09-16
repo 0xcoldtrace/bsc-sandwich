@@ -5084,3 +5084,251 @@ vì ngoài phạm vi lệnh — ghi rõ thay vì đoán.
 - **Tỉ lệ THẮNG cuộc đua: vẫn MISSING** — mọi con số lãi đều là mô phỏng.
 - **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ từ
   `real-economics-mode2`), không đổi ở cụm này.
+
+---
+
+## `truth-victim-ok-and-memleak` — phân định `victim_ok=false` + 3 bug thật (BAOCAO44, 2026-09-16)
+
+### 1. CÂU HỎI SỐ 1 ĐÃ CÓ CÂU TRẢ LỜI: **chân front của TA giết victim**
+
+Mục 5b của cụm trước để lại 2 giả thuyết và một cách phân định 1 dòng. Kết
+quả: **cả 2 giả thuyết đều sai**, và cách phân định đó phải mở rộng mới dùng
+được.
+
+**Không fork lại được 4 bundle RUN 4.** Block `122169515`/`122169998`/
+`122171061`/`122171147` đã quá sâu so với cửa sổ state của mọi node trong
+`.env` — đo thật cùng ngày:
+
+```
+bsc-dataseed1.bnbchain.org  -> -32000 missing trie node
+bsc-dataseed1.defibit.io    -> -32000 missing trie node
+bsc.blockrazor.xyz          -> -32000 not supported
+rpc-bsc.48.club             -> -32000 not supported
+bsc.rpc.blxrbdn.com         -> -32000 not supported
+bsc-rpc.publicnode.com      -> -32602 Archive requests require a personal token
+```
+
+Vì vậy 4 hash đó được phân tích bằng cách **không cần archive** (`eth_getTransactionByHash`
++ `eth_getTransactionReceipt` + `eth_getLogs` trên đúng block đào):
+
+| hash | amountIn | amountOutMin | amountOut THẬT | biên an toàn | status |
+|---|---|---|---|---|---|
+| `0x4c29f855…` | 807,30 USDT | 3 371,81 | 1 438 637,26 | ×426 | `0x1` |
+| `0x6bea03d7…` | 1 085,40 USDT | 276,07 | 1 931 792,88 | ×6 997 | `0x1` |
+| `0x327cb265…` | 886,69 USDT | 913,32 | 6 234 926,53 | ×6 826 | `0x1` |
+| `0x71d9906b…` | 999,90 USDT | 73 826,75 | 1 963 303,05 | ×26 | `0x1` |
+
+Hai kết luận đọc thẳng từ bảng:
+
+- **Giả thuyết 1 (ví victim chưa có USDT tại block fork) SAI.** Cả 4 tx đều
+  `status = 0x1` trên chain thật, và `eth_getLogs` cho USDT `Transfer` VÀO ví
+  victim trong CHÍNH block đào trả về **0 dòng** cho cả 4 — tức victim đã có
+  USDT từ block TRƯỚC, đúng cái mà fork ở `block-1` nhìn thấy.
+- **Giả thuyết 2 (front đẩy victim qua `amountOutMin`) cũng không giải thích
+  được 4 mẫu này**: `amountOutMin` của chúng thấp hơn `amountOut` thật từ 26
+  tới ~7 000 lần, nên KHÔNG chân front nào trong phạm vi `max_front_usdt`
+  có thể đẩy victim xuống dưới ngưỡng đó.
+
+**Thí nghiệm thật thay thế** (`real_rpc_victim_ok_verdict_ladder`): lấy victim
+ĐÃ ĐÀO ở các block SÁT ĐỈNH (fork tại `mined_block − 1` luôn nằm trong cửa sổ
+state), chạy 6 biến thể `front_in` trên CÙNG 1 fork. 14 victim thật:
+
+```
+verdict front_giet_victim  = 13
+verdict khong_tai_hien     =  1
+a:front=0  -> victim SONG 14/14
+b:front=v2 -> victim CHET 13/14
+ly do revert (b): PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT = 5
+                  SIM_ERR back-sell revert (honeypot/anti-bot)  = 8
+```
+
+⇒ `front_in=0` thì victim sống **14/14**. Không có mẫu nào của giả thuyết
+"state fork sai". Nguyên nhân là **chân front của ta**.
+
+**Giới hạn phải ghi rõ**: thang này lấy mẫu TOÀN mempool chứ không riêng pool
+trong `pairs.txt`, nên 8 dòng `SIM_ERR back-sell revert` là token honeypot/
+anti-bot CHƯA VET — đúng thứ mà `pairs.txt` vet tay để loại. Tỉ lệ trong bảng
+vì vậy KHÔNG đại diện cho tập pool bot thật sự giao dịch.
+
+### 2. SỬA: ràng buộc `front_in` theo "victim phải sống"
+
+Bug nằm ở chỗ ghép 2 bước:
+
+```rust
+let quote = search_max_front_in(...);              // toi da hoa LAI, khong biet amount_out_min
+if !victim_still_ok(quote.victim_out, min) { ... } // roi VUT BO neu victim chet
+```
+
+`search_max_front_in` không hề biết `amountOutMin`, còn `victim_still_ok` chỉ
+là cổng nhị phân ĐẶT SAU. Hệ quả: mọi candidate mà mức `front_in` sinh lời
+nhất làm victim revert đều bị vứt, thay vì hạ `front_in` xuống mức victim còn
+sống.
+
+`sim_v2::max_front_in_victim_ok` nhị phân tìm `front_in` LỚN NHẤT còn giữ
+victim sống (dựa trên tính ĐƠN ĐIỆU của `victim_out` theo `front_in`), rồi
+`search_max_front_in_victim_ok` ternary-search lãi trong `[0, biên]`. Áp cho
+CẢ 3 đường: `evaluate_candidate`, `evaluate_candidate_quote`, `decide_paper`.
+
+`amountOutMin = 0` (rất phổ biến) ⇒ ràng buộc không cắt gì, kết quả y hệt
+search cũ (có test khẳng định). Không có mức nào giữ victim sống ⇒
+`victim_would_revert` THẬT.
+
+**Hiệu quả đo thật** (cột `d:front=v2_gated` cùng bảng trên): trong 5 case
+revert vì `INSUFFICIENT_OUTPUT_AMOUNT`, **4 case được CỨU** — victim sống
+trong EVM và giao dịch CÓ LÃI:
+
+```
+0x4f591d18  front_gated=0.000368 BNB  profit=+0.000018 BNB  victim OK
+0xd321781c  front_gated=0.000769 BNB  profit=+0.000016 BNB  victim OK
+0x50596970  front_gated=0.001668 BNB  profit=+0.000021 BNB  victim OK
+0x4b8049f6  front_gated=0.032271 BNB  profit=+0.000019 BNB  victim OK
+0xddc52f99  front_gated=0        -> khong cuu duoc (victim_would_revert THAT)
+```
+
+Lãi mỗi case rất nhỏ (~0,00002 BNB ≈ 0,01 USD) — ghi đúng số, KHÔNG tô hồng.
+
+### 3. Vì sao KHÔNG tính lại được kinh tế 10,92 h
+
+Cổng mới là **tập cha** của cổng cũ: nếu mức sinh lời nhất vốn đã giữ victim
+sống thì biên = `max_front` và kết quả y hệt. Nên 524 dòng `sim.result` của
+cửa sổ 10,92 h KHÔNG ĐỔI. Phần THÊM là các dòng từng bị vứt:
+
+```
+tx.skip{victim_would_revert} = 610   (570 usdt / 40 wbnb)
+  552/610 dồn vào ĐÚNG 1 pool: 0xd69aeb83…  (chính pool (a) của bảng 1d BAOCAO43)
+```
+
+Nhưng **không tính được số TIỀN** của 610 dòng đó: log cũ không có
+`amount_out_min` (field chỉ tồn tại từ cụm này), mà thiếu nó thì không dựng
+lại được biên. Ghi MISSING, không suy diễn.
+
+**Con số quan trọng hơn**: cả file log 10,92 h có **0 dòng `shadow.sim`** —
+tức KHÔNG MỘT cơ hội nào trong 524 từng được EVM kiểm. Theo luật mục 6 (tiền
+chỉ tính khi CẢ HAI cổng `true`), lãi XÁC NHẬN ĐƯỢC của cửa sổ 10,92 h là
+**0**, và 4 bundle duy nhất từng được EVM kiểm (RUN 4) đều `victim_ok=false`.
+
+### 4. RÒ RỈ BỘ NHỚ — 4 container không trần + 1 nguồn ngoài container
+
+`src/mem.rs` đọc `VmRSS`/`VmHWM` thật; `GET /api/mem` + log `mem.rss_mb` mỗi
+phút liệt kê 16 container sống lâu kèm trần. 4 chỗ KHÔNG có trần:
+
+| container | tình trạng cũ | trần mới |
+|---|---|---|
+| `ReserveCache.entries` | doc-comment nói *"KHÔNG cần dọn dẹp chủ động"* | 8 block |
+| `NonceCache.entries` | không có bước xoá nào | 4 block |
+| `CompeteStats.top_bots` | doc nói "giữ tối đa 20" nhưng code KHÔNG cắt | 20 địa chỉ |
+| `CompeteStats.gas_samples` | `Vec::push` vô hạn | 500 mẫu |
+
+`ReserveCache` là nặng nhất vì nguồn ghi KHÔNG phải đường nóng mà là
+`sync_reserves_task`: 1 entry cho MỖI sự kiện `Sync` của MỖI pool ở MỖI block
+— 126 pool × ~2,2 block/s ⇒ cỡ 10 triệu entry sau 11 giờ.
+
+**Nguồn thứ 5, nằm NGOÀI mọi container**: 3 handler (`/api/econ`,
+`/api/compete`, `/api/shadow`) gọi `read_to_string` trên TOÀN BỘ `bot.jsonl`
+(214 MB trên VPS) rồi mới cắt dòng cuối. Mỗi lời gọi cấp phát 214 MB; glibc
+không trả arena lớn về hệ điều hành nên `VmRSS` chỉ lên chứ không xuống. Đây
+là lý do vì sao chỉ soi map/vec thì KHÔNG giải thích hết 7,6 GB. Sửa bằng
+`web.rs::read_log_tail` (seek từ cuối, trần 256 MiB cố định).
+
+### 5. BUG THẬT lộ ra khi đo mục 3 — khoá GHI `pairbook` giữ xuyên `.await`
+
+Task `pair.reload` (`main.rs`) làm đúng một việc không được phép:
+
+```rust
+let mut book = pairbook.write().await;              // GIU KHOA GHI
+book.reload_if_due(&pairs_path, &resolver, ...).await;  // 1 eth_call MOI DONG, 133 dong
+```
+
+`reload` resolve mọi dòng `pairs.txt` bằng `Factory.getPair` — khoá ghi bị
+giữ suốt VÀI PHÚT qua hàng trăm điểm `.await`. `RwLock` của tokio công bằng
+với writer nên **mọi** `pairbook.read()` bị chặn theo, gồm đường nóng
+`handle_paper_tx` (3 chỗ đọc `pairbook` mỗi candidate).
+
+Đo thật trong phiên này:
+
+```
+/api/health   200  0.000554s
+/api/status   200  0.000673s
+/api/victims  200  0.000574s
+/api/pairs    TIMEOUT (>6s)      <-- chan boi khoa ghi
+/api/mem      TIMEOUT (>6s)      <-- chan boi khoa ghi
+```
+
+Và `mem_watch_task` chỉ ghi được **2 dòng** (phút 0 và phút 1) rồi tắt tiếng —
+tức số đo quan trọng nhất của mục 3 suýt biến mất đúng vì bug này.
+
+Sửa 2 phần:
+
+1. **`pair.reload`**: nhân bản `PairBook` (vài trăm entry, rẻ) → chạy reload
+   trên BẢN SAO khi KHÔNG giữ khoá → tráo vào dưới 1 khoá ghi NGẮN, có bước
+   áp lại `vet_snapshot()` của bản thật để không mất kết quả vet mà
+   `pairs_vet_task` ghi trong lúc reload chạy.
+2. **`mem_watch_task` / `container_sizes`**: đổi hết sang `try_read()`, và đọc
+   `rss_mb` TRƯỚC mọi khoá. Con số bộ nhớ không bao giờ được phép phụ thuộc
+   vào một khoá nào trong bot. `len = null` nghĩa là "khoá bận, lần này không
+   đo được" — khác hẳn `0`.
+
+Sau khi sửa: `/api/pairs` và `/api/mem` đều **0,8 ms**, `mem.rss_mb` ghi đều
+mỗi 60 giây.
+
+Bài học lặp lại lần thứ hai trong repo này (lần đầu là `errors_by_class` ở cụm
+`decision-data-24h`): **thêm một phép ĐO luôn kéo theo một bug thật lộ ra**.
+Ở đây phép đo còn suýt bị chính bug đó bịt miệng.
+
+### 6. Mục 4 — `eth_blockNumber` trong vet task
+
+Cụm `decision-data-24h` (mục 6b) đổi sang đọc block MỖI pool với ghi chú "1
+`eth_blockNumber` mỗi pool là rẻ". Hoá ra KHÔNG rẻ: p95 `seen_to_decision`
+nhảy 344 ms (BAOCAO42) → 752 ms (BAOCAO43 RUN 4). Nay lấy 1 lần mỗi
+`VET_BLOCK_REFRESH_EVERY = 10` pool: 10 pool × ~300 ms ≈ 3 s ≈ 6–7 block, còn
+rất xa cửa sổ state ~128 block nên KHÔNG làm sống lại bug fork-block-quá-cũ,
+mà giảm 90% số lời gọi RPC nền chen vào hàng đợi đường nóng.
+
+**Ghi trung thực**: sau khi tìm ra bug khoá `pairbook` ở mục 5, nghi phạm số 1
+của p95 752 ms nhiều khả năng là bug ĐÓ chứ không phải `eth_blockNumber`. Cần
+một lần chạy dài mới tách bạch được — ghi CÒN NỢ, không gán công cho bản sửa
+này.
+
+### 7. Mục 5 — systemd unit THẬT trên VPS
+
+`scripts/bsc-sandwich-paper.service` + `scripts/bsc-sandwich.logrotate` +
+`scripts/install_systemd_vps.sh`. Unit đọc `config.runtime.toml` (do
+installer tạo) chứ KHÔNG BAO GIỜ đọc thẳng `config.toml` của Chủ.
+
+`Restart=always` được CHỨNG MINH bằng `kill -9` (giả lập đúng cú OOM-kill đã
+giết lần chạy 24 h), không phải bằng việc đọc file cấu hình:
+
+```
+PID truoc khi giet : 385428
+kill -9 ; cho 14 giay
+PID sau             : 385509   NRestarts=1   ActiveState=active
+MemoryMax=6442450944 (6 GiB)   MemoryHigh=2147483648 (2 GiB)
+```
+
+**CẢNH BÁO cho phiên sau — có HAI máy, dễ nhầm:** `~/.ssh/config` trên WSL có
+host tên `bsc-vps` kèm ghi chú "VPS chinh thuc Singapore, BOT TIEN THAT CHAY O
+DAY". Máy đó **KHÔNG phải** máy production: nó không có repo, không có bot, và
+đang bị `vmw_balloon` lấy mất ~5,6 GB trong 8 GB danh nghĩa. Máy production
+(`VPS-511043-157`, `MemAvailable` 7,3 GB, RAM lành) mở bằng
+`key/bsc_vps_ed25519` trong repo. Log 10,92 h của BAOCAO43 được giữ lại ở đó
+dưới tên `logs/bot.jsonl.24h_baocao43` (KHÔNG xoá).
+
+### 8. Mục 6 — `net_pos` luôn đi kèm 2 cổng victim-ok
+
+`sim.result` thêm `victim_ok_v2` + `victim_out_wei` + `amount_out_min_wei`
+(dòng log tự chứng minh được thay vì bắt người đọc tin). `/api/econ` thêm khối
+`victim_ok`:
+
+```json
+"victim_ok": { "v2_ok": …, "v2_false": …, "v2_unknown": …,
+               "evm_ok": …, "evm_false": …, "evm_unknown": …,
+               "ca_hai_cong_ok": …, "sum_net_bnb_ca_hai_cong_ok": … }
+```
+
+`victim_ok_evm` ghép từ `shadow.sim` theo `victim_hash` bằng một LƯỢT QUÉT
+TRƯỚC — bắt buộc, vì `shadow.sim` chạy ở task nền nên dòng của nó nằm SAU
+dòng `sim.result` tương ứng trong file (đo thật RUN 4: cách nhau 4–9 giây),
+quét tuyến tính một lượt sẽ luôn "chưa biết".
+
+`unknown` KHÔNG được đọc thành `true`. Số tiền DUY NHẤT được phép dùng để kết
+luận kinh tế là `sum_net_bnb_ca_hai_cong_ok`.
