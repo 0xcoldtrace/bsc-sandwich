@@ -40,7 +40,12 @@ Type=simple
 WorkingDirectory=/root/bsc-sandwich
 # `.env` chua PRIVATE_KEY -> systemd doc truc tiep, KHONG bao gio in ra log.
 EnvironmentFile=/root/bsc-sandwich/.env
-ExecStart=/root/bsc-sandwich/target/release/bsc_sandwich /root/bsc-sandwich/config.toml
+# Doc `config.runtime.toml` (KHONG phai `config.toml` truc tiep):
+# `scripts/install_systemd_vps.sh` tao file do — mac dinh la BAN SAO y het
+# `config.toml` ship, va voi `--paper-thresholds` thi ha 6 nguong kinh te ve 0
+# giong het `scripts/paper_run.sh` (de so lieu 2 may so sanh duoc voi nhau).
+# Tach file rieng de unit KHONG BAO GIO ghi de `config.toml` that cua Chu.
+ExecStart=/root/bsc-sandwich/target/release/bsc_sandwich /root/bsc-sandwich/config.runtime.toml
 
 # --- tu song lai (dieu kien #1 cua lenh) ---
 Restart=always

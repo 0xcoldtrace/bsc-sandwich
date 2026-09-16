@@ -4,3 +4,4 @@ logs/
 target/
 artifacts/
 key/
+config.runtime.toml
