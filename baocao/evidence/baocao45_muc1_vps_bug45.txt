@@ -1,0 +1,20 @@
+== MUC 1 — VERIFY BUG #4/#5 SONG TREN VPS (cua so 08:50:55 -> 10:28 UTC, commit ca0a644) ==
+shadow.sim = 77 dong
+  con TRANSFER_FROM_FAILED = 0   (BAOCAO44 de nghi: phai = 0)
+  victim_ok=true           = 77 / 77
+  decision_block - fork_block: {1: 77}   (BAOCAO44 de nghi: luon = 1)
+  mined_block tra tu mined_index: {'chua_thay_trong_mined_index': 77}
+  victim_quote_topped_up=true = 75 / 77
+
+latency.decision_vs_mined (delta = decision_block - mined_block), n=77: {None: 77}
+  quyet dinh TRE (delta>0) = 0/77 (0%)
+
+mem.rss_mb tren VPS: 98 dong; dau 5.71 MB -> cuoi 72.50 MB (peak 72.50 MB), uptime 5820 s
+  tu moc 10 phut (600s, 49.65 MB) toi cuoi: tang 22.85 MB trong 87 phut
+
+[SUA LAI — ten field dung la `decision_vs_mined_block`]
+latency.decision_vs_mined n=77, phan bo delta (decision_block - mined_block):
+   delta  -1 : 49
+   delta  +0 : 28
+  quyet dinh TRE (delta>0) = 0/77 (0%)   [BAOCAO44 do duoc 18%]
+  quyet dinh SOM/kip (delta<=0) = 77/77 (100%)

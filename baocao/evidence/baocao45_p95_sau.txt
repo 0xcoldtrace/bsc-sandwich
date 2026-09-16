@@ -1,0 +1,27 @@
+== p95 SAU cong 0-RPC (WSL, commit ca0a644, binary c2ac1021..., 70 phut) ==
+n=62745 p50=0.011 p90=0.025 p95=0.126 p99=410.972 max=2897.0 (ms)
+20 mau cham nhat:
+     2897.0 ms  reason=unprofitable
+     2361.6 ms  reason=unprofitable
+     1937.2 ms  reason=victim_would_revert
+     1877.8 ms  reason=simulated
+     1761.9 ms  reason=victim_would_revert
+     1684.9 ms  reason=unprofitable
+     1619.1 ms  reason=victim_would_revert
+     1583.6 ms  reason=unprofitable
+     1556.9 ms  reason=unprofitable
+     1517.6 ms  reason=unprofitable
+     1494.4 ms  reason=victim_would_revert
+     1475.9 ms  reason=unprofitable
+     1465.5 ms  reason=victim_would_revert
+     1458.7 ms  reason=victim_would_revert
+     1458.7 ms  reason=victim_would_revert
+     1458.6 ms  reason=not_quote_pair
+     1458.6 ms  reason=sell_direction
+     1445.4 ms  reason=victim_would_revert
+     1426.9 ms  reason=victim_would_revert
+     1425.2 ms  reason=simulated
+reason cua 200 mau cham nhat: {'unprofitable': 97, 'victim_would_revert': 63, 'simulated': 20, 'sell_direction': 10, 'not_in_list': 8, 'not_quote_pair': 1, 'decode_fail': 1}
+reason toan bo: {'decode_fail': 27479, 'sell_direction': 19058, 'not_in_list': 11105, 'unprofitable': 2417, 'not_quote_pair': 1640, 'victim_would_revert': 506, 'venue_unpinned': 434, 'simulated': 103, 'deadline': 3}
+so quyet dinh > 1 ms = 2700 (4.30%) -> day la nhung tx THAT SU phai goi RPC
+  trong nhom do: p50=239.0 p95=847.8 max=2897.0 ms

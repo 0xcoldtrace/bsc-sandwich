@@ -1,0 +1,36 @@
+== Cum `verify-cluster-as-victim` (muc 1b) — DO LAI CU NHAY /api/econ ==
+May: WSL. CUNG MOT file log (logs/bot.jsonl.mem30mb, 30 087 622 byte) cho ca 2 lan do,
+nen chenh lech CHI do code, khong do du lieu.
+
+--- TRUOC ban sua (binary c2ac1021..., commit ca0a644 — da co ECON_EVENTS_CAN_DUNG
+    cua BAOCAO44) ---
+log size = 30 087 622 byte
+mem TRUOC : rss 41.66 MB  peak 42.34 MB
+goi /api/econ DUNG 1 LAN (0.790 s)
+mem SAU   : rss 289.91 MB peak 318.53 MB     -> +248.25 MB
+sau 2,5 phut: rss 290.03 MB                  -> KHONG tut lai
+(dong mem.rss_mb tuong ung: "2100s rss=289.91 peak=318.53 d=248.250")
+
+=> Ket luan: ban sua cua BAOCAO44 (loc chuoi truoc khi parse) KHONG an.
+   209 MB cua BAOCAO44 -> 248 MB o day, tren log cung co 30 MB.
+
+--- SAU ban sua (binary 71bdca78..., commit f9361ad — prune_econ_row +
+    String::from_utf8 khong copy) ---
+log size = 30 319 384 byte (bot moi ghi them ~230 KB luc boot)
+mem TRUOC : rss 21.32 MB  peak 21.32 MB
+goi /api/econ DUNG 1 LAN (0.341 s)
+mem SAU   : rss 112.00 MB peak 140.85 MB     -> +90.68 MB
+
+=> Giam 248.25 -> 90.68 MB = 2.74 lan; dinh 318.53 -> 140.85 = 2.26 lan.
+   Thoi gian phan hoi 0.790 -> 0.341 s.
+
+CON NO (ghi ro, khong tu nhan da giai quyet): van la O(kich thuoc log). Ngoai
+suy sang log 366 MB tren VPS thi 1 loi goi van ton ~1,1 GB (truoc la ~3 GB).
+Buoc triet de: cong don theo dong (streaming) thay vi dung Vec<Value> cho ca
+cua so — chua lam o cum nay.
+
+--- loi goi THU HAI tren cung tien trinh (sau ban sua) ---
+mem SAU loi goi 2: rss 209.58 MB peak 238.63 MB   -> +97.58 MB nua
+=> Moi lan goi van cong them ~90-98 MB va KHONG tra lai OS (arena glibc).
+   Dashboard tu refresh /api/econ van la duong dan toi OOM tren log lon.
+   Day la ly do CON NO "streaming" o tren la BAT BUOC, khong phai tuy chon.

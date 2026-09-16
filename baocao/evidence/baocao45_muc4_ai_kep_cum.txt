@@ -1,0 +1,26 @@
+== MUC 4: AI DANG KEP CUM (+-3 vi tri, 200 tx cum gan nhat) ==
+  tx cum xet                       = 200
+  co tx khac CHAM CUNG POOL trong +-3 = 40 (20.0%)
+  co dia chi dung CA TRUOC + SAU   = 0 (0.0%)
+  KHONG tim thay dia chi nao dung ca truoc lan sau tren cung pool trong +-3 vi tri -> khong thay ai kep cum nay (trong pham vi do duoc).
+
+-- Tren TOAN BO 554 tx cum quet duoc (khong chi 200) --
+   co tx khac cham CUNG pool trong +-3 vi tri = 112 (20.2%)
+   co dia chi dung CA TRUOC lan SAU tren cung pool = 0 (0.0%)
+   dia chi nghi kep: KHONG CO
+
+   Top 8 dia chi hay dung CUNG POOL, LIEN KE tx cum (truoc HOAC sau, khong phai kep):
+     0x287f83ac94fb367d6c9af6894a30f0aeceb77237  x2 (CHINH CUM)
+     0x54e31bc94bf59e334ae1fb1611a5fd24f185a080  x2 (CHINH CUM)
+     0x8ccd9cdf6e4c042d9b3dc32902ef99a7f711c2c1  x2 (CHINH CUM)
+     0xfe57a6071255ec61bf846446c1c8b81bf25a6d9a  x2 (CHINH CUM)
+     0x1bf5fbbaaab7adac2ccbfeae399bc77f43075759  x2 (CHINH CUM)
+     0x3aeb63015e84883ed4bc2b72a89c46d94dbffcbb  x2 (CHINH CUM)
+     0x36028e33e728105349a1c02ddc58945d8478f250  x2 (CHINH CUM)
+     0xad1fa62cb31196211cf6b97bd2881bede22697c7  x2 (CHINH CUM)
+
+   DOC DUNG: 0/554 truong hop co ai dung ca truoc lan sau. Phan lon hang xom
+   cung pool lai la CHINH cac vi cua cum (ho tu xep nhieu swap lien tiep tren
+   cung pool). Ket luan trong pham vi do duoc: KHONG THAY bot nao dang kep cum nay.
+   Gioi han phep do: chi xet +-3 vi tri va chi Swap V2 (topic0 V2). Mot cu kep
+   dat xa hon 3 vi tri, hoac qua V3/V4, se KHONG bi bat.

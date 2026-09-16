@@ -1,0 +1,42 @@
+== MUC 3 — DUONG GUI CUA CUM 0xB406 ==
+dau do mempool (mempool_probe, WSL, subscribe DUNG BSC_WS bot dung, KHONG loc gi):
+  646897 hash duy nhat, 0 lan lagged, cua so 2026-09-16 08:51:22.377843Z -> 2026-09-16 10:14:42.230668Z
+  moc block tu rpc.block cua bot: 1366 block, 122192701..122194066
+
+tx cum on-chain trong cua so quet: 554  |  trong do co CA moc block cua bot: 119
+
+-- TOAN BO tx cum trong cua so (n=119) --
+   theo loi vao: {'to_cluster': 77, 'from_seed': 18, 'from_funded': 24}
+   dau do THAY trong mempool  = 53 (44.5%)
+   dau do KHONG thay (private)= 66 (55.5%)
+   thay truoc luc block len (ms): n=53 p10=-206 p50=376 p90=50878 min=-3776 max=63300
+
+-- rieng loi vao `to_cluster` (n=77) --
+   theo loi vao: {'to_cluster': 77}
+   dau do THAY trong mempool  = 35 (45.5%)
+   dau do KHONG thay (private)= 42 (54.5%)
+   thay truoc luc block len (ms): n=35 p10=-46 p50=312 p90=50274 min=-1548 max=63300
+
+-- rieng loi vao `from_funded` (n=24) --
+   theo loi vao: {'from_funded': 24}
+   dau do THAY trong mempool  = 11 (45.8%)
+   dau do KHONG thay (private)= 13 (54.2%)
+   thay truoc luc block len (ms): n=11 p10=-383 p50=973 p90=50878 min=-3776 max=61642
+
+-- rieng loi vao `from_seed` (n=18) --
+   theo loi vao: {'from_seed': 18}
+   dau do THAY trong mempool  = 7 (38.9%)
+   dau do KHONG thay (private)= 11 (61.1%)
+   thay truoc luc block len (ms): n=7 p10=-383 p50=973 p90=50861 min=-383 max=61642
+
+-- DOI CHUNG: ti le dau do thay MOI tx cua cung cac block do --
+   (lay 40 block dau cua cua so, so moi tx trong block voi dau do)
+
+-- DOI CHUNG (bat buoc): dau do thay bao nhieu % MOI tx cua 30 block ngau nhien trong cung cua so --
+   tong tx trong 30 block = 3189
+   dau do THAY            = 1546 (48.5%)
+   => ti le nen cua dau do la 48.5%. Ti le cua tx CUM la 44.5%.
+   Doc dung: tx cum KHONG kin dao hon mat bang chung. Ket luan 'ho da chuyen
+   private' KHONG co bang chung tu phep do nay. Cai bot BO SOT ho KHONG phai
+   vi ho gui private, ma vi 65% tx cum di toi contract rieng (0x8180) nen bi
+   chan ngay o gate router - xem bang loi vao o tren (77/119 = to_cluster).
