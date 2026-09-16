@@ -19,7 +19,8 @@ Không subagent ghi file.
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: xem dòng `Commit:` cuối file (điền sau `git commit`).
+Commit nội dung: `0a1884c6d2efcd81cd6250b381aa73dcc69300c1`.
+Commit cuối phiên (điền hash vào ô này + dòng cuối): xem dòng `Commit:` cuối file.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -202,4 +203,5 @@ getCode Uniswap: 24535 / 8273 / 24497 (ô 5).
 
 ---
 
-Commit: (điền sau git commit)
+Commit: `0a1884c6d2efcd81cd6250b381aa73dcc69300c1` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này, không đổi code.
