@@ -37,8 +37,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--log", required=True)
     ap.add_argument("--label", default="")
+    ap.add_argument("--cluster-from-scan", default="",
+                    help="output cua scripts/cluster_tx_scan.py - NGUON SU THAT cho 'tx nay co phai cua cum'. "
+                         "Co that nay vi co `victim_in_competitor_cluster` cua bot LUON false cho mau hinh "
+                         "'cap von + swap trong CUNG block': luc bot quyet dinh, block do chua duoc dao nen "
+                         "log Transfer cap von chua ton tai.")
     a = ap.parse_args()
 
+    onchain_cluster = set()
+    if a.cluster_from_scan:
+        for line in open(a.cluster_from_scan):
+            onchain_cluster.add(json.loads(line)["hash"].lower())
+        print(f"nguon su that cum (on-chain): {len(onchain_cluster)} tx")
     sims, shadows, econs = {}, {}, {}
     t0 = t1 = None
     for line in open(a.log, errors="replace"):
@@ -70,7 +80,8 @@ def main():
         vno = int(vno) if vno else None
         rows.append({
             "hash": h,
-            "cluster": bool(s.get("victim_in_competitor_cluster")),
+            "cluster": (h in onchain_cluster) if onchain_cluster else bool(s.get("victim_in_competitor_cluster")),
+            "cluster_bot_flag": bool(s.get("victim_in_competitor_cluster")),
             "pair": s.get("pair"),
             "quote": s.get("quote"),
             "amount_out_min": amin,
@@ -84,6 +95,12 @@ def main():
             "evm_err": (sh.get("error") or (sh.get("victim_revert_reason") if sh else None)) if sh else "KHONG_CO_shadow.sim",
         })
 
+    if onchain_cluster:
+        n_bot = sum(1 for r in rows if r["cluster_bot_flag"])
+        n_chain = sum(1 for r in rows if r["cluster"])
+        miss = sum(1 for r in rows if r["cluster"] and not r["cluster_bot_flag"])
+        print(f"co CUM: bot nhan dien luc chay = {n_bot} ; on-chain that su = {n_chain} ; "
+              f"bot BO SOT = {miss}")
     for grp, want in (("CUM DOI THU", True), ("NGOAI CUM", False)):
         sub = [r for r in rows if r["cluster"] == want]
         print(f"\n---- {grp}: {len(sub)} candidate Simulated ----")

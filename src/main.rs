@@ -795,6 +795,24 @@ async fn subscribe_competitor_funding(app_state: AppState, ws_urls: Vec<String>)
                     Ok(Ok(log)) => {
                         let (Some(block), Some(to_topic)) = (log.block_number, log.topics().get(2).copied()) else { continue };
                         let wallet = bsc_sandwich::competitor::address_from_topic(to_topic);
+                        // Cụm `verify-cluster-as-victim` — BUG THẬT: 3 seed
+                        // KHÔNG chỉ cấp vốn cho ví burner, chúng còn TỰ SWAP.
+                        // Khi seed swap, router gọi `transferFrom(seed → POOL,
+                        // amountIn)`, sinh ra đúng cái log Transfer mà bộ lọc
+                        // này bắt — nên ĐỊA CHỈ POOL bị ghi vào cụm như thể nó
+                        // là ví burner. Đo thật: `0xdfe23efb…`, `0xf867ca53…`,
+                        // `0xcec13213…` xuất hiện trong `competitor.funded`
+                        // nhưng cả 3 là POOL trong `pairs.txt` (chính là giá
+                        // trị `pair` của `sim.result` cùng lúc đó).
+                        //
+                        // Hậu quả tuy chưa gây quyết định sai (pool không bao
+                        // giờ là `tx.from`) nhưng làm hỏng `funded_total`/
+                        // `funded_now` và mọi phân tích dựa trên chúng. Lọc:
+                        // địa chỉ nhận là POOL bot đã biết -> KHÔNG phải ví
+                        // được cấp vốn.
+                        if app_state.pairbook.read().await.contains(&wallet) {
+                            continue;
+                        }
                         app_state.competitor_cluster.write().await.note_funded(block, wallet);
                         app_state.logger.log(
                             "competitor.funded",
