@@ -518,4 +518,14 @@ bằng số, 3 phần BAOCAO44, p95, git HEAD + sha256 hai máy) đều đã có
 9. **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ cũ).
 10. **Thang ladder giới hạn trong `pairs.txt`: chưa chạy** (nợ cũ BAOCAO44).
 
-Commit: `2591b186e7d5b973aee1b9624922778a5404a4fb`
+Commit: `ae4efea4acb15033df211652a608a510ff77999f` (+ 1 commit bổ sung cho
+chính dòng này). Commit `2591b18` là commit CODE cuối; `ae4efea` chỉ thêm
+`baocao/BAOCAO45.md` + `docs/TASKS.md`, không đổi một dòng Rust nào — binary
+đang chạy trên VPS (`2f77040a349fc874f07a2b69d8a1f6c78904e27af0f59ee61b3a7b65e7e69b05`)
+và trên WSL (`71bdca78544b91758783c524362ad8ad8ef678c413736ea146852be00f671ac0`)
+vì vậy vẫn đúng với HEAD.
+
+**Trạng thái lúc đóng phiên**: hai máy CÙNG commit `ae4efea`; VPS
+`ActiveState=active MainPID=392224 NRestarts=0`, đang chạy shadow +
+`allow_competitor_victims=true` để tích cửa sổ dài cho phiên sau;
+`git status --short` rỗng trên WSL.
