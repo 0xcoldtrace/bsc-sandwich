@@ -2074,6 +2074,32 @@ fn log_tx_seen(logger: &BotLogger, source: &str, raw: &PendingTxRaw) {
 /// đầy đủ như cũ (`resolve_v2_reserves`/`resolve_reserves_for_quote`) — 2 lớp
 /// trên KHÔNG đổi kết quả cuối cùng, chỉ đổi SỐ `eth_call` cần thiết để tới
 /// được kết quả đó.
+/// Cụm `verify-cluster-as-victim` (mục 6) — CỔNG 0-RPC TRƯỚC KHI RESOLVE POOL.
+///
+/// Đo thật ở phiên này (WSL, 8 663 quyết định): `p95 seen_to_decision = 598 ms`
+/// và **177/200 mẫu chậm nhất có `reason = not_in_list`** — tức bot đã trả
+/// tiền RPC (`getPair` + `getReserves`) cho một token rồi mới phát hiện token
+/// đó KHÔNG nằm trong `pairs.txt`. Với cấu hình ship mode-2
+/// (`wallet_scan_enabled=false`, `pair_scan_universal=false`) kết cục của
+/// những tx đó LUÔN là `not_in_list`, nên 2 lời gọi RPC kia không bao giờ đổi
+/// được quyết định.
+///
+/// Hàm trả `true` khi được phép cắt SỚM: cả wallet-mode lẫn universal-mode
+/// đều tắt, và `PairBook` không biết cặp `(token, quote)` này.
+///
+/// **Không** cắt khi `wallet_scan_enabled=true` (mode 1 route theo địa chỉ
+/// `from`, không theo pool) hoặc `pair_scan_universal=true` (mode 3 quét MỌI
+/// pool WBNB, không cần có trong `pairs.txt`) — 2 nhánh đó vẫn phải resolve
+/// như cũ, đúng thứ tự ưu tiên của `pipeline::decide_paper_v2`.
+fn can_skip_not_in_list_without_rpc(
+    cfg: &Config,
+    pairbook: &PairBook,
+    token: Address,
+    quote: Address,
+) -> bool {
+    !cfg.wallet_scan_enabled && !cfg.pair_scan_universal && pairbook.known_pair(token, quote).is_none()
+}
+
 async fn resolve_reserves_cached(
     app_state: &AppState,
     provider: &dyn Provider,
@@ -2203,6 +2229,13 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                     // Cum A4 - doc PairBook TRUOC de tan dung known_pair (bo
                     // eth_call getPair khi token da co san trong pairs.txt).
                     let pairbook_for_resolve = app_state.pairbook.read().await;
+                    // Cụm `verify-cluster-as-victim` (mục 6) — cắt `not_in_list`
+                    // TRƯỚC khi tốn `getPair`/`getReserves`, xem
+                    // `can_skip_not_in_list_without_rpc`.
+                    if can_skip_not_in_list_without_rpc(&cfg, &pairbook_for_resolve, token, venues::wbnb_addr()) {
+                        drop(pairbook_for_resolve);
+                        (PipelineOutcome::Skip(pipeline::PipelineSkip::NotInList), "none")
+                    } else {
                     let resolve_result =
                         resolve_reserves_cached(&app_state, provider, token, venues::wbnb_addr(), &pairbook_for_resolve, current_block)
                             .await;
@@ -2273,6 +2306,7 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                         }
                     }
                     }
+                    }
                 }
             }
         }
@@ -2307,6 +2341,11 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                         // Cum A4/A2 - doc PairBook 1 LAN, dung chung cho
                         // known_pair (giam RPC) VA cong tax_ok (decide_paper_quote).
                         let pairbook = app_state.pairbook.read().await;
+                        // Cụm `verify-cluster-as-victim` (mục 6) — cùng cổng
+                        // 0-RPC như nhánh WBNB.
+                        if can_skip_not_in_list_without_rpc(&cfg, &pairbook, token, venues::usdt_addr()) {
+                            PipelineOutcome::Skip(pipeline::PipelineSkip::NotInList)
+                        } else {
                         match resolve_reserves_cached(&app_state, provider, token, venues::usdt_addr(), &pairbook, current_block).await {
                             Err(skip) => PipelineOutcome::Skip(skip),
                             Ok((pair_addr, reserves)) => {
@@ -2384,6 +2423,7 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                                 );
                                 o
                             }
+                        }
                         }
                     }
                 };
@@ -3494,5 +3534,82 @@ mod tests {
             record_funnel_terminal(&funnel, &PipelineOutcome::Skip(*reason));
             assert_eq!(funnel.snapshot()[*bucket], 1, "{reason:?} phai roi dung bucket {bucket}");
         }
+    }
+
+    // ===== Cụm `verify-cluster-as-victim` (mục 6) — cổng 0-RPC `not_in_list` =====
+
+    /// `PairResolver` giả: trả ĐÚNG 1 pool cho ĐÚNG 1 token, mọi token khác
+    /// lỗi — đủ để dựng `PairBook` "biết 1 cặp" mà không chạm RPC nào.
+    #[derive(Clone)]
+    struct OnePairResolver {
+        token: Address,
+        pair: Address,
+    }
+
+    impl bsc_sandwich::pairbook::PairResolver for OnePairResolver {
+        async fn get_pair(&self, token: Address, _quote: Address) -> Result<Address, String> {
+            if token == self.token {
+                Ok(self.pair)
+            } else {
+                Err("khong co pool".to_string())
+            }
+        }
+    }
+
+    fn cfg_ship() -> Config {
+        // Đọc CHÍNH `config.toml` trong repo — test vì vậy hỏng ngay nếu file
+        // ship đổi sang giá trị làm cổng này im lặng ngừng hoạt động.
+        Config::from_str(include_str!("../config.toml")).expect("config.toml ship phai load duoc")
+    }
+
+    #[test]
+    fn ship_mode2_token_ngoai_pairs_txt_duoc_cat_truoc_khi_ton_rpc() {
+        let cfg = cfg_ship();
+        assert!(!cfg.wallet_scan_enabled && !cfg.pair_scan_universal, "config ship phai la mode 2 only");
+        let book = PairBook::new();
+        let token = Address::from_str("0x1111111111111111111111111111111111111111").unwrap();
+        assert!(can_skip_not_in_list_without_rpc(&cfg, &book, token, venues::wbnb_addr()));
+        assert!(can_skip_not_in_list_without_rpc(&cfg, &book, token, venues::usdt_addr()));
+    }
+
+    #[test]
+    fn wallet_mode_hoac_universal_mode_bat_thi_KHONG_duoc_cat() {
+        let book = PairBook::new();
+        let token = Address::from_str("0x1111111111111111111111111111111111111111").unwrap();
+        let mut cfg = cfg_ship();
+        cfg.wallet_scan_enabled = true;
+        assert!(
+            !can_skip_not_in_list_without_rpc(&cfg, &book, token, venues::wbnb_addr()),
+            "mode 1 route theo dia chi `from`, khong theo pool - cat som se lam mat candidate"
+        );
+        let mut cfg = cfg_ship();
+        cfg.pair_scan_universal = true;
+        assert!(
+            !can_skip_not_in_list_without_rpc(&cfg, &book, token, venues::wbnb_addr()),
+            "mode 3 quet MOI pool WBNB - khong can co trong pairs.txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_CO_trong_pairs_txt_thi_van_resolve_nhu_cu() {
+        let token = Address::from_str("0x2222222222222222222222222222222222222222").unwrap();
+        let pair = Address::from_str("0x3333333333333333333333333333333333333333").unwrap();
+        let mut book = PairBook::new();
+        let logger = bsc_sandwich::logger::BotLogger::new(std::path::PathBuf::from("/dev/null"))
+            .expect("mo /dev/null lam logger test");
+        book.reload(
+            &format!("{token:#x} # TEST | vetted 2026-09-16 | tax 0/0 | owner renounced | test"),
+            &OnePairResolver { token, pair },
+            &logger,
+            Instant::now(),
+            false,
+        )
+        .await;
+        assert_eq!(book.known_pair(token, venues::wbnb_addr()), Some(pair), "pool phai resolve duoc");
+        let cfg = cfg_ship();
+        assert!(
+            !can_skip_not_in_list_without_rpc(&cfg, &book, token, venues::wbnb_addr()),
+            "token DA co trong pairs.txt -> phai di tiep de lay reserves, khong duoc cat"
+        );
     }
 }
