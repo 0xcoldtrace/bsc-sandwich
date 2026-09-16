@@ -112,9 +112,11 @@ ssh ... 'kill -9 $(systemctl show bsc-sandwich-paper -p MainPID --value)'  # thu
 **Binary chạy shadow/mem 65 phút (WSL)**:
 `2d5c0e0f417b98f6fd4b5bbc11183d4c72adf10ddc3f2b403f8fca8c65e34893`
 (= sau BUG #1/#2/#3 + mục 1–6, TRƯỚC BUG #4/#5 — ghi rõ, không gộp).
-**Binary trên VPS lúc cài systemd**:
-`a86fc67a8809cc473c6b07a9d139dc333c987f560f2fdc9092122382406d156e`, commit
-`8e097350e0d12a0f6f473d02c5cf696b24ac8c04`.
+**Binary trên VPS — CUỐI PHIÊN, sau khi redeploy về commit chung**:
+`c321840b304305126ab4da6fb2373c5421e793893bed219afe3da5c982b3f26a`, commit
+`8724750a51176f05a3a5fde3457695253ffd6336` (= HEAD của WSL). Lúc cài unit lần
+đầu VPS ở `8e09735`/`a86fc67a…`; đã `deploy_vps.sh --build` +
+`systemctl restart` để 2 máy CÙNG commit theo CLAUDE.md.
 
 ---
 
@@ -330,10 +332,44 @@ trần; `khong_co_tran` liệt kê rõ 5 cái chỉ bị chặn gián tiếp:
   720s rss=  40.76  d_last= 0.375
 ```
 
-**DoD "RSS tăng < 50 MB sau 10 phút đầu"**: từ mốc 600 s (40,01 MB) tới 720 s
+**DoD "RSS tăng < 50 MB sau 10 phút đầu"**: từ mốc 600 s (40,01 MB) tới 780 s
 (40,76 MB) tăng **0,75 MB**, tốc độ ~0,375 MB/phút và đang giảm dần. So với
 **~11 MB/phút** của lần OOM ở BAOCAO43 ⇒ giảm ~29 lần.
-**Ghi trung thực: phiên kết thúc trước mốc 60 phút** — mới có **13 dòng**,
+
+**NHƯNG — phép đo tự nó bắt được một cú nhảy 209 MB, và đó là PHÁT HIỆN
+QUAN TRỌNG NHẤT của mục 3.** Bảng đầy đủ kèm kích thước container:
+
+```
+  600s rss=   40.01  peak=  40.01  d=  0.625 | reserve=29 seen=7620  mined=283
+  660s rss=   40.39  peak=  40.39  d=  0.375 | reserve=23 seen=8381  mined=249
+  720s rss=   40.76  peak=  40.76  d=  0.375 | reserve=22 seen=9223  mined=254
+  780s rss=   40.76  peak=  40.76  d=  0.000 | reserve=17 seen=9982  mined=306
+  840s rss=  249.28  peak= 274.68  d=208.519 | reserve=23 seen=10837 mined=355   <-- 1 loi goi /api/econ
+  900s rss=  249.66  peak= 274.68  d=  0.375 | reserve=24 seen=11672 mined=305
+  960s rss=  249.66  peak= 274.68  d=  0.000 | reserve=13 seen=12821 mined=323
+ 1020s rss=  249.78  peak= 274.68  d=  0.125 | reserve=24 seen=13642 mined=284
+ 1080s rss=  250.07  peak= 274.68  d=  0.285 | reserve=20 seen=14649 mined=354
+```
+
+**MỌI container đứng yên** (`ReserveCache` 17→23, `MinedTxIndex` 306→355)
+trong khi `VmRSS` nhảy **40,76 → 249,28 MB** (đỉnh 274,68 MB) vì ĐÚNG MỘT lời
+gọi `/api/econ` trên `bot.jsonl` 30 MB. Và nó **KHÔNG tụt lại**: 4 phút sau
+vẫn 250,07 MB. Đây là bằng chứng có kiểm soát cho cơ chế arena glibc, và nó
+tách bạch hẳn 2 loại nguyên nhân: rò rỉ KHÔNG nằm ở các map/vec.
+
+Ngoại suy sang VPS (`bot.jsonl` từng đạt **366 MB**, gấp 12 lần): một lời gọi
+`/api/econ` ở đó tốn hàng GB ⇒ **nhiều khả năng đây mới là phần lớn cú OOM
+7,6 GB của BAOCAO43**, không phải các container.
+
+Sửa thêm (ngay trong phiên, sau khi thấy số này): `ECON_EVENTS_CAN_DUNG` —
+lọc bằng CHUỖI THÔ trước khi `serde_json::from_str`, vì chính bước dựng
+`Value` mới tốn bộ nhớ chứ không phải bước đọc file. Sai số chỉ có thể theo
+hướng GIỮ THỪA, không bao giờ bỏ sót, nên không thể làm sai số liệu. Theo số
+thật VPS 10,92 h, các event bị loại chiếm phần lớn khối lượng (`tx.seen`
+83 571 + `rpc.block` 20 401 + `gas.oracle` 10 837).
+**CHƯA đo lại sau bản sửa này** — ghi CÒN NỢ, không tự nhận đã giải quyết.
+
+**Ghi trung thực: phiên kết thúc trước mốc 60 phút** — mới có **18 dòng**,
 không đủ 60 dòng lệnh yêu cầu. Ghi `CHƯA XONG` cho phần đó, xem ô 10.
 
 ---
@@ -389,8 +425,18 @@ bot, và đang bị `vmw_balloon` lấy mất ~5,6 GB trong 8 GB danh nghĩa
 trong repo. Log 10,92 h của BAOCAO43 được GIỮ LẠI ở đó dưới tên
 `logs/bot.jsonl.24h_baocao43` (KHÔNG xoá).
 
-**Chạy 6 giờ + bảng 1b/1d tính lại: CHƯA XONG** — unit chạy từ 07:35 UTC
-nhưng phiên kết thúc trước mốc 6 giờ. Xem ô 10.
+Sau khi có commit cuối, đã redeploy + `systemctl restart` để VPS và WSL CÙNG
+commit `8724750a` (CLAUDE.md: "Hai máy phải cùng git commit; lệch = MISSING"):
+
+```
+ActiveState=active  MainPID=386377  MemoryCurrent=11 423 744 (10,9 MB)
+commit: 8724750a51176f05a3a5fde3457695253ffd6336
+binary: c321840b304305126ab4da6fb2373c5421e793893bed219afe3da5c982b3f26a
+journal: bsc_sandwich boot: chain_id=56 dry_run=true allow_live=false bot_armed=false
+```
+
+**Chạy 6 giờ + bảng 1b/1d tính lại: CHƯA XONG** — đồng hồ 6 giờ tính từ lần
+restart trên (~07:50 UTC), phiên kết thúc trước mốc đó. Xem ô 10.
 
 ---
 
@@ -512,16 +558,23 @@ Mọi phần còn lại đã có output thật dán kèm.
 
 ## 10. CÒN NỢ / LÁT SAU
 
-1. **Chạy 60 phút WSL chưa trọn** — mới 13 dòng `mem.rss_mb` / 60 dòng lệnh
+1. **Chạy 60 phút WSL chưa trọn** — mới 18 dòng `mem.rss_mb` / 60 dòng lệnh
    yêu cầu. Xu hướng đã rõ (0,375 MB/phút và giảm dần, so với 11 MB/phút lúc
    OOM) nhưng CHƯA đủ mẫu để tuyên bố đạt DoD.
+1b. **`ECON_EVENTS_CAN_DUNG` (lọc dòng trước khi parse) CHƯA đo lại.** Cú nhảy
+   209 MB vì 1 lời gọi `/api/econ` được đo trên binary TRƯỚC bản sửa đó. Phải
+   lặp lại đúng phép đo (chạy ≥15 phút, gọi `/api/econ` 1 lần, xem
+   `delta_mb_since_last`) để biết bản sửa ăn được bao nhiêu.
+1c. **Bước triệt để cho `/api/econ` vẫn CÒN NỢ**: đọc theo dòng (streaming) và
+   cộng dồn, thay vì dựng `Vec<Value>` cho cả cửa sổ. Lọc chuỗi thô chỉ giảm
+   hệ số, không đổi bản chất O(kích thước log).
 2. **Chạy 6 giờ VPS + bảng 1b/1d tính lại trên cửa sổ đó: CHƯA XONG.** Unit
    systemd đang chạy từ 07:35 UTC, `Restart=always` đã verify. Phiên sau chỉ
    cần chạy `scripts/analyze_econ.sh` trên `/root/bsc-sandwich/logs/bot.jsonl`.
-3. **VPS đang ở commit `8e09735`, WSL ở `ac9406c`** — LỆCH 1 commit (bản sửa
-   BUG #4/#5). Theo CLAUDE.md "Hai máy phải cùng git commit; lệch = MISSING"
-   ⇒ **số liệu 6 giờ của VPS hiện tại KHÔNG dùng để kết luận được** cho tới
-   khi redeploy. Phải `deploy_vps.sh` + `systemctl restart` trước khi đo.
+3. ~~VPS lệch commit~~ — **ĐÃ XỬ LÝ trong phiên**: đã `deploy_vps.sh --build`
+   + `systemctl restart`, VPS nay ở `8724750a` = HEAD của WSL, binary
+   `c321840b…`. Đồng hồ 6 giờ vì vậy tính từ lần restart này
+   (~07:50 UTC 2026-09-16), KHÔNG phải từ 07:35.
 4. **BUG #4 và #5 CHƯA verify sống** — phiên hết trước khi có mẫu
    `shadow.victim_diag` mới sau khi sửa. Hiện chỉ có test đơn vị + lập luận.
    Cách verify: chạy shadow ≥30 phút, kiểm `shadow.sim` còn dòng nào

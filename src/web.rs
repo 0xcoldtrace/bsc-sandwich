@@ -309,7 +309,11 @@ async fn compete(State(state): State<AppState>) -> Json<Value> {
     let content = read_log_tail(&log_path).await;
     let all_lines: Vec<&str> = content.lines().collect();
     let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
-    let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
+    let rows: Vec<Value> = all_lines[start..]
+        .iter()
+        .filter(|l| econ_line_can_dung(l))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
     let boot_ts = state.boot_wall_clock.to_rfc3339();
     let econ = compute_econ_from_rows(&rows, Some(&boot_ts));
     out["by_pool"] = econ["top_pools_by_net"].clone();
@@ -1089,6 +1093,37 @@ async fn read_log_tail(path: &std::path::Path) -> String {
 
 const ECON_MAX_LINES: usize = 2_000_000;
 
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — chỉ những `event` này mới được
+/// `compute_econ_from_rows` dùng tới. LỌC BẰNG CHUỖI THÔ **trước** khi
+/// `serde_json::from_str`, vì chính bước dựng `Value` mới là chỗ tốn bộ nhớ,
+/// không phải bước đọc file.
+///
+/// # Đo thật (WSL, cụm này) — vì sao cần
+///
+/// Task `mem.rss_mb` mỗi phút cho thấy một lời gọi `/api/econ` DUY NHẤT trên
+/// `bot.jsonl` 30 MB làm `VmRSS` nhảy **40,76 MB → 249,28 MB** (đỉnh 274,68
+/// MB) trong khi **mọi container sống lâu đứng yên** (`ReserveCache` 17→23,
+/// `MinedTxIndex` 306→355). Và nó KHÔNG tụt lại: 4 phút sau vẫn 250,07 MB.
+/// Đây đúng là cơ chế arena của glibc — bộ nhớ được giải phóng về allocator
+/// nhưng không trả về hệ điều hành.
+///
+/// Trên VPS `bot.jsonl` từng đạt **366 MB**, nên một lời gọi `/api/econ` ở đó
+/// tốn hàng GB — nhiều khả năng đây là phần lớn cú OOM 7,6 GB của BAOCAO43,
+/// chứ không phải các map/vec.
+///
+/// Theo số thật trên VPS 10,92 h, các event bị loại chiếm phần lớn khối lượng
+/// (`tx.seen` 83 571, `rpc.block` 20 401, `gas.oracle` 10 837 — so với
+/// `tx.skip` 83 446 + `sim.result` 125 được giữ).
+const ECON_EVENTS_CAN_DUNG: [&str; 5] =
+    ["\"event\":\"tx.skip\"", "\"event\":\"sim.result\"", "\"event\":\"compete.result\"", "\"event\":\"shadow.sim\"", "\"event\":\"funnel.minute\""];
+
+/// `true` nếu dòng raw có thể chứa event mà `compute_econ_from_rows` cần.
+/// Sai số chỉ có thể theo hướng GIỮ THỪA (một dòng khác tình cờ chứa chuỗi
+/// đó), không bao giờ theo hướng bỏ sót — nên không thể làm sai số liệu.
+fn econ_line_can_dung(line: &str) -> bool {
+    ECON_EVENTS_CAN_DUNG.iter().any(|e| line.contains(e))
+}
+
 /// 5 bucket `victim_in` (BNB) đúng CLAUDE.md mục 3.a.
 const BNB_BUCKETS: [(&str, f64, f64); 5] = [
     ("<0.01", 0.0, 0.01),
@@ -1208,7 +1243,11 @@ async fn econ(State(state): State<AppState>) -> Json<Value> {
     let content = read_log_tail(&log_path).await;
     let all_lines: Vec<&str> = content.lines().collect();
     let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
-    let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
+    let rows: Vec<Value> = all_lines[start..]
+        .iter()
+        .filter(|l| econ_line_can_dung(l))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
     // Cụm `real-economics-mode2` — CHỈ tính dòng có `ts >= boot_wall_clock`
     // (`logs/bot.jsonl` dùng CHUNG qua mọi lần chạy, không bị xoá) — thiếu
     // lọc này, /api/econ sẽ lẫn số liệu MỌI lần chạy trước đó (phát hiện
