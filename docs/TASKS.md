@@ -306,3 +306,52 @@ chép, mà là giới hạn lịch sử git thật của repo).
   thật sự giao dịch. Cần một lần chạy ladder giới hạn trong `pairs.txt`.
 - **Tỉ lệ THẮNG cuộc đua: vẫn MISSING** (nợ cũ, không đụng ở cụm này).
 - **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ cũ).
+
+## `verify-cluster-as-victim` (BAOCAO45, 2026-09-16) — XONG (Chủ chốt sớm)
+
+### Đã làm
+
+- **Mục 2 — BẢNG QUYẾT ĐỊNH, con số Chủ cần.** VPS 1,32 h: 59 candidate
+  `Simulated`, **58 (98,3 %) là ví burner của CHÍNH cụm đối thủ**,
+  `victim_ok_evm` 58/58, tổng `profit_sim` **2 962 USDT (2 251 USDT/giờ)**.
+  Ngoài cụm đúng 1 dòng, 0,00996 BNB. `profit_v2` và `profit_sim` khớp sát —
+  lần đầu công thức đóng V2 của đường nóng được EVM xác nhận trên mẫu lớn.
+  **Điều kiện phải đọc kèm**: `victim_quote_topped_up` 75/77, `front_gated`
+  chạm trần 3000 USDT, `room` 1,50–1,89.
+- **Mục 3 — đường gửi.** Đầu dò mempool riêng (`src/bin/mempool_probe.rs`,
+  1 525 664 hash, 0 lagged): cụm 44,5 % vs mặt bằng chung 48,5 % ⇒ **KHÔNG có
+  bằng chứng họ gửi private**. Lý do bot bỏ sót là 65 % tx của cụm đi tới
+  contract riêng của họ nên bị chặn ở gate `not_pancake_router`.
+- **Mục 4 — ai kẹp cụm.** 0/554 có địa chỉ đứng cả trước lẫn sau trên cùng
+  pool. Hàng xóm cùng pool hầu hết là chính ví của cụm.
+- **Mục 5 — rủi ro phản ứng.** `ClusterRateWatch` + `competitor.alert` (tụt
+  > 80 %/giờ), khối `cluster_rate` trong `/api/compete`, 3 kịch bản ghi vào
+  `docs/STATE.md`.
+- **Mục 6 — p95.** Tìm ra nguyên nhân (177/200 mẫu chậm nhất là `not_in_list`
+  đã tốn 2 lời gọi RPC) và sửa: **599 ms → 0,126 ms**; quyết định TRỄ
+  **18 % → 0 %**.
+- **Mục 1 — 3 phần nợ BAOCAO44**: 71 dòng `mem.rss_mb`; BUG #4/#5 verify
+  SỐNG trên VPS (`TRANSFER_FROM_FAILED` = 0, `decision − fork = 1` cho 77/77).
+- **4 BUG THẬT** (xem `docs/STATE.md`): fork block vẫn sai khi quyết định trễ;
+  ví burner được cấp vốn trong cùng block nên không replay được; `competitor.rs`
+  ghi địa chỉ POOL vào cụm; `subscribe_ws_heads` bỏ cuộc vĩnh viễn khi kênh lag.
+
+### CÒN NỢ (mới, của chính cụm này)
+
+- **Cửa sổ VPS mới 1,62 h, lệnh yêu cầu ≥ 6 h** — Chủ ra lệnh chốt sớm lúc
+  09:57 UTC. Bot đang chạy tiếp ở `2591b18`, phiên sau chạy lại
+  `analyze_cluster_econ45.py` + `cluster_check_hashes.py` là có bảng dài.
+- **`/api/econ` vẫn O(kích thước log)** — giảm 2,74 lần (248 → 91 MB trên log
+  30 MB) nhưng mỗi lời gọi vẫn +90…98 MB và không trả lại OS. Bước triệt để
+  (cộng dồn theo dòng) CHƯA làm; vẫn là đường dẫn tới OOM trên log lớn.
+- **Mốc "sớm hơn block bao nhiêu ms" chưa sạch** — lần chạy WSL dính BUG #9
+  nên `rpc.block` hỏng giữa chừng (p50 = 376 ms dùng được, p90 KHÔNG).
+- **p95 của nhóm THẬT SỰ đi tới sim vẫn 848 ms** (4,3 % quyết định) — đây mới
+  là con số của cuộc đua.
+- **Số lãi mục 2 phụ thuộc `victim_quote_topped_up`** — muốn số không có giả
+  định nào thì phải mô phỏng ở mức TRONG BLOCK (áp lần lượt tx trước victim).
+- **Vốn 3000 USDT/lần và khả năng chen vào TRƯỚC victim chưa kiểm** — victim
+  được cấp vốn ở `idx i`, swap ở `idx i+1`, ta phải đứng ở `idx < i`. Câu hỏi
+  cho cụm 6 `strategy-exec`, không trả lời được bằng sim.
+- **Mục 4 chỉ xét ±3 vị trí và chỉ `Swap` V2** — kết luận đúng là "không thấy",
+  không phải "không có".
