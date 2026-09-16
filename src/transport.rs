@@ -818,6 +818,14 @@ impl MinedTxIndex {
         self.blocks.iter().any(|(_, set)| set.contains(&hash))
     }
 
+    /// Cụm `verify-cluster-as-victim` (mục 2) — block ĐÃ ĐÀO chứa `hash`, nếu
+    /// nó nằm trong cửa sổ đang giữ. `None` = "không thấy trong cửa sổ" (có
+    /// thể còn pending, cũng có thể đã đào quá lâu) — caller KHÔNG được đọc
+    /// thành "chắc chắn còn pending".
+    pub fn block_of(&self, hash: B256) -> Option<u64> {
+        self.blocks.iter().find(|(_, set)| set.contains(&hash)).map(|(b, _)| *b)
+    }
+
     /// Block mới nhất đã nạp (`None` khi chưa nạp block nào — caller PHẢI coi
     /// đây là "chưa biết gì", không được suy ra "victim còn pending").
     pub fn newest_block(&self) -> Option<u64> {

@@ -2929,6 +2929,9 @@ mod tests {
             victim_out: U256::ZERO,
             buy_tax_bps: None,
             sell_tax_bps: None,
+            victim_quote_balance_before: U256::ZERO,
+            victim_quote_allowance: U256::ZERO,
+            victim_quote_topped_up: false,
         }
     }
 

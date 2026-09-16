@@ -65,6 +65,7 @@ sol! {
     interface IERC20Min {
         function balanceOf(address owner) external view returns (uint256);
         function approve(address spender, uint256 amount) external returns (bool);
+        function allowance(address owner, address spender) external view returns (uint256);
     }
 }
 
@@ -156,6 +157,19 @@ pub struct EvmSandwichOutcome {
     /// Ước lượng sell-tax (bps), cùng cơ chế, đo NGAY TRƯỚC back-sell (sau
     /// khi victim đã chạy, reserve đã đổi — đúng state tại thời điểm bán).
     pub sell_tax_bps: Option<u32>,
+    /// Cụm `verify-cluster-as-victim` (mục 2) — số dư quote của victim ĐỌC
+    /// ĐƯỢC tại block fork, TRƯỚC khi nạp thêm gì. `0` cho ví burner của cụm
+    /// đối thủ (được cấp vốn trong CHÍNH block đào, xem
+    /// `run_sandwich_quote_topup`).
+    pub victim_quote_balance_before: U256,
+    /// Allowance `victim -> router` tại block fork. KHÔNG BAO GIỜ bị sim ghi
+    /// đè — nếu `TRANSFER_FROM_FAILED` còn xảy ra sau khi đã nạp đủ số dư thì
+    /// con số này chỉ ra ngay đó là vấn đề allowance thật.
+    pub victim_quote_allowance: U256,
+    /// `true` khi sim đã GHI THÊM số dư quote cho victim để replay được. Mọi
+    /// con số lãi đi kèm cờ này là "lãi NẾU victim có tiền như lúc họ thật sự
+    /// chạy", KHÔNG phải lãi đã xác nhận trên state thật của block fork.
+    pub victim_quote_topped_up: bool,
 }
 
 type ForkDb = CacheDB<WrapDatabaseAsync<AlloyDB<alloy::network::Ethereum, DynProvider>>>;
@@ -312,10 +326,25 @@ pub async fn simulate_sandwich_quote(
     quote: Address,
     victim: &PendingTxRaw,
 ) -> Result<EvmSandwichOutcome, SimEvmError> {
+    simulate_sandwich_quote_topup(provider, fork_block, front_in, token, quote, victim, None).await
+}
+
+/// Cụm `verify-cluster-as-victim` (mục 2) — `simulate_sandwich_quote` + nạp
+/// vốn quote cho VICTIM khi cần (xem `run_sandwich_quote_topup` để biết vì
+/// sao ví burner của cụm đối thủ không thể replay nếu không nạp).
+pub async fn simulate_sandwich_quote_topup(
+    provider: DynProvider,
+    fork_block: u64,
+    front_in: U256,
+    token: Address,
+    quote: Address,
+    victim: &PendingTxRaw,
+    victim_topup: Option<U256>,
+) -> Result<EvmSandwichOutcome, SimEvmError> {
     let (mut db, block_timestamp) = open_fork(provider, fork_block).await?;
     db.insert_account_info(attacker_address(), AccountInfo::from_balance(U256::from(FUND_BNB_WEI)));
     let mut evm = build_evm(db, fork_block, block_timestamp);
-    run_sandwich_quote(&mut evm, front_in, token, quote, victim)
+    run_sandwich_quote_topup(&mut evm, front_in, token, quote, victim, victim_topup)
 }
 
 /// Phần THỰC THI thuần (sync) của `simulate_sandwich` — tách ra để B4'.4 gọi
@@ -334,6 +363,41 @@ fn run_sandwich_quote(
     token: Address,
     quote: Address,
     victim: &PendingTxRaw,
+) -> Result<EvmSandwichOutcome, SimEvmError> {
+    run_sandwich_quote_topup(evm, front_in, token, quote, victim, None)
+}
+
+/// Cụm `verify-cluster-as-victim` (mục 2) — bản có **nạp vốn cho VICTIM**.
+///
+/// # Vì sao cần
+///
+/// Đo thật ở phiên này: 5/5 victim quote-USDT mà bot ký bundle shadow đều
+/// `TransferHelper: TRANSFER_FROM_FAILED` **ngay cả ở `front_in = 0`**, tức
+/// không liên quan gì tới chân front của ta. Đối chiếu on-chain
+/// (`eth_getBlockReceipts` của đúng block đào) cho thấy **cả 5 ví victim được
+/// seed `0xB406…` chuyển USDT trong CHÍNH block đó, ở tx_index ngay TRƯỚC
+/// giao dịch swap của họ**. `AlloyDB` đọc state ở CUỐI block, nên fork tại
+/// `block − 1` thì ví victim CHƯA có đồng USDT nào — replay tất nhiên hỏng.
+/// Đây KHÔNG phải "victim sẽ revert trong thực tế": trên chain cả 5 tx đều
+/// `status = 0x1`.
+///
+/// Không có block nào trên chain mà (a) đã áp lệnh cấp vốn và (b) chưa áp
+/// giao dịch victim — trạng thái đó chỉ tồn tại GIỮA hai tx trong cùng một
+/// block. Nên muốn biết "kẹp cụm này lãi bao nhiêu" thì bắt buộc phải dựng
+/// lại trạng thái đó: nạp cho victim đúng lượng quote họ sắp tiêu, bằng CÙNG
+/// kỹ thuật ghi thẳng storage `balanceOf` đã dùng cho attacker.
+///
+/// `victim_topup = Some(amount_in)` bật cơ chế này; `None` giữ hành vi cũ
+/// nguyên vẹn. Kết quả luôn tự khai báo qua `victim_quote_topped_up` —
+/// **không được đọc một con số lãi có `victim_quote_topped_up = true` như thể
+/// nó đã được xác nhận trên state thật của chain**.
+fn run_sandwich_quote_topup(
+    evm: &mut ForkEvm,
+    front_in: U256,
+    token: Address,
+    quote: Address,
+    victim: &PendingTxRaw,
+    victim_topup: Option<U256>,
 ) -> Result<EvmSandwichOutcome, SimEvmError> {
     let victim_to = victim.to.ok_or_else(|| SimEvmError::Fork("victim.to=None, khong the replay (thieu router that)".to_string()))?;
     let attacker = attacker_address();
@@ -437,6 +501,17 @@ fn run_sandwich_quote(
     // Cum `truth-victim-ok-and-memleak` (muc 1): do `balanceOf(token, victim.from)`
     // NGAY TRUOC va NGAY SAU tx victim -> `victim_out` THAT trong replay, so
     // truc tiep duoc voi `victim_out` cua V2-math va `amountOutMin` calldata.
+    // ---- Cụm `verify-cluster-as-victim` (mục 2): nạp vốn cho victim ----
+    let victim_quote_balance_before = read_balance(evm, quote, victim.from).unwrap_or(U256::ZERO);
+    let victim_quote_allowance = read_allowance(evm, quote, victim.from, victim_to).unwrap_or(U256::ZERO);
+    let mut victim_quote_topped_up = false;
+    if let Some(need) = victim_topup {
+        if !is_native_quote && !need.is_zero() && victim_quote_balance_before < need {
+            let slot = probe_erc20_balance_slot(evm, quote, victim.from)?;
+            set_erc20_balance(evm, quote, victim.from, slot, need)?;
+            victim_quote_topped_up = true;
+        }
+    }
     let victim_token_before = read_balance(evm, token, victim.from).unwrap_or(U256::ZERO);
     let victim_gas_price = u128::try_from(victim.gas_price).unwrap_or(0);
     let victim_tx = TxEnv::builder()
@@ -535,6 +610,9 @@ fn run_sandwich_quote(
         victim_out,
         buy_tax_bps,
         sell_tax_bps,
+        victim_quote_balance_before,
+        victim_quote_allowance,
+        victim_quote_topped_up,
     })
 }
 
@@ -570,6 +648,26 @@ fn read_balance(evm: &mut ForkEvm, token: Address, owner: Address) -> Result<U25
     let result = evm.transact(tx).map_err(|e| SimEvmError::Exec(format!("balanceOf: {e:?}")))?;
     let output = result.result.output().ok_or_else(|| SimEvmError::Decode("balanceOf khong co output".to_string()))?;
     IERC20Min::balanceOfCall::abi_decode_returns(output).map_err(|e| SimEvmError::Decode(format!("balanceOf decode: {e}")))
+}
+
+/// Cụm `verify-cluster-as-victim` (mục 2) — `allowance(owner -> spender)` tại
+/// state hiện tại của fork. Dùng để PHÂN ĐỊNH `TRANSFER_FROM_FAILED`: thiếu
+/// số dư (nạp được, xem `run_sandwich_quote_topup`) hay thiếu allowance (KHÔNG
+/// nạp — allowance là quyết định thật của victim, giả nó đi là bịa).
+fn read_allowance(evm: &mut ForkEvm, token: Address, owner: Address, spender: Address) -> Result<U256, SimEvmError> {
+    let calldata = IERC20Min::allowanceCall { owner, spender }.abi_encode();
+    let tx = TxEnv::builder()
+        .caller(attacker_address())
+        .kind(TxKind::Call(token))
+        .gas_limit(200_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(calldata))
+        .build_fill();
+    let result = evm.transact(tx).map_err(|e| SimEvmError::Exec(format!("allowance: {e:?}")))?;
+    let output = result.result.output().ok_or_else(|| SimEvmError::Decode("allowance khong co output".to_string()))?;
+    IERC20Min::allowanceCall::abi_decode_returns(output).map_err(|e| SimEvmError::Decode(format!("allowance decode: {e}")))
 }
 
 /// `getAmountsOut` (AMM-math THUẦN, không tax) tại ĐÚNG state hiện tại —
@@ -969,9 +1067,24 @@ impl BlockForkCache {
         quote: Address,
         victim: &PendingTxRaw,
     ) -> (Result<EvmSandwichOutcome, SimEvmError>, f64) {
+        self.run_sandwich_quote_cached_topup(front_in, token, quote, victim, None)
+    }
+
+    /// Cụm `verify-cluster-as-victim` (mục 2) — bản có nạp vốn cho victim, để
+    /// THANG PHÂN ĐỊNH (`diagnose_victim_ok`) dùng CÙNG điều kiện với
+    /// `shadow.sim`; nếu không, thang sẽ luôn trả `state_fork_sai` cho ví
+    /// burner của cụm đối thủ và không phân định được gì thêm.
+    pub fn run_sandwich_quote_cached_topup(
+        &mut self,
+        front_in: U256,
+        token: Address,
+        quote: Address,
+        victim: &PendingTxRaw,
+        victim_topup: Option<U256>,
+    ) -> (Result<EvmSandwichOutcome, SimEvmError>, f64) {
         let t0 = std::time::Instant::now();
         self.reset();
-        let r = run_sandwich_quote(&mut self.evm, front_in, token, quote, victim);
+        let r = run_sandwich_quote_topup(&mut self.evm, front_in, token, quote, victim, victim_topup);
         (r, t0.elapsed().as_secs_f64() * 1000.0)
     }
 
@@ -1055,7 +1168,7 @@ pub async fn diagnose_victim_ok(
     victim: &PendingTxRaw,
     front_in_v2: U256,
 ) -> Result<VictimDiagReport, SimEvmError> {
-    diagnose_victim_ok_variants(provider, fork_block, token, quote, victim, &victim_diag_ladder(front_in_v2)).await
+    diagnose_victim_ok_variants(provider, fork_block, token, quote, victim, &victim_diag_ladder(front_in_v2), None).await
 }
 
 /// Thang 5 biến thể MẶC ĐỊNH (a/b/c của lệnh) quanh 1 mức `front_in`.
@@ -1081,11 +1194,12 @@ pub async fn diagnose_victim_ok_variants(
     quote: Address,
     victim: &PendingTxRaw,
     variants: &[(String, U256)],
+    victim_topup: Option<U256>,
 ) -> Result<VictimDiagReport, SimEvmError> {
     let mut fork = BlockForkCache::open(provider, fork_block).await?;
     let mut rows: Vec<VictimDiagRow> = Vec::with_capacity(variants.len());
     for (label, front_in) in variants.iter().map(|(l, f)| (l.clone(), *f)) {
-        let (res, ms) = fork.run_sandwich_quote_cached(front_in, token, quote, victim);
+        let (res, ms) = fork.run_sandwich_quote_cached_topup(front_in, token, quote, victim, victim_topup);
         rows.push(match res {
             Ok(o) => VictimDiagRow {
                 label: label.clone(),
@@ -3183,7 +3297,7 @@ sim_evm[token_received={} back_out={} profit={}] victim_success={} buy_tax_bps={
                 ));
 
                 let victim_raw = crate::transport::pending_tx_from_rpc(&tx);
-                let rep = match diagnose_victim_ok_variants(provider.clone(), b - 1, token, quote_in, &victim_raw, &variants).await {
+                let rep = match diagnose_victim_ok_variants(provider.clone(), b - 1, token, quote_in, &victim_raw, &variants, None).await {
                     Ok(r) => r,
                     Err(e) => { println!("  {} fork loi: {e}", &format!("{:#x}", tx.tx_hash())[..18]); continue }
                 };

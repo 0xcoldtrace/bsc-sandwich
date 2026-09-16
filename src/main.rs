@@ -2792,15 +2792,33 @@ fn spawn_shadow_bundle_sim(
         // no, nen no chi co the duoc dao o `current_block` hoac sau do =>
         // `current_block - 1` LUON la state TRUOC victim. Doi lai reserve gia
         // hon dung 1 block (~3 giay) - re hon nhieu so voi mot ket qua sim sai.
-        let sim_fork_block = fork_block.saturating_sub(1);
+        //
+        // Cụm `verify-cluster-as-victim` (mục 2) — BUG #4 sửa CHƯA ĐỦ. Nếu bot
+        // quyết định TRỄ (`decision_block > mined_block`, đo thật 18% ở
+        // BAOCAO44) thì `decision_block − 1` VẪN có thể là block victim đã
+        // được đào. Đo thật phiên này: 5/5 victim USDT có `fork_block` bằng
+        // ĐÚNG `mined_block`. Nay tra `mined_index` (0 RPC, đã có sẵn 32
+        // block) và fork tại `min(decision_block, mined_block) − 1`.
+        let mined_block = app_state.mined_index.read().await.block_of(victim_hash);
+        let sim_fork_block = match mined_block {
+            Some(m) => m.min(fork_block).saturating_sub(1),
+            None => fork_block.saturating_sub(1),
+        };
+        // Lượng quote victim sắp tiêu — dùng để nạp vốn cho ví burner của cụm
+        // đối thủ (được seed cấp vốn trong CHÍNH block đào, nên tại
+        // `block − 1` số dư của họ là 0). Xem `sim_evm::run_sandwich_quote_topup`.
+        let victim_amount_in = bsc_sandwich::decoder::decode_swap_calldata(&victim.input, victim.value)
+            .ok()
+            .map(|d| d.amount_in);
         let t0 = std::time::Instant::now();
-        match bsc_sandwich::sim_evm::simulate_sandwich_quote(
+        match bsc_sandwich::sim_evm::simulate_sandwich_quote_topup(
             provider.clone(),
             sim_fork_block,
             front_in,
             token,
             quote_addr,
             &victim,
+            victim_amount_in,
         )
         .await
         {
@@ -2813,6 +2831,16 @@ fn spawn_shadow_bundle_sim(
                         "quote": quote_asset.as_str(),
                         "fork_block": sim_fork_block,
                         "decision_block": fork_block,
+                        // Cụm `verify-cluster-as-victim` (mục 2) — 3 field
+                        // dưới đây là thứ cho phép đọc con số lãi ĐÚNG NGHĨA:
+                        // `mined_block` (bot có quyết định trễ không),
+                        // `victim_quote_topped_up` (số dư victim có phải do
+                        // sim nạp không), `victim_quote_allowance` (nếu vẫn
+                        // TRANSFER_FROM_FAILED sau khi nạp thì là allowance).
+                        "mined_block": mined_block,
+                        "victim_quote_topped_up": o.victim_quote_topped_up,
+                        "victim_quote_balance_before_wei": o.victim_quote_balance_before.to_string(),
+                        "victim_quote_allowance_wei": o.victim_quote_allowance.to_string(),
                         "front_in_wei": o.front_in.to_string(),
                         "profit_sim_wei": o.profit_wei.to_string(),
                         // Don vi = quote cua pool (BNB hoac USDT), xem `quote`.
@@ -2836,13 +2864,14 @@ fn spawn_shadow_bundle_sim(
                 // > ~128 block), nen KHONG the phan tich lai tu log sau.
                 if !o.victim_success {
                     let t1 = std::time::Instant::now();
-                    match bsc_sandwich::sim_evm::diagnose_victim_ok(
+                    match bsc_sandwich::sim_evm::diagnose_victim_ok_variants(
                         provider,
                         sim_fork_block,
                         token,
                         quote_addr,
                         &victim,
-                        front_in,
+                        &bsc_sandwich::sim_evm::victim_diag_ladder(front_in),
+                        victim_amount_in,
                     )
                     .await
                     {
