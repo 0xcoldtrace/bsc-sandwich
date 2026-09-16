@@ -844,7 +844,31 @@ async fn subscribe_competitor_funding(app_state: AppState, ws_urls: Vec<String>)
 /// KHÔNG halt bot (CLAUDE.md: "Không halt vì WSS im (ship)") — `last_block`
 /// vẫn có giá trị từ HTTP `get_block_number` lúc boot/health-check.
 async fn subscribe_ws_heads(app_state: AppState, ws_urls: Vec<String>) {
-    for url in &ws_urls {
+    // Cụm `verify-cluster-as-victim` — BUG THẬT, đo được trong chính phiên
+    // này: lúc 09:02:54 subscription rớt với `channel lagged by 8`, hàm này
+    // `return` và **không bao giờ kết nối lại**. Từ đó `rpc.block` ngừng hẳn
+    // (1366 dòng rồi im), và `last_block` chỉ còn được cập nhật bởi
+    // `http_pool_health_check` — tức `current_block` mà đường nóng dùng để
+    // chọn `fork_block`/đo độ trễ trở nên CŨ tới cả chu kỳ health-check.
+    // Bot vẫn "chạy" và dashboard vẫn xanh, nên lỗi này im lặng.
+    //
+    // Sửa 2 chỗ: (a) vòng NGOÀI để thử lại mãi (backoff 15 s sau khi hết
+    // lượt mọi URL) thay vì bỏ cuộc; (b) `Err` của `recv` chỉ `break` sang
+    // URL kế, không `return`.
+    loop {
+        let mut connected_any = false;
+        subscribe_ws_heads_once(&app_state, &ws_urls, &mut connected_any).await;
+        if !connected_any {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        }
+    }
+}
+
+/// Một lượt duyệt hết `ws_urls` cho `subscribe_ws_heads`. Đặt `connected_any`
+/// khi có ÍT NHẤT một URL subscribe được (để vòng ngoài biết nên nghỉ trước
+/// khi thử lại hay quay lại ngay).
+async fn subscribe_ws_heads_once(app_state: &AppState, ws_urls: &[String], connected_any: &mut bool) {
+    for url in ws_urls {
         let redacted = transport::redact_rpc_url(url);
         let provider = match transport::connect_and_verify(url).await {
             Ok(p) => p,
@@ -856,7 +880,10 @@ async fn subscribe_ws_heads(app_state: AppState, ws_urls: Vec<String>) {
                 continue;
             }
         };
-        let mut sub = match provider.subscribe_blocks().await {
+        // Kênh phải ĐỦ RỘNG: `channel lagged by N` chính là thứ đã giết
+        // subscription này lúc 09:02:54 (đo thật phiên này). Dùng CHUNG hằng
+        // số với pending-tx để chỉ có MỘT chỗ chỉnh.
+        let mut sub = match provider.subscribe_blocks().channel_size(transport::PENDING_WS_CHANNEL_SIZE).await {
             Ok(s) => s,
             Err(e) => {
                 app_state.logger.log(
@@ -866,6 +893,7 @@ async fn subscribe_ws_heads(app_state: AppState, ws_urls: Vec<String>) {
                 continue;
             }
         };
+        *connected_any = true;
         app_state
             .logger
             .log("rpc.connect", serde_json::json!({ "transport": "ws_heads", "url": redacted }));
@@ -879,10 +907,10 @@ async fn subscribe_ws_heads(app_state: AppState, ws_urls: Vec<String>) {
                 }
                 Err(e) => {
                     app_state.logger.log(
-                        "rpc.skip",
+                        "rpc.failover",
                         serde_json::json!({ "transport": "ws_heads", "url": redacted, "reason": format!("subscription rot: {e}") }),
                     );
-                    return;
+                    break; // thu URL WSS ke; vong NGOAI se quay lai tu dau
                 }
             }
         }
