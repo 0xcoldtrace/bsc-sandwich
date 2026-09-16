@@ -19,7 +19,8 @@ sendRaw, contract, dòng token `pairs.txt`, dừng/đổi bot VPS, đổi
 
 ## 3. FILE ĐỔI
 
-Commit: xem dòng `Commit:` cuối file.
+Commit nội dung: `9b5381e773e3aee14d07a9ba59510c4d2aaded6e`.
+Commit cuối phiên (điền hash vào ô này + dòng cuối): xem dòng `Commit:` cuối file.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -220,4 +221,5 @@ USDC (arb_ready) có 1 Infinity Bin pool USDT fee=44 trong cửa sổ 5000 block
 
 ---
 
-Commit: *(điền sau git commit)*
+Commit: `9b5381e773e3aee14d07a9ba59510c4d2aaded6e` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này, không đổi code.
