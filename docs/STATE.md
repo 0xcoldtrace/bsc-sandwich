@@ -5718,11 +5718,13 @@ Fee tier Uniswap: 100/500/3000/10000 (khác Pancake 100/500/2500/10000).
   **Không** đọc `pairs.txt`.
 - Output: `state/multi_venue.json` + `state/multi_venue_report.tsv` +
   `state/multi_venue_candidates.txt` (`vetted` trống — Chủ vet tay).
-- Số thật BAOCAO48 (WSL): `--hours 2` **xong** 2035.7 s (14:39:21–15:16:25
-  UTC), block 122239050, `volume_method=swap_logs_v2_v3`, scanned=1288,
-  probed=500, v2_ok=214, v3_ok=37, both_ok=22, tier PCS V3 ok
-  `{100:16, 500:16, 2500:32, 10000:16}`. `--hours 24` **chưa xong** (Chủ
-  bảo báo cáo; lần chạy dở ~20 phút V2, 212k log, 633 token, abort).
+- Số thật BAOCAO48 (WSL): `--hours 2` xong 2035.7 s, both_ok=22.
+  `--hours 24` chưa chạy (abort).
+- Số thật BAOCAO49 (WSL): `--hours 4 --pairs pairs.txt` xong 2252.7 s
+  (15:37:16–16:18:13 UTC), block 122246764, scanned=1271, probed=611
+  (500 vol + 111 pairs ngoài top), v2_ok=209, v3_ok=49, both_ok=34,
+  keep_in_list=109, pairs_with_v3=108/129. Uniswap V3 = venue hợp lệ
+  (cùng quote + impact). pairs.txt: có pool V3 thì lấy.
 
 ### Tool
 

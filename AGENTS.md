@@ -207,22 +207,17 @@ lãi mô phỏng là kẹp ví burner của cụm bot `0xB406…` — cần chen
    V3) trước, không viết contract.
 6. **Vốn**: ví tay chỉ giữ BNB cho gas + bribe; lãi về ví kho ngay trong tx;
    contract không giữ vốn.
-7. **List đa venue (cụm `planB-B4-multivenue-tool`, 2026-09-16).** List MỚI,
-   KHÔNG dùng list meme cũ, KHÔNG đọc `pairs.txt` làm nguồn, KHÔNG đo thị
-   trường trước khi có list. Venue giai đoạn 1 bắt buộc: PCS V2 (đã pin) +
-   PCS V3 (Factory `0x0BFbCF9f…`, QuoterV2 `0xB048Bbc1…`, SwapRouter
-   `0x1b81D678…` đã pin). Uniswap V3 BSC pin ngay, chưa dùng lọc (giai đoạn
-   2). KHÔNG THENA, KHÔNG Biswap. Token vào list CHỈ khi có pool PCS V2
-   (quote WBNB hoặc USDT) đủ ngưỡng VÀ ≥1 pool PCS V3 **cùng quote** (tier
-   bất kỳ) đủ ngưỡng; thiếu 1 trong 2 → loại. Pool Uniswap V3 nếu có thì ghi
-   thêm, không thay được điều kiện. Ngưỡng từng phía: V2 `reserve_quote` ≥
-   50 BNB (≥ 35.000 USDT); V3 impact ≤ 2 % khi bán 1 BNB quy đổi qua
-   QuoterV2. Dưới ngưỡng → route không tính. Nguồn ứng viên: top 500 token
-   theo volume 24 h từ Swap log PCS V2 Factory + PCS V3 Factory (`getLogs`
-   dải 1000 block), gộp theo token, rồi áp 2 quy tắc trên — KHÔNG quét cả
-   chain. Tool: `discover_multivenue` → `state/multi_venue.json` +
-   `state/multi_venue_report.tsv` + `state/multi_venue_candidates.txt`
-   (định dạng `pairs.txt`, `vetted` để trống cho Chủ vet tay).
+7. **List đa venue (cụm `planB-B4-multivenue-tool` + BAOCAO49).** List MỚI,
+   không dùng list meme cũ làm nguồn DUY NHẤT. Venue: PCS V2 + PCS V3 +
+   Uniswap V3 BSC. KHÔNG THENA, KHÔNG Biswap. Đường volume: token vào list
+   khi PCS V2 đủ ngưỡng VÀ ≥1 pool V3 **cùng quote** đủ impact — V3 =
+   PCS V3 **hoặc** Uniswap V3 (impact ≤ 2 % khi bán 1 BNB quy đổi). Ngưỡng
+   V2: `reserve_quote` ≥ 50 BNB (≥ 35.000 USDT). **Bổ sung** 129 token
+   `pairs.txt`: nếu có pool V3 (PCS hoặc Uniswap) thì lấy, không cần đợi
+   top-volume. Nguồn volume: top 500 token Swap log PCS V2+V3 (`getLogs`
+   dải 1000 block) — KHÔNG quét cả chain. Tool: `discover_multivenue
+   --hours N --pairs pairs.txt`. Output `state/multi_venue.json` + TSV +
+   `state/multi_venue_candidates.txt` (`vetted` trống).
 
 ### 2026-09-15 — mode 2 (nền, vẫn áp dụng cho phần lọc/vet)
 

@@ -4,8 +4,9 @@
 //!     --hours 24 --top 500 --min-v2-bnb 50 --min-v3-impact-pct 2 --probe-bnb 1 \
 //!     --out state/multi_venue.json
 //!
-//! Chỉ ĐỌC chain. Không ký, không gửi, KHÔNG đọc `pairs.txt` làm nguồn.
-//! Venue lọc: PCS V2 + PCS V3. Uniswap V3 BSC: ghi nhận, không thay điều kiện.
+//! Chỉ ĐỌC chain. Không ký, không gửi.
+//! Nguồn chính: Swap log PCS V2 + PCS V3. Bổ sung `pairs.txt` nếu token có V3
+//! (PCS V3 hoặc Uniswap V3). Venue: PCS V2, PCS V3, Uniswap V3.
 
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{keccak256, Address, B256, U256};
@@ -14,8 +15,9 @@ use alloy::rpc::types::eth::Filter;
 use bsc_sandwich::config::Config;
 use bsc_sandwich::discover_mv::{
     abs_i256_word, candidates_line, decode_v2_swap_quote_volume, impact_pct_from_quotes,
-    probe_ten_tokens, probe_usdt_from_bnb, quote_name, report_header, report_row, DiscoverThresholds,
-    TokenProbe, UniV3Obs, V2Obs, V3Obs, TRANSFER_EVENT_SIG, V2_SWAP_EVENT_SIG, V3_SWAP_EVENT_SIG,
+    parse_pairs_tokens, probe_ten_tokens, probe_usdt_from_bnb, quote_name, report_header, report_row,
+    DiscoverThresholds, TokenProbe, UniV3Obs, V2Obs, V3Obs, TRANSFER_EVENT_SIG, V2_SWAP_EVENT_SIG,
+    V3_SWAP_EVENT_SIG,
 };
 use bsc_sandwich::multivenue::{
     MultiVenueFile, TokenVenues, UniV3PoolRec, V2PoolRec, V3PoolRec,
@@ -47,6 +49,7 @@ struct Args {
     sleep_ms: u64,
     probe_ten: bool,
     skip_volume: bool,
+    pairs: String,
 }
 
 fn parse_args() -> Args {
@@ -65,6 +68,7 @@ fn parse_args() -> Args {
         sleep_ms: 80,
         probe_ten: false,
         skip_volume: false,
+        pairs: String::new(),
     };
     let mut i = 1;
     while i < raw.len() {
@@ -120,6 +124,10 @@ fn parse_args() -> Args {
             "--skip-volume" => {
                 a.skip_volume = true;
                 i += 1;
+            }
+            "--pairs" => {
+                a.pairs = raw[i + 1].clone();
+                i += 2;
             }
             "-h" | "--help" => {
                 eprintln!(
@@ -582,14 +590,25 @@ async fn probe_token(
                 for (pool_addr, fee) in found {
                     tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                     let impact = quote_impact(provider, uni_quoter, quote, token, fee, probe_in).await;
-                    uni_v3.push(UniV3Obs { quote, pool: pool_addr, fee, impact_pct: impact });
+                    let ok = bsc_sandwich::discover_mv::v3_meets_impact(impact, th);
+                    uni_v3.push(UniV3Obs { quote, pool: pool_addr, fee, impact_pct: impact, ok });
                 }
             }
             Err(e) => eprintln!("  getPool uni v3 fail token={token:#x}: {e}"),
         }
     }
 
-    TokenProbe { token, symbol, vol24h_bnb, v2, v3, uni_v3, verified: None, proxy: None }
+    TokenProbe {
+        token,
+        symbol,
+        vol24h_bnb,
+        v2,
+        v3,
+        uni_v3,
+        verified: None,
+        proxy: None,
+        from_pairs: false,
+    }
 }
 
 fn etherscan_source(addr: Address, key: &str) -> Option<(bool, bool)> {
@@ -617,11 +636,10 @@ fn wei_to_bnb_f64(w: U256) -> f64 {
 }
 
 fn to_file_rec(p: &TokenProbe) -> TokenVenues {
-    let both = p.both_ok();
     TokenVenues {
         token: format!("{:#x}", p.token),
         symbol: p.symbol.clone(),
-        arb_ready: both,
+        arb_ready: p.keep_in_list(),
         v2_pools: p
             .v2
             .iter()
@@ -657,14 +675,16 @@ fn to_file_rec(p: &TokenProbe) -> TokenVenues {
                 quote_name: quote_name(x.quote).to_string(),
                 fee: x.fee,
                 impact_pct: x.impact_pct,
+                ok: x.ok,
             })
             .collect(),
         vol24h_bnb: Some(p.vol24h_bnb),
         v2_ok: p.v2_ok(),
         v3_ok: p.v3_ok(),
-        both_ok: both,
+        both_ok: p.both_ok(),
         verified: p.verified,
         proxy: p.proxy,
+        from_pairs: p.from_pairs,
     }
 }
 
@@ -761,22 +781,69 @@ async fn main() {
     ranked.sort_by(|a, b| b.1.cmp(&a.1));
     let scanned_tokens = ranked.len();
     ranked.truncate(args.top);
-    println!("probe top {} tokens (khong doc pairs.txt)", ranked.len());
+    println!("probe top {} tokens (volume)", ranked.len());
+
+    let mut pairs_set: HashSet<Address> = HashSet::new();
+    let mut pairs_sym: HashMap<Address, String> = HashMap::new();
+    if !args.pairs.is_empty() {
+        match std::fs::read_to_string(&args.pairs) {
+            Ok(s) => {
+                let parsed = parse_pairs_tokens(&s);
+                println!("pairs.txt {} unique tokens (bo sung neu co V3)", parsed.len());
+                for (t, sym) in parsed {
+                    pairs_set.insert(t);
+                    if let Some(sy) = sym {
+                        pairs_sym.insert(t, sy);
+                    }
+                }
+            }
+            Err(e) => eprintln!("FAIL doc {}: {e}", args.pairs),
+        }
+    }
 
     let mut probes: Vec<TokenProbe> = Vec::new();
+    let mut seen_probe: HashSet<Address> = HashSet::new();
     for (i, (token, vol_wei)) in ranked.iter().enumerate() {
         let vol_bnb = wei_to_bnb_f64(*vol_wei);
-        let p = probe_token(&provider, *token, vol_bnb, &th, v2_factory, v3_factory, uni_factory, pcs_quoter, uni_quoter, wbnb_a, usdt_a, probe_usdt, args.sleep_ms).await;
+        let mut p = probe_token(&provider, *token, vol_bnb, &th, v2_factory, v3_factory, uni_factory, pcs_quoter, uni_quoter, wbnb_a, usdt_a, probe_usdt, args.sleep_ms).await;
+        p.from_pairs = pairs_set.contains(token);
+        if p.symbol.is_none() {
+            p.symbol = pairs_sym.get(token).cloned();
+        }
+        seen_probe.insert(*token);
         if (i + 1) % 10 == 0 || i + 1 == ranked.len() {
             println!(
-                "  probe {}/{} last={:#x} sym={:?} v2_ok={} v3_ok={} both={}",
+                "  probe {}/{} last={:#x} sym={:?} v2_ok={} v3_ok={} both={} keep={}",
                 i + 1,
                 ranked.len(),
                 p.token,
                 p.symbol,
                 p.v2_ok(),
                 p.v3_ok(),
-                p.both_ok()
+                p.both_ok(),
+                p.keep_in_list()
+            );
+        }
+        probes.push(p);
+    }
+
+    let extra: Vec<Address> = pairs_set.iter().copied().filter(|t| !seen_probe.contains(t)).collect();
+    println!("bo sung probe pairs.txt chua nam trong top volume: {}", extra.len());
+    for (i, token) in extra.iter().enumerate() {
+        let mut p = probe_token(&provider, *token, 0.0, &th, v2_factory, v3_factory, uni_factory, pcs_quoter, uni_quoter, wbnb_a, usdt_a, probe_usdt, args.sleep_ms).await;
+        p.from_pairs = true;
+        if p.symbol.is_none() {
+            p.symbol = pairs_sym.get(token).cloned();
+        }
+        if (i + 1) % 10 == 0 || i + 1 == extra.len() {
+            println!(
+                "  pairs {}/{} last={:#x} sym={:?} has_v3={} keep={}",
+                i + 1,
+                extra.len(),
+                p.token,
+                p.symbol,
+                p.has_any_v3_pool(),
+                p.keep_in_list()
             );
         }
         probes.push(p);
@@ -785,7 +852,7 @@ async fn main() {
     if let Ok(key) = std::env::var("ETHERSCAN_API_KEY").or_else(|_| std::env::var("BSCSCAN_API_KEY")) {
         if !key.is_empty() {
             println!("etherscan v2 getsourcecode cho token both_ok (khong in key)");
-            for p in probes.iter_mut().filter(|p| p.both_ok()) {
+            for p in probes.iter_mut().filter(|p| p.keep_in_list()) {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 if let Some((ver, prox)) = etherscan_source(p.token, &key) {
                     p.verified = Some(ver);
@@ -800,23 +867,32 @@ async fn main() {
     let v2_ok_n = probes.iter().filter(|p| p.v2_ok()).count();
     let v3_ok_n = probes.iter().filter(|p| p.v3_ok()).count();
     let both_n = probes.iter().filter(|p| p.both_ok()).count();
+    let keep_n = probes.iter().filter(|p| p.keep_in_list()).count();
+    let pairs_n = probes.iter().filter(|p| p.from_pairs).count();
+    let pairs_v3_n = probes.iter().filter(|p| p.from_pairs && p.has_any_v3_pool()).count();
     let mut tier_dist: HashMap<u32, u64> = HashMap::new();
+    let mut uni_tier: HashMap<u32, u64> = HashMap::new();
     for p in &probes {
         for v in p.v3.iter().filter(|x| x.ok) {
             *tier_dist.entry(v.fee).or_insert(0) += 1;
+        }
+        for v in p.uni_v3.iter().filter(|x| x.ok) {
+            *uni_tier.entry(v.fee).or_insert(0) += 1;
         }
     }
 
     println!("=== TOM TAT ===");
     println!("scanned_tokens_vol={scanned_tokens} probed={}", probes.len());
-    println!("v2_ok={v2_ok_n} v3_ok={v3_ok_n} both_ok={both_n}");
+    println!("v2_ok={v2_ok_n} v3_ok={v3_ok_n} both_ok={both_n} keep_in_list={keep_n}");
+    println!("pairs_probed={pairs_n} pairs_with_v3={pairs_v3_n}");
     println!("tier_dist_pcs_v3_ok={tier_dist:?}");
+    println!("tier_dist_uni_v3_ok={uni_tier:?}");
     println!("volume_method={volume_method}");
 
-    let mut both: Vec<&TokenProbe> = probes.iter().filter(|p| p.both_ok()).collect();
+    let mut both: Vec<&TokenProbe> = probes.iter().filter(|p| p.keep_in_list()).collect();
     both.sort_by(|a, b| b.vol24h_bnb.partial_cmp(&a.vol24h_bnb).unwrap_or(std::cmp::Ordering::Equal));
 
-    println!("=== TOP 30 both_ok theo vol24h (hoac top probed neu both=0) ===");
+    println!("=== TOP 30 keep_in_list theo vol (hoac top probed neu rong) ===");
     let top_print: Vec<&TokenProbe> = if both.is_empty() {
         let mut all: Vec<&TokenProbe> = probes.iter().collect();
         all.sort_by(|a, b| b.vol24h_bnb.partial_cmp(&a.vol24h_bnb).unwrap_or(std::cmp::Ordering::Equal));
@@ -827,7 +903,7 @@ async fn main() {
     for (i, p) in top_print.iter().enumerate() {
         let min_imp = p.v3.iter().filter(|x| x.ok).filter_map(|x| x.impact_pct).fold(None, |acc: Option<f64>, v| Some(acc.map(|a| a.min(v)).unwrap_or(v)));
         println!(
-            "{:2} {:7} {:#x} vol24h={:.2} v2_ok={} v3_ok={} both={} v3_impact_min={:?}",
+            "{:2} {:7} {:#x} vol={:.2} v2_ok={} v3_ok={} both={} keep={} pairs={} v3_impact_min={:?} uni={}",
             i + 1,
             p.symbol.as_deref().unwrap_or("?"),
             p.token,
@@ -835,7 +911,10 @@ async fn main() {
             p.v2_ok(),
             p.v3_ok(),
             p.both_ok(),
-            min_imp
+            p.keep_in_list(),
+            p.from_pairs,
+            min_imp,
+            p.uni_v3.len()
         );
     }
 
@@ -885,7 +964,7 @@ async fn main() {
     std::fs::write(&args.candidates, cand).expect("write candidates");
 
     println!(
-        "WROTE {} tokens_probed={} both_ok={both_n} report={} candidates={} elapsed={:.1}s machine=WSL",
+        "WROTE {} tokens_probed={} both_ok={both_n} keep={keep_n} pairs_v3={pairs_v3_n} report={} candidates={} elapsed={:.1}s machine=WSL",
         args.out,
         probes.len(),
         args.report,

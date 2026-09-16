@@ -69,6 +69,8 @@ pub struct TokenVenues {
     pub verified: Option<bool>,
     #[serde(default)]
     pub proxy: Option<bool>,
+    #[serde(default)]
+    pub from_pairs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +105,8 @@ pub struct UniV3PoolRec {
     pub fee: u32,
     #[serde(default)]
     pub impact_pct: Option<f64>,
+    #[serde(default)]
+    pub ok: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

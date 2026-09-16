@@ -1,0 +1,386 @@
+discover_multivenue chain=56 block=122246764 rpc=https://rpc-bsc.48.club/*** hours=4 top=500 min_v2_bnb=50 min_v3_impact=2 probe_bnb=1
+bridge WBNB/USDT pair=Some("0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae") reserve_wbnb=53507083413731134572126 reserve_usdt=37996015600097767345798691
+probe_usdt_wei=710111880072071458846 (1 BNB quy doi)
+block_time_est=0.450s/block hours=4 blocks_back=32000
+scan blocks 122214764..122246764 (32001 blocks)
+swap_unfiltered_probe logs=1011 range=122246714-122246764 -> DUNG Swap log
+  v2 getLogs [122245765-122246764] chunk=1000 vol_tokens=0 cache=0
+    -> 13509 logs (total 13509)
+    warm 1674 pool meta (cache already 0)
+  v2 getLogs [122244765-122245764] chunk=1000 vol_tokens=93 cache=1674
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122245265-122245764] chunk=500 vol_tokens=93 cache=1674
+    -> 6417 logs (total 19926)
+    warm 512 pool meta (cache already 1674)
+  v2 getLogs [122244265-122245264] chunk=1000 vol_tokens=140 cache=2186
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122244765-122245264] chunk=500 vol_tokens=140 cache=2186
+    -> 6295 logs (total 26221)
+    warm 408 pool meta (cache already 2186)
+  v2 getLogs [122243765-122244764] chunk=1000 vol_tokens=172 cache=2594
+    -> 13406 logs (total 39627)
+    warm 867 pool meta (cache already 2594)
+  v2 getLogs [122242765-122243764] chunk=1000 vol_tokens=243 cache=3461
+    -> 12858 logs (total 52485)
+    warm 695 pool meta (cache already 3461)
+  v2 getLogs [122241765-122242764] chunk=1000 vol_tokens=273 cache=4156
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122242265-122242764] chunk=500 vol_tokens=273 cache=4156
+  v2 split chunk -> 250 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122242515-122242764] chunk=250 vol_tokens=273 cache=4156
+  v2 split chunk -> 125 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122242640-122242764] chunk=125 vol_tokens=273 cache=4156
+    -> 1690 logs (total 54175)
+    warm 84 pool meta (cache already 4156)
+  v2 getLogs [122241640-122242639] chunk=1000 vol_tokens=293 cache=4240
+    -> 15048 logs (total 69223)
+    warm 638 pool meta (cache already 4240)
+  v2 getLogs [122240640-122241639] chunk=1000 vol_tokens=331 cache=4878
+    -> 12964 logs (total 82187)
+    warm 828 pool meta (cache already 4878)
+  v2 getLogs [122239640-122240639] chunk=1000 vol_tokens=371 cache=5706
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122240140-122240639] chunk=500 vol_tokens=371 cache=5706
+    -> 6212 logs (total 88399)
+    warm 303 pool meta (cache already 5706)
+  v2 getLogs [122239140-122240139] chunk=1000 vol_tokens=395 cache=6009
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122239640-122240139] chunk=500 vol_tokens=395 cache=6009
+    -> 5850 logs (total 94249)
+    warm 255 pool meta (cache already 6009)
+  v2 getLogs [122238640-122239639] chunk=1000 vol_tokens=415 cache=6264
+    -> 11892 logs (total 106141)
+    warm 450 pool meta (cache already 6264)
+  v2 getLogs [122237640-122238639] chunk=1000 vol_tokens=458 cache=6714
+    -> 12299 logs (total 118440)
+    warm 442 pool meta (cache already 6714)
+  v2 getLogs [122236640-122237639] chunk=1000 vol_tokens=503 cache=7156
+    -> 12775 logs (total 131215)
+    warm 362 pool meta (cache already 7156)
+  v2 getLogs [122235640-122236639] chunk=1000 vol_tokens=527 cache=7518
+    -> 13939 logs (total 145154)
+    warm 309 pool meta (cache already 7518)
+  v2 getLogs [122234640-122235639] chunk=1000 vol_tokens=551 cache=7827
+    -> 13763 logs (total 158917)
+    warm 349 pool meta (cache already 7827)
+  v2 getLogs [122233640-122234639] chunk=1000 vol_tokens=593 cache=8176
+    -> 14443 logs (total 173360)
+    warm 340 pool meta (cache already 8176)
+  v2 getLogs [122232640-122233639] chunk=1000 vol_tokens=626 cache=8516
+    -> 15434 logs (total 188794)
+    warm 330 pool meta (cache already 8516)
+  v2 getLogs [122231640-122232639] chunk=1000 vol_tokens=655 cache=8846
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122232140-122232639] chunk=500 vol_tokens=655 cache=8846
+    -> 10425 logs (total 199219)
+    warm 146 pool meta (cache already 8846)
+  v2 getLogs [122231140-122232139] chunk=1000 vol_tokens=678 cache=8992
+    -> 13482 logs (total 212701)
+    warm 321 pool meta (cache already 8992)
+  v2 getLogs [122230140-122231139] chunk=1000 vol_tokens=700 cache=9313
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122230640-122231139] chunk=500 vol_tokens=700 cache=9313
+    -> 6937 logs (total 219638)
+    warm 144 pool meta (cache already 9313)
+  v2 getLogs [122229640-122230639] chunk=1000 vol_tokens=742 cache=9457
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122230140-122230639] chunk=500 vol_tokens=742 cache=9457
+    -> 7426 logs (total 227064)
+    warm 138 pool meta (cache already 9457)
+  v2 getLogs [122229140-122230139] chunk=1000 vol_tokens=762 cache=9595
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122229640-122230139] chunk=500 vol_tokens=762 cache=9595
+    -> 8455 logs (total 235519)
+    warm 183 pool meta (cache already 9595)
+  v2 getLogs [122228640-122229639] chunk=1000 vol_tokens=780 cache=9778
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122229140-122229639] chunk=500 vol_tokens=780 cache=9778
+    -> 8401 logs (total 243920)
+    warm 178 pool meta (cache already 9778)
+  v2 getLogs [122228140-122229139] chunk=1000 vol_tokens=803 cache=9956
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122228640-122229139] chunk=500 vol_tokens=803 cache=9956
+    -> 10181 logs (total 254101)
+    warm 177 pool meta (cache already 9956)
+  v2 getLogs [122227640-122228639] chunk=1000 vol_tokens=825 cache=10133
+    -> 20006 logs (total 274107)
+    warm 321 pool meta (cache already 10133)
+  v2 getLogs [122226640-122227639] chunk=1000 vol_tokens=854 cache=10454
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122227140-122227639] chunk=500 vol_tokens=854 cache=10454
+    -> 10393 logs (total 284500)
+    warm 110 pool meta (cache already 10454)
+  v2 getLogs [122226140-122227139] chunk=1000 vol_tokens=886 cache=10564
+    -> 23006 logs (total 307506)
+    warm 335 pool meta (cache already 10564)
+  v2 getLogs [122225140-122226139] chunk=1000 vol_tokens=919 cache=10899
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122225640-122226139] chunk=500 vol_tokens=919 cache=10899
+    -> 10564 logs (total 318070)
+    warm 202 pool meta (cache already 10899)
+  v2 getLogs [122224640-122225639] chunk=1000 vol_tokens=937 cache=11101
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122225140-122225639] chunk=500 vol_tokens=937 cache=11101
+    -> 6826 logs (total 324896)
+    warm 250 pool meta (cache already 11101)
+  v2 getLogs [122224140-122225139] chunk=1000 vol_tokens=949 cache=11351
+    -> 14601 logs (total 339497)
+    warm 502 pool meta (cache already 11351)
+  v2 getLogs [122223140-122224139] chunk=1000 vol_tokens=975 cache=11853
+    -> 16887 logs (total 356384)
+    warm 342 pool meta (cache already 11853)
+  v2 getLogs [122222140-122223139] chunk=1000 vol_tokens=1001 cache=12195
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122222640-122223139] chunk=500 vol_tokens=1001 cache=12195
+    -> 11075 logs (total 367459)
+    warm 188 pool meta (cache already 12195)
+  v2 getLogs [122221640-122222639] chunk=1000 vol_tokens=1026 cache=12383
+    -> 24421 logs (total 391880)
+    warm 223 pool meta (cache already 12383)
+  v2 getLogs [122220640-122221639] chunk=1000 vol_tokens=1052 cache=12606
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122221140-122221639] chunk=500 vol_tokens=1052 cache=12606
+    -> 12879 logs (total 404759)
+    warm 159 pool meta (cache already 12606)
+  v2 getLogs [122220140-122221139] chunk=1000 vol_tokens=1077 cache=12765
+    -> 27127 logs (total 431886)
+    warm 388 pool meta (cache already 12765)
+  v2 getLogs [122219140-122220139] chunk=1000 vol_tokens=1098 cache=13153
+    -> 15536 logs (total 447422)
+    warm 341 pool meta (cache already 13153)
+  v2 getLogs [122218140-122219139] chunk=1000 vol_tokens=1120 cache=13494
+    -> 16837 logs (total 464259)
+    warm 190 pool meta (cache already 13494)
+  v2 getLogs [122217140-122218139] chunk=1000 vol_tokens=1147 cache=13684
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122217640-122218139] chunk=500 vol_tokens=1147 cache=13684
+    -> 12431 logs (total 476690)
+    warm 158 pool meta (cache already 13684)
+  v2 getLogs [122216640-122217639] chunk=1000 vol_tokens=1169 cache=13842
+    -> 16278 logs (total 492968)
+    warm 300 pool meta (cache already 13842)
+  v2 getLogs [122215640-122216639] chunk=1000 vol_tokens=1190 cache=14142
+    -> 16403 logs (total 509371)
+    warm 414 pool meta (cache already 14142)
+  v2 getLogs [122214764-122215639] chunk=1000 vol_tokens=1215 cache=14556
+  v2 split chunk -> 500 (timeout 20s)
+  v2 getLogs [122215140-122215639] chunk=500 vol_tokens=1215 cache=14556
+  v2 split chunk -> 250 (timeout 20s)
+  v2 getLogs [122215390-122215639] chunk=250 vol_tokens=1215 cache=14556
+    -> 4933 logs (total 514304)
+    warm 93 pool meta (cache already 14556)
+  v2 getLogs [122214764-122215389] chunk=1000 vol_tokens=1229 cache=14649
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122214890-122215389] chunk=500 vol_tokens=1229 cache=14649
+    -> 9546 logs (total 523850)
+    warm 87 pool meta (cache already 14649)
+  v2 getLogs [122214764-122214889] chunk=1000 vol_tokens=1262 cache=14736
+    -> 2862 logs (total 526712)
+    warm 32 pool meta (cache already 14736)
+  scanned v2 swap logs_total=526712 vol_tokens=1271
+  v3 getLogs [122245765-122246764] chunk=1000 vol_tokens=1271 cache=14768
+    -> 2482 logs (total 529194)
+    warm 198 pool meta (cache already 14768)
+  v3 getLogs [122244765-122245764] chunk=1000 vol_tokens=1271 cache=14966
+    -> 2524 logs (total 531718)
+    warm 66 pool meta (cache already 14966)
+  v3 getLogs [122243765-122244764] chunk=1000 vol_tokens=1271 cache=15032
+    -> 2882 logs (total 534600)
+    warm 47 pool meta (cache already 15032)
+  v3 getLogs [122242765-122243764] chunk=1000 vol_tokens=1271 cache=15079
+    -> 3065 logs (total 537665)
+    warm 50 pool meta (cache already 15079)
+  v3 getLogs [122241765-122242764] chunk=1000 vol_tokens=1271 cache=15129
+    -> 3391 logs (total 541056)
+    warm 31 pool meta (cache already 15129)
+  v3 getLogs [122240765-122241764] chunk=1000 vol_tokens=1271 cache=15160
+    -> 3645 logs (total 544701)
+    warm 31 pool meta (cache already 15160)
+  v3 getLogs [122239765-122240764] chunk=1000 vol_tokens=1271 cache=15191
+    -> 3120 logs (total 547821)
+    warm 39 pool meta (cache already 15191)
+  v3 getLogs [122238765-122239764] chunk=1000 vol_tokens=1271 cache=15230
+    -> 3019 logs (total 550840)
+    warm 25 pool meta (cache already 15230)
+  v3 getLogs [122237765-122238764] chunk=1000 vol_tokens=1271 cache=15255
+    -> 3393 logs (total 554233)
+    warm 15 pool meta (cache already 15255)
+  v3 getLogs [122236765-122237764] chunk=1000 vol_tokens=1271 cache=15270
+    -> 2623 logs (total 556856)
+    warm 13 pool meta (cache already 15270)
+  v3 getLogs [122235765-122236764] chunk=1000 vol_tokens=1271 cache=15283
+    -> 3525 logs (total 560381)
+    warm 13 pool meta (cache already 15283)
+  v3 getLogs [122234765-122235764] chunk=1000 vol_tokens=1271 cache=15296
+    -> 3815 logs (total 564196)
+    warm 24 pool meta (cache already 15296)
+  v3 getLogs [122233765-122234764] chunk=1000 vol_tokens=1271 cache=15320
+    -> 3821 logs (total 568017)
+    warm 24 pool meta (cache already 15320)
+  v3 getLogs [122232765-122233764] chunk=1000 vol_tokens=1271 cache=15344
+    -> 3152 logs (total 571169)
+    warm 9 pool meta (cache already 15344)
+  v3 getLogs [122231765-122232764] chunk=1000 vol_tokens=1271 cache=15353
+    -> 3717 logs (total 574886)
+    warm 10 pool meta (cache already 15353)
+  v3 getLogs [122230765-122231764] chunk=1000 vol_tokens=1271 cache=15363
+    -> 3479 logs (total 578365)
+    warm 10 pool meta (cache already 15363)
+  v3 getLogs [122229765-122230764] chunk=1000 vol_tokens=1271 cache=15373
+    -> 3909 logs (total 582274)
+    warm 18 pool meta (cache already 15373)
+  v3 getLogs [122228765-122229764] chunk=1000 vol_tokens=1271 cache=15391
+    -> 2770 logs (total 585044)
+    warm 11 pool meta (cache already 15391)
+  v3 getLogs [122227765-122228764] chunk=1000 vol_tokens=1271 cache=15402
+    -> 3312 logs (total 588356)
+    warm 14 pool meta (cache already 15402)
+  v3 getLogs [122226765-122227764] chunk=1000 vol_tokens=1271 cache=15416
+    -> 3302 logs (total 591658)
+    warm 8 pool meta (cache already 15416)
+  v3 getLogs [122225765-122226764] chunk=1000 vol_tokens=1271 cache=15424
+    -> 3890 logs (total 595548)
+    warm 13 pool meta (cache already 15424)
+  v3 getLogs [122224765-122225764] chunk=1000 vol_tokens=1271 cache=15437
+    -> 3217 logs (total 598765)
+    warm 3 pool meta (cache already 15437)
+  v3 getLogs [122223765-122224764] chunk=1000 vol_tokens=1271 cache=15440
+    -> 3359 logs (total 602124)
+    warm 19 pool meta (cache already 15440)
+  v3 getLogs [122222765-122223764] chunk=1000 vol_tokens=1271 cache=15459
+    -> 4085 logs (total 606209)
+    warm 10 pool meta (cache already 15459)
+  v3 getLogs [122221765-122222764] chunk=1000 vol_tokens=1271 cache=15469
+    -> 7017 logs (total 613226)
+    warm 2 pool meta (cache already 15469)
+  v3 getLogs [122220765-122221764] chunk=1000 vol_tokens=1271 cache=15471
+    -> 3421 logs (total 616647)
+    warm 8 pool meta (cache already 15471)
+  v3 getLogs [122219765-122220764] chunk=1000 vol_tokens=1271 cache=15479
+    -> 3233 logs (total 619880)
+    warm 4 pool meta (cache already 15479)
+  v3 getLogs [122218765-122219764] chunk=1000 vol_tokens=1271 cache=15483
+    -> 4387 logs (total 624267)
+    warm 5 pool meta (cache already 15483)
+  v3 getLogs [122217765-122218764] chunk=1000 vol_tokens=1271 cache=15488
+    -> 3628 logs (total 627895)
+    warm 11 pool meta (cache already 15488)
+  v3 getLogs [122216765-122217764] chunk=1000 vol_tokens=1271 cache=15499
+    -> 3177 logs (total 631072)
+    warm 3 pool meta (cache already 15499)
+  v3 getLogs [122215765-122216764] chunk=1000 vol_tokens=1271 cache=15502
+    -> 3345 logs (total 634417)
+    warm 10 pool meta (cache already 15502)
+  v3 getLogs [122214765-122215764] chunk=1000 vol_tokens=1271 cache=15512
+    -> 3941 logs (total 638358)
+    warm 7 pool meta (cache already 15512)
+  v3 getLogs [122214764-122214764] chunk=1000 vol_tokens=1271 cache=15519
+    -> 4 logs (total 638362)
+  scanned v3 swap logs_total=638362 vol_tokens=1271
+volume_method=swap_logs_v2_v3 unique_tokens=1271 pcs_pools_seen=1297 logs=638362
+probe top 500 tokens (volume)
+pairs.txt 129 unique tokens (bo sung neu co V3)
+  probe 10/500 last=0x6bedcc5a72f745dbb718be114e1158d54a2aca15 sym=Some("👑SMA") v2_ok=false v3_ok=false both=false keep=false
+  probe 20/500 last=0x7697c4a5a9ef0b5c60fc6f02299e4df76306373c sym=Some("ARMY") v2_ok=false v3_ok=false both=false keep=false
+  probe 30/500 last=0x07aeda9fa6ec36e1bc1f5a64dd3317a1aa84f4ce sym=Some("BRE") v2_ok=false v3_ok=false both=false keep=false
+  probe 40/500 last=0x1ad07120285513315047ba5676c868d01d044444 sym=Some("FINTECH") v2_ok=false v3_ok=false both=false keep=false
+  probe 50/500 last=0xdd10f8503fd27ec69bbeef7deebed1cbb5b14444 sym=Some("DIP") v2_ok=false v3_ok=false both=false keep=false
+  probe 60/500 last=0xecb75460a58965daafd66e3b948483cd393d4444 sym=Some("Banana") v2_ok=false v3_ok=false both=false keep=false
+  probe 70/500 last=0xa9b91df3e6ba025d31f2a242cb678e47db59f9d9 sym=Some("USDC") v2_ok=false v3_ok=false both=false keep=false
+  probe 80/500 last=0x4bc91256594d938dedafbf6e011de7b2e72d7777 sym=Some("万事币") v2_ok=false v3_ok=false both=false keep=false
+  probe 90/500 last=0xdc56a414cc953daa9f883b4c7c07af8354a2977b sym=Some("FOMOPAD") v2_ok=false v3_ok=false both=false keep=false
+  probe 100/500 last=0xf5a9c85cbe519bb01acc86f61f180296a76b7777 sym=Some("flybook") v2_ok=false v3_ok=false both=false keep=false
+  probe 110/500 last=0x45bec463129fccb3eceacfe25267acfcc1dc7777 sym=Some("蝴蝶时") v2_ok=false v3_ok=false both=false keep=false
+  probe 120/500 last=0xc9d945788f88f4ac1fd9fc0c8965a55790427777 sym=Some("逢低买") v2_ok=false v3_ok=false both=false keep=false
+  probe 130/500 last=0x3486954fe535538af98765922a252576b42e778d sym=Some("🦆SMAR") v2_ok=false v3_ok=false both=false keep=false
+  probe 140/500 last=0xd0a564335d0e5b1c73f10a3632186aed22aec777 sym=Some("fintech") v2_ok=false v3_ok=false both=false keep=false
+  probe 150/500 last=0xa09c99cc2f6086815be994ac8eaa7002a6f70777 sym=Some("逢低买") v2_ok=false v3_ok=false both=false keep=false
+  probe 160/500 last=0x93cd5c8a2ca11029b06e490ecdc7812b768e9999 sym=Some("GMV") v2_ok=true v3_ok=false both=false keep=false
+  probe 170/500 last=0x174824ab1f2cce81b502eafa5f3901a97c147777 sym=Some("Flylife") v2_ok=false v3_ok=false both=false keep=false
+  probe 180/500 last=0x1d327e288449030f505364ef77e24dabb5e6d2db sym=Some("ATLAS") v2_ok=true v3_ok=false both=false keep=false
+  probe 190/500 last=0x1a1e69f1e6182e2f8b9e8987e83c016ac9444444 sym=Some("人生K线") v2_ok=true v3_ok=true both=false keep=true
+  probe 200/500 last=0xda6b8806c38dca6067d522589cfbded7eac27777 sym=Some("LimeWire") v2_ok=false v3_ok=false both=false keep=false
+  probe 210/500 last=0x6fd0ab8626724723a85e0678fe6eb26f37217777 sym=Some("MARSDOGE") v2_ok=false v3_ok=false both=false keep=false
+  probe 220/500 last=0xfe040f064587c823672ef5a87a8041ae8b2327c0 sym=Some("万事币安") v2_ok=false v3_ok=false both=false keep=false
+  probe 230/500 last=0x5bb07ec11dd9075a650295b55e190906bd5237ea sym=Some("SDOGE") v2_ok=false v3_ok=false both=false keep=false
+  probe 240/500 last=0x5c2a6cc4992bcdd680b3c055805d5a28aaea73b1 sym=Some("ANTIB") v2_ok=false v3_ok=false both=false keep=false
+  probe 250/500 last=0x2e80f40c6cef922c0e7274d81d680ac72d743414 sym=Some("McDonald") v2_ok=false v3_ok=false both=false keep=false
+  probe 260/500 last=0x2d904816b8a1c62cc6b486da29466daf4ad9936e sym=Some("血刃") v2_ok=false v3_ok=false both=false keep=false
+  probe 270/500 last=0x58e804523fbec7b8e94611addccc9a74ed187777 sym=Some("Dino") v2_ok=false v3_ok=false both=false keep=false
+  probe 280/500 last=0x5d4dfa7c368aa0bdd091a4841f22dd3b0525ca27 sym=Some("EMPI") v2_ok=true v3_ok=false both=false keep=false
+  probe 290/500 last=0x85e277a39d0c9ba6ac6c1bb07b6a451733ad9c51 sym=Some("DOLDM") v2_ok=false v3_ok=false both=false keep=false
+  probe 300/500 last=0xf563e86e461de100cfcfd8b65daa542d3d4b0550 sym=Some("COCO") v2_ok=true v3_ok=false both=false keep=false
+  probe 310/500 last=0xe8a3cd5334423bd834894fce1a0c407c3a667777 sym=Some("Hardcore") v2_ok=false v3_ok=false both=false keep=false
+  probe 320/500 last=0xe60c5f05682a564e74502f6acdb3520888888888 sym=Some("胡来") v2_ok=false v3_ok=false both=false keep=false
+  probe 330/500 last=0x4047aa3a6bfc97619f71bbd3a111b46e4d864444 sym=Some("最初的梦想") v2_ok=false v3_ok=false both=false keep=false
+  probe 340/500 last=0xb45e6dd851df10961d1aad912baf220168fcaa25 sym=Some("CVC") v2_ok=true v3_ok=false both=false keep=false
+  probe 350/500 last=0x8aa401093d4c52a14414f8f4fbd90ef3a8f97d1f sym=Some("DL") v2_ok=true v3_ok=false both=false keep=false
+  probe 360/500 last=0xa7663bf3d156500d569d7615202b5f2c065ad796 sym=Some("COR") v2_ok=true v3_ok=false both=false keep=false
+  probe 370/500 last=0xc220689f85238d5cf2427d9ff919c856c89c7cc0 sym=Some("STD") v2_ok=false v3_ok=false both=false keep=false
+  probe 380/500 last=0xf35337435b8be1ca3a911bacfabc48fe6c3d9950 sym=Some("梭哈") v2_ok=false v3_ok=false both=false keep=false
+  probe 390/500 last=0xc4abe60c81da0cf89e926d44a77f7c2a01887477 sym=Some("QARB") v2_ok=false v3_ok=false both=false keep=false
+  probe 400/500 last=0x63d1eacebb70bbbf0641e7c88e9099301bba3688 sym=Some("NBDAO") v2_ok=true v3_ok=false both=false keep=false
+  probe 410/500 last=0xdf6ec637f7cd19a0624e87d5a32706a540671214 sym=Some("VXD") v2_ok=true v3_ok=false both=false keep=false
+  getReserves fail token=0x72e27ba40f22f3be45cb553f7e118d72f2c0ac62 quote=0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c: eth_call getReserves that bai: error sending request for url (https://rpc-bsc.48.club/)
+  probe 420/500 last=0x6386adc4bc9c21984e34fd916bb349dd861742af sym=Some("BOX") v2_ok=false v3_ok=true both=false keep=false
+  probe 430/500 last=0x74b3c729a009991bc3808bcecfeda8a03dcdc82f sym=Some("CLAWDOG") v2_ok=false v3_ok=false both=false keep=false
+  probe 440/500 last=0x9ef6b9e0efbde7ea6283d5d52afc14346401e888 sym=Some("DD") v2_ok=false v3_ok=false both=false keep=false
+  probe 450/500 last=0x0c69c2f36b515321fa356fa1607dce7f65dfffff sym=Some("豆包") v2_ok=true v3_ok=false both=false keep=false
+  probe 460/500 last=0xfe37ce161f93870274fac622f385bedc3f107777 sym=Some("币安生态") v2_ok=false v3_ok=false both=false keep=false
+  probe 470/500 last=0x3f224fc43d68519e7b6e8f2ac310f3eb3a86bb17 sym=Some("LRVX") v2_ok=false v3_ok=false both=false keep=false
+  probe 480/500 last=0xa8c2b8eec3d368c0253ad3dae65a5f2bbb89c929 sym=Some("CTK") v2_ok=false v3_ok=false both=false keep=false
+  probe 490/500 last=0x828bf2ab1d0545860cbedd0cc95c86567f012908 sym=Some("BABYMonkey") v2_ok=false v3_ok=false both=false keep=false
+  probe 500/500 last=0x1d3ac7fb9634c86a03545a06f8aa493ee61bf7fc sym=Some("EVT") v2_ok=false v3_ok=false both=false keep=false
+bo sung probe pairs.txt chua nam trong top volume: 111
+  pairs 10/111 last=0x44440f83419de123d7d411187adb9962db017d03 sym=Some("BNBHolder") has_v3=true keep=true
+  pairs 20/111 last=0x1868d0c4d8cabf094d76f5293cf2b2662e8cee43 sym=Some("NFTC") has_v3=false keep=false
+  pairs 30/111 last=0x985c6c2a7b35a3cd8ce0bc576b614c7c254ef782 sym=Some("SDM") has_v3=false keep=false
+  pairs 40/111 last=0x63d9b8830255ba8ceaf3958e6f2906e52b424444 sym=Some("噜噜") has_v3=true keep=true
+  pairs 50/111 last=0xd5eaaac47bd1993d661bc087e15dfb079a7f3c19 sym=Some("KOMA") has_v3=true keep=true
+  pairs 60/111 last=0xedee16bf89361506f3da715aae29b22f71992777 sym=Some("OI") has_v3=false keep=false
+  pairs 70/111 last=0x3ac8e2c113d5d7824ac6ebe82a3c60b1b9d64444 sym=Some("客服小何") has_v3=true keep=true
+  pairs 80/111 last=0xe0e514c71282b6f4e823703a39374cf58dc3ea4f sym=Some("BELT") has_v3=true keep=true
+  pairs 90/111 last=0x1633b7157e7638c4d6593436111bf125ee74703f sym=Some("SPS") has_v3=true keep=true
+  pairs 100/111 last=0xeccbb861c0dda7efd964010085488b69317e4444 sym=Some("龙虾") has_v3=true keep=true
+  pairs 110/111 last=0x7d03759e5b41e36899833cb2e008455d69a24444 sym=Some("priceless") has_v3=true keep=true
+  pairs 111/111 last=0xa2b726b1145a4773f68593cf171187d8ebe4d495 sym=Some("INJ") has_v3=true keep=true
+ETHERSCAN_API_KEY/BSCSCAN_API_KEY rong -> verified/proxy = null
+=== TOM TAT ===
+scanned_tokens_vol=1271 probed=611
+v2_ok=209 v3_ok=49 both_ok=34 keep_in_list=109
+pairs_probed=129 pairs_with_v3=108
+tier_dist_pcs_v3_ok={10000: 18, 500: 16, 100: 17, 2500: 34}
+tier_dist_uni_v3_ok={500: 9, 100: 5, 3000: 14, 10000: 12}
+volume_method=swap_logs_v2_v3
+=== TOP 30 keep_in_list theo vol (hoac top probed neu rong) ===
+ 1 BORT    0x2a846aaaf896ef393ccb76398c1d96ea97374444 vol=166.04 v2_ok=true v3_ok=true both=false keep=true pairs=true v3_impact_min=Some(1.460852) uni=2
+ 2 B       0x6bdcce4a559076e37755a78ce0c06214e59e4444 vol=77.34 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=3
+ 3 USDC    0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d vol=65.77 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(1e-6) uni=8
+ 4 DOT     0x7083609fce4d1d8dc0c979aab8c869ea2c873402 vol=34.88 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(0.217718) uni=5
+ 5 人生K线    0x1a1e69f1e6182e2f8b9e8987e83c016ac9444444 vol=20.98 v2_ok=true v3_ok=true both=false keep=true pairs=true v3_impact_min=None uni=2
+ 6 黑马      0xf9c6e80e9a5807a1214a79449009b48104f94444 vol=13.42 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=2
+ 7 bibi    0x9212cf1f9f4a9c69bb010146ba5b0725169d4444 vol=4.70 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=4
+ 8 ADA     0x3ee2200efb3400fabb9aacf31297cbdd1d435d47 vol=3.47 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(0.076747) uni=5
+ 9 COSA    0x5f980533b994c93631a639deda7892fc49995839 vol=1.64 v2_ok=true v3_ok=true both=true keep=true pairs=false v3_impact_min=Some(0.0) uni=0
+10 DOGE    0xba2ae424d960c26247dd6c32edc70b295c744c43 vol=1.09 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(0.060777) uni=7
+11 猫姐      0x82ed0c6b54daebc098495f6aadf32f66eb084444 vol=0.98 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+12 战壕入门包   0x99f5054f1d9799f901df533fbfe5d9b3f25b4444 vol=0.78 v2_ok=false v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+13 RACA    0x12bb890508c125661e03b09ec06e404bc9289040 vol=0.65 v2_ok=false v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=3
+14 MBOX    0x3203c9e46ca618c8c1ce5dc67e7e9d75f5da2377 vol=0.51 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=4
+15 AVAX    0x1ce0c2827e2ef14d5c4f29a091d735a204794041 vol=0.32 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(0.34109) uni=5
+16 KOGE    0xe6df05ce8c8301223373cf5b969afcb1498c5528 vol=0.25 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=None uni=7
+17 BEAM    0x62d0a8458ed7719fdaf978fe5929c6d342b0bfce vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=3
+18 EPS     0xa7f552078dcc247c2684336020c03648500c6d9f vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+19 AIX     0xb82ce467e525f17ffb2b4c8786b6ebe06b66a5a2 vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+20 Libra   0xd28e716fa02543962b3129f9e4d919c65f434444 vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=1
+21 CBM     0xc79fda51894dce271065e06df3f68ec19481aea5 vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+22 BUSD    0xe9e7cea3dedca5984780bafc599bd69add087d56 vol=0.00 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(0.000958) uni=8
+23 UNI     0xbf5140a22578168fd562dccf235e5d43a02ce9b1 vol=0.00 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(0.557778) uni=7
+24 修仙      0x44443dd87ec4d1bea3425acc118adb023f07f91b vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=2
+25 KLIP    0x5a6117ee2ea174d5875e3c1880ecd7bc8da651b6 vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+26 BNBHolder 0x44440f83419de123d7d411187adb9962db017d03 vol=0.00 v2_ok=true v3_ok=true both=true keep=true pairs=true v3_impact_min=Some(1.349322) uni=3
+27 世界和平    0x4444def5cf226bf50aa4b45e5748b676945bc509 vol=0.00 v2_ok=false v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=1
+28 WM      0x2789033dfe80593f69d689f65892a75afa491111 vol=0.00 v2_ok=false v3_ok=true both=false keep=true pairs=true v3_impact_min=Some(0.546908) uni=0
+29 POFD    0xf3c35a84ef311c847ce4da33c3c31c57770b3760 vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=1
+30 TRX     0x85eac5ac2f758618dfa09bdbe0cf174e7d574d5b vol=0.00 v2_ok=true v3_ok=false both=false keep=true pairs=true v3_impact_min=None uni=0
+WROTE state/multi_venue.json tokens_probed=611 both_ok=34 keep=109 pairs_v3=108 report=state/multi_venue_report.tsv candidates=state/multi_venue_candidates.txt elapsed=2252.7s machine=WSL

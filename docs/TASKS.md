@@ -364,5 +364,6 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | B1 `arb-executor-contract` | — | CHỜ Go B0. Thiết kế `ArbExecutor` đã viết (`docs/CONTRACT_DESIGN.md`). |
 | B2 `arb-exec-wiring` | — | chờ B1 |
 | B3 `live-small` | — | chờ B2 |
-| B4 `planB-B4-multivenue-tool` | 48 | TOOL + pin Uniswap V3 + list từ `--hours 2` (22 both_ok). **`--hours 24` chưa chạy xong** — xem BAOCAO48 ô 10. |
+| B4 `planB-B4-multivenue-tool` | 48 | TOOL + pin Uniswap V3. List 2 h (22 both_ok). |
+| B4 scan 4 h + bổ sung pairs.txt | 49 | `--hours 4` xong: vol 1271, both_ok=34, keep=109 (108/129 pairs có V3). Uniswap V3 = venue hợp lệ. |
 | B4 `venue-infinity-v3` (sim) | — | chờ list vet; decoder PoolKey/hooks + sim_arb V3. |

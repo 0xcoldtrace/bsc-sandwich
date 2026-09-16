@@ -138,6 +138,7 @@ pub struct UniV3Obs {
     pub pool: Address,
     pub fee: u32,
     pub impact_pct: Option<f64>,
+    pub ok: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -150,30 +151,68 @@ pub struct TokenProbe {
     pub uni_v3: Vec<UniV3Obs>,
     pub verified: Option<bool>,
     pub proxy: Option<bool>,
+    /// Bổ sung từ `pairs.txt` (Chủ cho phép, BAOCAO49).
+    pub from_pairs: bool,
 }
 
 impl TokenProbe {
     pub fn v2_ok(&self) -> bool {
         self.v2.iter().any(|p| p.ok)
     }
+    /// PCS V3 impact ok **hoặc** Uniswap V3 impact ok.
     pub fn v3_ok(&self) -> bool {
-        self.v3.iter().any(|p| p.ok)
+        self.v3.iter().any(|p| p.ok) || self.uni_v3.iter().any(|p| p.ok)
     }
-    /// Cùng quote: phải có 1 V2 ok VÀ 1 PCS V3 ok **cùng quote**.
-    /// Uniswap không tham gia.
+    pub fn has_any_v3_pool(&self) -> bool {
+        !self.v3.is_empty() || !self.uni_v3.is_empty()
+    }
+    /// Volume: V2 đủ ngưỡng + (PCS V3 hoặc Uniswap V3) cùng quote, impact ok.
     pub fn both_ok(&self) -> bool {
-        qualifies_v2_v3(&self.v2, &self.v3)
+        qualifies_v2_v3(&self.v2, &self.v3, &self.uni_v3)
+    }
+    /// Vào list: `both_ok` **hoặc** (từ pairs.txt **và** có pool V3 PCS/Uni).
+    pub fn keep_in_list(&self) -> bool {
+        self.both_ok() || (self.from_pairs && self.has_any_v3_pool())
     }
 }
 
-/// Luật chốt: V2 ok + PCS V3 ok cùng quote. Uniswap không thay thế.
-pub fn qualifies_v2_v3(v2: &[V2Obs], v3: &[V3Obs]) -> bool {
+/// V2 ok + V3 ok cùng quote. V3 = PCS **hoặc** Uniswap (cùng ngưỡng impact).
+pub fn qualifies_v2_v3(v2: &[V2Obs], v3: &[V3Obs], uni: &[UniV3Obs]) -> bool {
     for a in v2.iter().filter(|p| p.ok) {
         if v3.iter().any(|b| b.ok && b.quote == a.quote) {
             return true;
         }
+        if uni.iter().any(|b| b.ok && b.quote == a.quote) {
+            return true;
+        }
     }
     false
+}
+
+/// Parse token từ `pairs.txt` (không đụng file vet). Dòng `0xToken` hoặc
+/// `0xToken,0xQuote`. Trả unique, bỏ comment/lỗi.
+pub fn parse_pairs_tokens(content: &str) -> Vec<(Address, Option<String>)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in content.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let comment = raw.splitn(2, '#').nth(1).unwrap_or("");
+        let symbol = comment
+            .split('|')
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let addr_part = line.split(',').next().unwrap_or("").trim();
+        if let Ok(t) = Address::from_str(addr_part) {
+            if seen.insert(t) {
+                out.push((t, symbol));
+            }
+        }
+    }
+    out
 }
 
 /// 1 BNB quy đổi sang USDT qua reserve V2 WBNB/USDT (không oracle).
@@ -193,16 +232,22 @@ pub fn candidates_line(p: &TokenProbe) -> String {
         .filter(|x| x.ok)
         .map(|x| format!("{}@{}", quote_name(x.quote), x.fee))
         .collect();
+    let unit: Vec<String> = p
+        .uni_v3
+        .iter()
+        .filter(|x| x.ok || p.from_pairs)
+        .map(|x| format!("{}@{}", quote_name(x.quote), x.fee))
+        .collect();
+    let src = if p.from_pairs { "pairs" } else { "vol" };
     let note = format!(
-        "discover_multivenue vol24h_bnb={:.4} v2={} v3={}",
+        "discover_multivenue src={src} vol={:.4} v2={} v3={} uni={}",
         p.vol24h_bnb,
         v2q.join("+"),
-        v3t.join("+")
+        v3t.join("+"),
+        unit.join("+")
     );
-    // Quote mặc định WBNB (0xToken); nếu CHỈ có V2/V3 USDT ok thì ghi cột 2 USDT.
-    let only_usdt = p.v2.iter().filter(|x| x.ok).all(|x| x.quote == usdt())
-        && p.v2.iter().any(|x| x.ok)
-        && !p.v2.iter().any(|x| x.ok && x.quote == wbnb());
+    // Quote mặc định WBNB; nếu chỉ có V2 USDT (kể cả dưới ngưỡng, pairs) thì cột 2 USDT.
+    let only_usdt = p.v2.iter().any(|x| x.quote == usdt()) && !p.v2.iter().any(|x| x.quote == wbnb());
     let addr = if only_usdt {
         format!("{:#x},{:#x}", p.token, usdt())
     } else {
@@ -372,20 +417,20 @@ mod tests {
         let v2 = vec![v2_ok(wbnb(), f64_to_wei(100.0))];
         let v3_same = vec![v3_ok(wbnb(), 1.0)];
         let v3_other = vec![v3_ok(usdt(), 0.5)];
-        assert!(qualifies_v2_v3(&v2, &v3_same));
-        assert!(!qualifies_v2_v3(&v2, &v3_other));
+        assert!(qualifies_v2_v3(&v2, &v3_same, &[]));
+        assert!(!qualifies_v2_v3(&v2, &v3_other, &[]));
     }
 
     #[test]
     fn token_only_v2_rejected() {
         let v2 = vec![v2_ok(wbnb(), f64_to_wei(100.0))];
-        assert!(!qualifies_v2_v3(&v2, &[]));
+        assert!(!qualifies_v2_v3(&v2, &[], &[]));
     }
 
     #[test]
     fn token_only_v3_rejected() {
         let v3 = vec![v3_ok(wbnb(), 0.1)];
-        assert!(!qualifies_v2_v3(&[], &v3));
+        assert!(!qualifies_v2_v3(&[], &v3, &[]));
     }
 
     #[test]
@@ -393,7 +438,7 @@ mod tests {
         let v2 = vec![v2_ok(wbnb(), f64_to_wei(10.0))];
         let v3 = vec![v3_ok(wbnb(), 0.1)];
         assert!(!v2[0].ok);
-        assert!(!qualifies_v2_v3(&v2, &v3));
+        assert!(!qualifies_v2_v3(&v2, &v3, &[]));
     }
 
     #[test]
@@ -401,7 +446,7 @@ mod tests {
         let v2 = vec![v2_ok(wbnb(), f64_to_wei(100.0))];
         let v3 = vec![v3_ok(wbnb(), 5.0)];
         assert!(!v3[0].ok);
-        assert!(!qualifies_v2_v3(&v2, &v3));
+        assert!(!qualifies_v2_v3(&v2, &v3, &[]));
     }
 
     #[test]
@@ -412,14 +457,66 @@ mod tests {
             symbol: Some("X".into()),
             vol24h_bnb: 999.0,
             v2: vec![v2_ok(wbnb(), f64_to_wei(200.0))],
-            v3: vec![], // không có PCS V3
-            uni_v3: vec![UniV3Obs { quote: wbnb(), pool: a(3), fee: 3000, impact_pct: Some(0.1) }],
+            v3: vec![],
+            uni_v3: vec![UniV3Obs { quote: wbnb(), pool: a(3), fee: 3000, impact_pct: Some(0.1), ok: true }],
             verified: None,
             proxy: None,
+            from_pairs: false,
         };
         assert!(p.v2_ok());
-        assert!(!p.v3_ok());
+        assert!(p.v3_ok());
+        assert!(p.both_ok(), "Uniswap V3 impact ok + cung quote duoc tinh");
+    }
+
+    #[test]
+    fn uniswap_impact_over_threshold_does_not_qualify_volume() {
+        let p = TokenProbe {
+            token: a(9),
+            symbol: Some("X".into()),
+            vol24h_bnb: 1.0,
+            v2: vec![v2_ok(wbnb(), f64_to_wei(200.0))],
+            v3: vec![],
+            uni_v3: vec![UniV3Obs { quote: wbnb(), pool: a(3), fee: 3000, impact_pct: Some(5.0), ok: false }],
+            verified: None,
+            proxy: None,
+            from_pairs: false,
+        };
         assert!(!p.both_ok());
+        assert!(!p.keep_in_list());
+    }
+
+    #[test]
+    fn pairs_txt_with_any_v3_is_kept_even_if_impact_fails() {
+        let p = TokenProbe {
+            token: a(9),
+            symbol: Some("OLD".into()),
+            vol24h_bnb: 0.0,
+            v2: vec![v2_ok(wbnb(), f64_to_wei(10.0))], // duoi nguong 50
+            v3: vec![],
+            uni_v3: vec![UniV3Obs { quote: wbnb(), pool: a(3), fee: 3000, impact_pct: Some(9.0), ok: false }],
+            verified: None,
+            proxy: None,
+            from_pairs: true,
+        };
+        assert!(!p.both_ok());
+        assert!(p.has_any_v3_pool());
+        assert!(p.keep_in_list());
+    }
+
+    #[test]
+    fn pairs_txt_without_v3_not_kept() {
+        let p = TokenProbe {
+            token: a(8),
+            symbol: Some("V2ONLY".into()),
+            vol24h_bnb: 0.0,
+            v2: vec![v2_ok(wbnb(), f64_to_wei(80.0))],
+            v3: vec![],
+            uni_v3: vec![],
+            verified: None,
+            proxy: None,
+            from_pairs: true,
+        };
+        assert!(!p.keep_in_list());
     }
 
     #[test]
@@ -433,6 +530,7 @@ mod tests {
             uni_v3: vec![],
             verified: None,
             proxy: None,
+            from_pairs: false,
         };
         assert!(p.both_ok());
     }
@@ -480,6 +578,7 @@ mod tests {
             uni_v3: vec![],
             verified: None,
             proxy: None,
+            from_pairs: false,
         };
         let line = candidates_line(&p);
         assert!(line.contains("vetted  |"), "vetted phai de trong: {line}");
@@ -504,6 +603,14 @@ mod tests {
         // 1 BNB, pool 1 WBNB : 600 USDT → 600 USDT
         let usdt_out = probe_usdt_from_bnb(f64_to_wei(1.0), f64_to_wei(1.0), f64_to_wei(600.0)).unwrap();
         assert_eq!(usdt_out, f64_to_wei(600.0));
+    }
+
+    #[test]
+    fn parse_pairs_tokens_skips_comments_unique() {
+        let s = "# cmt\n0x00000000000000000000000000000000000000aa # AA | vetted 2026-09-16\n0x00000000000000000000000000000000000000aa # dup\n0x00000000000000000000000000000000000000bb,0x55d398326f99059ff775485246999027b3197955 # BB\n";
+        let v = parse_pairs_tokens(s);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].1.as_deref(), Some("AA"));
     }
 
     /// RPC thật: 5 blue-chip + 5 mid-cap. Chạy:
