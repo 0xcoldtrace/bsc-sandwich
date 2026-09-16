@@ -171,6 +171,10 @@ pub struct AppStateInner {
     /// (600 s) — kết quả vet TƯƠI là điều kiện (a) của đường ký shadow, nên
     /// pool đang có cơ hội phải được đo lại thường xuyên hơn.
     pub candidate_seen: RwLock<std::collections::HashMap<Address, std::time::Instant>>,
+    /// Cụm `verify-cluster-as-victim` (mục 5) — đếm candidate thuộc cụm đối
+    /// thủ theo từng phút để phát hiện họ chuyển private/đổi ví/đổi pool
+    /// (xem `competitor::ClusterRateWatch` + `docs/STATE.md`).
+    pub cluster_rate: RwLock<crate::competitor::ClusterRateWatch>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -325,6 +329,30 @@ async fn compete(State(state): State<AppState>) -> Json<Value> {
         json!(if np > 0 { (np - nc) as f64 * 100.0 / np as f64 } else { 0.0 })
     };
     out["competitor"] = econ["competitor"].clone();
+    // Cụm `verify-cluster-as-victim` (mục 5) — trạng thái bộ theo dõi "cụm đối
+    // thủ có còn xuất hiện trong mempool không". `alert_neu` nói rõ điều kiện
+    // sinh `competitor.alert` để người đọc dashboard không phải đoán.
+    {
+        let w = state.cluster_rate.read().await;
+        let minute = (chrono::Utc::now().timestamp().max(0) as u64) / 60;
+        let (cur_c, cur_t) = w.window(minute, 0, crate::competitor::CLUSTER_RATE_WINDOW_MIN - 1);
+        let (prev_c, prev_t) =
+            w.window(minute, crate::competitor::CLUSTER_RATE_WINDOW_MIN, 2 * crate::competitor::CLUSTER_RATE_WINDOW_MIN - 1);
+        out["cluster_rate"] = json!({
+            "cur_cluster_60m": cur_c,
+            "cur_total_60m": cur_t,
+            "prev_cluster_60m": prev_c,
+            "prev_total_60m": prev_t,
+            "drop_pct": if prev_c > 0 { (prev_c - cur_c.min(prev_c)) as f64 * 100.0 / prev_c as f64 } else { 0.0 },
+            "alerts": w.alerts(),
+            "buckets_phut": w.len(),
+            "alert_neu": format!(
+                "prev_cluster_60m >= {} va drop_pct > {}",
+                crate::competitor::CLUSTER_RATE_MIN_BASELINE,
+                crate::competitor::CLUSTER_RATE_ALERT_DROP_PCT
+            ),
+        });
+    }
     Json(out)
 }
 
@@ -744,6 +772,12 @@ pub fn container_sizes(state: &AppState) -> Vec<crate::mem::ContainerSize> {
             len: state.competitor_cluster.try_read().ok().map(|g| g.funded_now()),
             cap: Some(crate::competitor::FUNDED_WINDOW_BLOCKS),
             cap_unit: "block",
+        },
+        C {
+            name: "competitor::ClusterRateWatch.buckets",
+            len: state.cluster_rate.try_read().ok().map(|g| g.len()),
+            cap: Some(crate::competitor::CLUSTER_RATE_BUCKET_CAP),
+            cap_unit: "phut",
         },
         C { name: "web::ValidateStats.rows", len: val_rows, cap: Some(VALIDATE_ROWS_CAP), cap_unit: "dong" },
         C {

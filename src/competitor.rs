@@ -189,3 +189,210 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cụm `verify-cluster-as-victim` (mục 5) — CẢNH BÁO KHI CỤM ĐỐI THỦ BIẾN MẤT
+// ---------------------------------------------------------------------------
+//
+// Kịch bản rủi ro (chi tiết ở `docs/STATE.md`, mục "Rủi ro phản ứng của cụm
+// đối thủ"): cụm 0xB406 có thể (a) chuyển sang gửi tx qua relay private nên
+// bot không còn thấy chúng trong mempool, (b) đổi ví seed/dispatcher nên
+// `SEED_ADDRESSES` không còn khớp, hoặc (c) đổi sang pool khác không nằm
+// trong `pairs.txt`. CẢ BA kịch bản có CÙNG một dấu hiệu quan sát được từ
+// phía bot: **số candidate được nhận diện thuộc cụm mỗi giờ tụt mạnh**.
+//
+// Vì phần lớn cơ hội có lãi đo được cho tới nay đều là tx của cụm này
+// (481/497 trong 10,92 h, BAOCAO44), mất nguồn đó = mất phần lớn lý do chạy
+// bot; Chủ phải biết NGAY chứ không phải phát hiện sau vài ngày nhìn lãi.
+//
+// Ngưỡng theo lệnh: **giảm > 80 %/giờ** so với giờ liền trước thì cảnh báo.
+
+/// Số bucket phút giữ lại — 180 phút (3 giờ) là đủ cho 2 cửa sổ 60 phút liền
+/// nhau cộng biên, và là TRẦN CỨNG (container này không được phép phình theo
+/// thời gian chạy — bài học BUG #3 của `truth-victim-ok-and-memleak`).
+pub const CLUSTER_RATE_BUCKET_CAP: usize = 180;
+/// Cửa sổ so sánh (phút).
+pub const CLUSTER_RATE_WINDOW_MIN: u64 = 60;
+/// Ngưỡng cảnh báo theo lệnh: tụt hơn 80 % so với cửa sổ liền trước.
+pub const CLUSTER_RATE_ALERT_DROP_PCT: f64 = 80.0;
+/// Cửa sổ trước phải có ÍT NHẤT ngần này candidate cụm thì mới được coi là có
+/// "đường nền" để so — nếu không, một giờ vốn dĩ vắng khách sẽ sinh cảnh báo
+/// giả (0 → 0 hay 2 → 0 không nói lên điều gì).
+pub const CLUSTER_RATE_MIN_BASELINE: u64 = 20;
+/// Không cảnh báo lại trong vòng ngần này phút kể từ lần cảnh báo trước —
+/// tránh spam log mỗi chu kỳ kiểm khi tình trạng kéo dài.
+pub const CLUSTER_RATE_ALERT_COOLDOWN_MIN: u64 = 60;
+
+/// Một lần cảnh báo "cụm đối thủ đang biến mất khỏi tầm nhìn của bot".
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClusterRateAlert {
+    /// Số candidate thuộc cụm trong 60 phút gần nhất.
+    pub cur_cluster: u64,
+    /// Số candidate thuộc cụm trong 60 phút LIỀN TRƯỚC đó.
+    pub prev_cluster: u64,
+    /// Phần trăm sụt giảm (`(prev - cur) / prev * 100`).
+    pub drop_pct: f64,
+    /// Tổng candidate (mọi nguồn) của 2 cửa sổ — để phân biệt "cụm biến mất"
+    /// với "cả mempool im lặng / bot mất kết nối WS".
+    pub cur_total: u64,
+    pub prev_total: u64,
+}
+
+/// Đếm candidate theo phút để phát hiện cụm đối thủ biến mất.
+///
+/// Bộ đếm này KHÔNG nằm trên đường nóng theo nghĩa RPC — `note()` chỉ đẩy 1 số
+/// vào bucket phút cuối, còn `evaluate()` do một task nền gọi định kỳ.
+#[derive(Debug, Default)]
+pub struct ClusterRateWatch {
+    /// `(phút epoch, candidate thuộc cụm, tổng candidate)`, tăng dần theo phút.
+    buckets: std::collections::VecDeque<(u64, u64, u64)>,
+    alerts: u64,
+    last_alert_minute: Option<u64>,
+}
+
+impl ClusterRateWatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ghi nhận 1 candidate đã đi tới bước nhận diện cụm tại `minute` (phút
+    /// epoch = `unix_ts / 60`).
+    pub fn note(&mut self, minute: u64, in_cluster: bool) {
+        match self.buckets.back_mut() {
+            Some((m, c, t)) if *m == minute => {
+                *t += 1;
+                if in_cluster {
+                    *c += 1;
+                }
+            }
+            _ => self.buckets.push_back((minute, u64::from(in_cluster), 1)),
+        }
+        while self.buckets.len() > CLUSTER_RATE_BUCKET_CAP {
+            self.buckets.pop_front();
+        }
+    }
+
+    /// Tổng `(cụm, tổng)` của các bucket nằm trong `[now - older + 1, now - newer]`
+    /// tính bằng phút lùi về quá khứ.
+    pub fn window(&self, now_minute: u64, newer_ago: u64, older_ago: u64) -> (u64, u64) {
+        let hi = now_minute.saturating_sub(newer_ago);
+        let lo = now_minute.saturating_sub(older_ago);
+        self.buckets
+            .iter()
+            .filter(|(m, _, _)| *m >= lo && *m <= hi)
+            .fold((0, 0), |(c, t), (_, bc, bt)| (c + bc, t + bt))
+    }
+
+    /// So cửa sổ 60 phút gần nhất với 60 phút liền trước; trả `Some(alert)` khi
+    /// vi phạm ngưỡng VÀ chưa cảnh báo trong `CLUSTER_RATE_ALERT_COOLDOWN_MIN`.
+    pub fn evaluate(&mut self, now_minute: u64) -> Option<ClusterRateAlert> {
+        let w = CLUSTER_RATE_WINDOW_MIN;
+        let (cur_cluster, cur_total) = self.window(now_minute, 0, w - 1);
+        let (prev_cluster, prev_total) = self.window(now_minute, w, 2 * w - 1);
+        if prev_cluster < CLUSTER_RATE_MIN_BASELINE {
+            return None;
+        }
+        let drop_pct = (prev_cluster - cur_cluster.min(prev_cluster)) as f64 / prev_cluster as f64 * 100.0;
+        if drop_pct <= CLUSTER_RATE_ALERT_DROP_PCT {
+            return None;
+        }
+        if let Some(last) = self.last_alert_minute {
+            if now_minute.saturating_sub(last) < CLUSTER_RATE_ALERT_COOLDOWN_MIN {
+                return None;
+            }
+        }
+        self.last_alert_minute = Some(now_minute);
+        self.alerts += 1;
+        Some(ClusterRateAlert { cur_cluster, prev_cluster, drop_pct, cur_total, prev_total })
+    }
+
+    pub fn alerts(&self) -> u64 {
+        self.alerts
+    }
+
+    pub fn len(&self) -> usize {
+        self.buckets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buckets.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    /// Phút epoch giả lập: 0 = "cách đây 120 phút", 119 = "phút hiện tại".
+    fn fill(w: &mut ClusterRateWatch, from: u64, to: u64, cluster_per_min: u64, other_per_min: u64) {
+        for m in from..=to {
+            for _ in 0..cluster_per_min {
+                w.note(m, true);
+            }
+            for _ in 0..other_per_min {
+                w.note(m, false);
+            }
+        }
+    }
+
+    #[test]
+    fn tut_hon_80_phan_tram_thi_canh_bao() {
+        let mut w = ClusterRateWatch::new();
+        fill(&mut w, 0, 59, 2, 3); // gio truoc: 120 candidate cum
+        fill(&mut w, 60, 119, 0, 3); // gio nay: 0 candidate cum
+        let alert = w.evaluate(119).expect("phai canh bao khi tut 100%");
+        assert_eq!(alert.prev_cluster, 120);
+        assert_eq!(alert.cur_cluster, 0);
+        assert!((alert.drop_pct - 100.0).abs() < 1e-9);
+        // Tong candidate VAN cao -> phan biet duoc "cum bien mat" voi "mat WS".
+        assert_eq!(alert.cur_total, 180);
+    }
+
+    #[test]
+    fn tut_duoi_nguong_thi_im_lang() {
+        let mut w = ClusterRateWatch::new();
+        fill(&mut w, 0, 59, 2, 0); // 120
+        fill(&mut w, 60, 119, 1, 0); // 60 -> tut 50%, duoi nguong 80%
+        assert!(w.evaluate(119).is_none());
+    }
+
+    #[test]
+    fn duong_nen_qua_thap_thi_khong_canh_bao_gia() {
+        let mut w = ClusterRateWatch::new();
+        // Gio truoc chi co 5 candidate cum (< CLUSTER_RATE_MIN_BASELINE=20).
+        for m in 0..5 {
+            w.note(m, true);
+        }
+        fill(&mut w, 60, 119, 0, 10);
+        assert!(w.evaluate(119).is_none(), "gio vang khach khong duoc sinh canh bao gia");
+    }
+
+    #[test]
+    fn co_cooldown_khong_spam_moi_chu_ky() {
+        let mut w = ClusterRateWatch::new();
+        fill(&mut w, 0, 59, 2, 0);
+        fill(&mut w, 60, 119, 0, 1);
+        assert!(w.evaluate(119).is_some());
+        assert!(w.evaluate(120).is_none(), "trong cooldown 60 phut -> im lang");
+        assert_eq!(w.alerts(), 1);
+    }
+
+    #[test]
+    fn bucket_co_tran_cung_khong_phinh_theo_thoi_gian() {
+        let mut w = ClusterRateWatch::new();
+        for m in 0..1000 {
+            w.note(m, m % 2 == 0);
+        }
+        assert_eq!(w.len(), CLUSTER_RATE_BUCKET_CAP, "phai cat con dung tran 180 bucket");
+    }
+
+    #[test]
+    fn window_cat_dung_bien_60_phut() {
+        let mut w = ClusterRateWatch::new();
+        fill(&mut w, 0, 119, 1, 0);
+        let (cur, _) = w.window(119, 0, 59);
+        let (prev, _) = w.window(119, 60, 119);
+        assert_eq!(cur, 60, "cua so hien tai dung 60 phut");
+        assert_eq!(prev, 60, "cua so truoc dung 60 phut, khong chong lan");
+    }
+}

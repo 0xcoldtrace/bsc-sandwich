@@ -31,11 +31,18 @@ PORT=8799
 # `config.toml` thật, luôn `false`/`false`/`true` theo ship — script này vẫn
 # KHÔNG có cách nào bật live).
 LIVE_MODE="off"
+# Cum `verify-cluster-as-victim` (muc 2) — `--allow-competitor-victims`
+# override CHI field `allow_competitor_victims` trong config TAM. Can thiet vi
+# o `live_mode="shadow"` ship-value `false` lam candidate cua CUM DOI THU bi
+# skip `competitor_victim` TRUOC khi toi buoc ky/`shadow.sim`, tuc dung cai
+# nhom ta dang can do. KHONG bat live/armed/dry_run gi ca.
+ALLOW_COMPETITOR="keep"
 while [ $# -gt 0 ]; do
   case "$1" in
     --minutes) MINUTES="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --live-mode) LIVE_MODE="$2"; shift 2 ;;
+    --allow-competitor-victims) ALLOW_COMPETITOR="true"; shift 1 ;;
     *) echo "tham so la: $1"; exit 2 ;;
   esac
 done
@@ -133,6 +140,10 @@ apply pairs_min_swap_bnb 0
 apply min_profit_usdt 0
 apply min_reserve_usdt 0
 apply web_port "$PORT"
+if [ "$ALLOW_COMPETITOR" = "true" ]; then
+  apply allow_competitor_victims true
+  echo "== CANH BAO: allow_competitor_victims override thanh true (ship false) - CHI de DO candidate cua cum doi thu o shadow, KHONG gui tx =="
+fi
 if [ "$LIVE_MODE" != "off" ]; then
   apply live_mode "\"$LIVE_MODE\""
   echo "== CANH BAO: live_mode override thanh \"$LIVE_MODE\" (mac dinh \"off\") - dry_run/allow_live/bot_armed VAN giu nguyen tu config.toml that (khong doi) =="

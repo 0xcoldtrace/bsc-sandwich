@@ -39,10 +39,19 @@ if [ ! -x "$ROOT/target/release/bsc_sandwich" ]; then
 fi
 PAPER_THRESHOLDS=0
 START=0
+# Cum `verify-cluster-as-victim` (muc 1+2) — VPS phai chay shadow mode voi
+# allow_competitor_victims=true de sinh `shadow.sim` (revm 3 chan) cho candidate
+# CUA CUM DOI THU. O `live_mode="off"` (truoc cum nay) KHONG co dong shadow.sim
+# nao trong ca 10,92 h — do la ly do lai xac nhan duoc cua cua so do = 0.
+# 2 co nay CHI dung config.runtime.toml; dry_run/allow_live/bot_armed KHONG doi.
+LIVE_MODE=""
+ALLOW_COMPETITOR=0
 for a in "$@"; do
   case "$a" in
     --start) START=1 ;;
     --paper-thresholds) PAPER_THRESHOLDS=1 ;;
+    --shadow) LIVE_MODE="shadow" ;;
+    --allow-competitor-victims) ALLOW_COMPETITOR=1 ;;
     *) echo "tham so la: $a"; exit 2 ;;
   esac
 done
@@ -62,15 +71,15 @@ fi
 # ---- config.runtime.toml (unit KHONG BAO GIO doc thang config.toml) ----
 RT="$ROOT/config.runtime.toml"
 cp "$ROOT/config.toml" "$RT"
+apply() {
+  local k="$1" v="$2"
+  if grep -qE "^$k[[:space:]]*=" "$RT"; then
+    sed -i -E "s#^($k[[:space:]]*=).*#\1 $v#" "$RT"
+  else
+    printf '%s = %s\n' "$k" "$v" >> "$RT"
+  fi
+}
 if [ "$PAPER_THRESHOLDS" = "1" ]; then
-  apply() {
-    local k="$1" v="$2"
-    if grep -qE "^$k[[:space:]]*=" "$RT"; then
-      sed -i -E "s#^($k[[:space:]]*=).*#\1 $v#" "$RT"
-    else
-      printf '%s = %s\n' "$k" "$v" >> "$RT"
-    fi
-  }
   # DUNG 6 field nhu scripts/paper_run.sh - khong them bot field nao, de 2 may
   # so sanh duoc. KHONG dung toi dry_run/allow_live/bot_armed/sim_engine.
   apply min_profit_bnb 0
@@ -83,8 +92,16 @@ if [ "$PAPER_THRESHOLDS" = "1" ]; then
 else
   echo "== config.runtime.toml: ban sao y het config.toml ship =="
 fi
+if [ -n "$LIVE_MODE" ]; then
+  apply live_mode "\"$LIVE_MODE\""
+  echo "== config.runtime.toml: live_mode = \"$LIVE_MODE\" (KY that bang PRIVATE_KEY, KHONG BAO GIO gui) =="
+fi
+if [ "$ALLOW_COMPETITOR" = "1" ]; then
+  apply allow_competitor_victims true
+  echo "== config.runtime.toml: allow_competitor_victims = true (CHI de DO cum doi thu, ship la false) =="
+fi
 echo "   dry_run/allow_live/bot_armed trong config.runtime.toml:"
-grep -E "^(dry_run|allow_live|bot_armed|live_mode|sim_engine)[[:space:]]*=" "$RT" | sed "s/^/     /"
+grep -E "^(dry_run|allow_live|bot_armed|live_mode|sim_engine|allow_competitor_victims)[[:space:]]*=" "$RT" | sed "s/^/     /"
 
 echo "== dung cac cach chay CU (nohup / systemd-run) truoc khi cai unit that =="
 systemctl stop bsc-sandwich-paper.service 2>/dev/null || true

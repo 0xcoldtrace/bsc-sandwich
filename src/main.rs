@@ -262,6 +262,7 @@ async fn main() -> anyhow::Result<()> {
         self_nonce: RwLock::new(transport::SelfNonceCache::new()),
         competitor_cluster: RwLock::new(bsc_sandwich::competitor::ClusterIndex::new()),
         candidate_seen: RwLock::new(HashMap::new()),
+        cluster_rate: RwLock::new(bsc_sandwich::competitor::ClusterRateWatch::new()),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
         shadow_wallet,
@@ -451,6 +452,9 @@ async fn main() -> anyhow::Result<()> {
     // tien trinh moi phut. Lan chay 24h dau tren VPS bi OOM-kill o 7,6 GB ma
     // KHONG co mot so do nao trong log de truy nguyen (BAOCAO43 o 5 muc 0).
     tokio::spawn(mem_watch_task(app_state.clone(), Duration::from_secs(60)));
+    // Cụm `verify-cluster-as-victim` (mục 5) — cảnh báo khi cụm đối thủ
+    // biến mất khỏi tầm nhìn (kiểm mỗi 5 phút, cửa sổ so là 60 phút).
+    tokio::spawn(cluster_rate_watch_task(app_state.clone(), Duration::from_secs(300)));
 
     // Cum `real-economics-mode2` (F-03) - do gas UNIT that 1 lan luc boot
     // bang revm tren 1 pair da vet trong pairs.txt (fallback config
@@ -1450,6 +1454,44 @@ async fn mem_watch_task(app_state: AppState, interval: Duration) {
     }
 }
 
+/// Cụm `verify-cluster-as-victim` (mục 5) — RỦI RO PHẢN ỨNG CỦA CỤM ĐỐI THỦ.
+///
+/// 481/497 cơ hội có lãi đo được trong 10,92 h (BAOCAO44) là tx của cụm
+/// `0xB406`. Nếu họ chuyển sang relay private, đổi ví seed, hoặc đổi sang pool
+/// ngoài `pairs.txt` thì nguồn cơ hội đó biến mất — và cả ba kịch bản đều hiện
+/// ra với bot dưới CÙNG một dấu hiệu: số candidate nhận diện được là của cụm
+/// tụt mạnh. Task này so 60 phút gần nhất với 60 phút liền trước và ghi
+/// `competitor.alert` khi tụt > 80 % (ngưỡng theo lệnh Chủ).
+///
+/// `cur_total`/`prev_total` cũng được ghi để người đọc phân biệt "cụm biến
+/// mất" (tổng candidate vẫn cao) với "bot mất WS / mempool im" (tổng cũng tụt).
+async fn cluster_rate_watch_task(app_state: AppState, interval: Duration) {
+    loop {
+        tokio::time::sleep(interval).await;
+        let minute = (chrono::Utc::now().timestamp().max(0) as u64) / 60;
+        let alert = app_state.cluster_rate.write().await.evaluate(minute);
+        if let Some(a) = alert {
+            app_state.logger.log(
+                "competitor.alert",
+                serde_json::json!({
+                    "reason": "cluster_candidate_rate_drop",
+                    "cur_cluster_60m": a.cur_cluster,
+                    "prev_cluster_60m": a.prev_cluster,
+                    "drop_pct": a.drop_pct,
+                    "cur_total_60m": a.cur_total,
+                    "prev_total_60m": a.prev_total,
+                    "nguong_drop_pct": bsc_sandwich::competitor::CLUSTER_RATE_ALERT_DROP_PCT,
+                    "y_nghia": if a.cur_total * 5 < a.prev_total {
+                        "tong candidate cung tut -> nghi bot mat WS/mempool im, KHONG chac cum doi thu bo di"
+                    } else {
+                        "tong candidate van cao ma rieng cum tut -> nghi cum chuyen private/doi vi/doi pool"
+                    },
+                }),
+            );
+        }
+    }
+}
+
 async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPool>) {
     // Cum `decision-data-24h` (muc 3) - nap lai ket qua vet lan chay TRUOC
     // (neu con han) TRUOC khi vao vong lap, de cong (a) cua duong ky am ngay.
@@ -2381,6 +2423,14 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // hiện tại/trước, xem `src/competitor.rs`). Đọc THUẦN từ bộ nhớ (0 RPC).
     let in_competitor_cluster = app_state.competitor_cluster.read().await.contains(raw.from, current_block);
     meta.victim_in_competitor_cluster = Some(in_competitor_cluster);
+    // Cụm `verify-cluster-as-victim` (mục 5) — ghi nhận theo PHÚT để
+    // `cluster_rate_watch_task` phát hiện được lúc cụm đối thủ biến mất khỏi
+    // mempool công khai (chuyển private / đổi ví / đổi pool).
+    app_state
+        .cluster_rate
+        .write()
+        .await
+        .note((chrono::Utc::now().timestamp().max(0) as u64) / 60, in_competitor_cluster);
     // `allow_competitor_victims=false` (ship) + `live_mode != "off"` (đã có
     // khả năng KÝ thật) -> KHÔNG cho nhóm này thành `Simulated`. Ở
     // `live_mode="off"` (paper thuần) KHÔNG chặn — vẫn cần số liệu để Chủ
@@ -3271,6 +3321,7 @@ mod tests {
         self_nonce: RwLock::new(transport::SelfNonceCache::new()),
         competitor_cluster: RwLock::new(bsc_sandwich::competitor::ClusterIndex::new()),
         candidate_seen: RwLock::new(HashMap::new()),
+        cluster_rate: RwLock::new(bsc_sandwich::competitor::ClusterRateWatch::new()),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
         shadow_wallet: None,
