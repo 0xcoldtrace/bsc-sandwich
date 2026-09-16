@@ -1,0 +1,27 @@
+== Cum `verify-cluster-as-victim` (muc 2) — real_rpc_cluster_burner_victim_song_lai_khi_duoc_nap_von ==
+May: WSL /home/dmin/bsc-sandwich
+Lenh: BSC_HTTP_SIM=<blockrazor,48club,dataseed1> cargo test --release --lib -- --ignored \
+        real_rpc_cluster_burner_victim_song_lai_khi_duoc_nap_von --nocapture
+(chay 2 lan: lan 1 ngan sach 60 block -> MISSING dung nghia, khong bia;
+ lan 2 ngan sach 400 block -> gap mau that duoi day)
+
+--- lan 1 (ngan sach 60 block) ---
+MISSING: quet 61 block lui tu 122194399 khong gap mau hinh 'seed cap von USDT + vi do swap qua V2 Router trong CUNG block'
+test sim_evm::tests::real_rpc_cluster_burner_victim_song_lai_khi_duoc_nap_von ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 8.47s
+
+--- lan 2 (ngan sach 400 block, CLUSTER_SCAN_BLOCKS mac dinh) ---
+MAU THAT: block dao=122194457 fork=122194456 victim=0x5875a1b796b8ebeb2656cb1f8fa8f5e4009154c77b9e10545288712e1b65a239 from=0x22cace843fd9caa536ddb3caa70e1c15e8c4345e token=0x01fbed06a70eb1b4a0b43dbc6a94f99944cd7777 amount_in=39.46 USDT
+  (a) KHONG nap von: victim_ok=false reason=Some("TransferHelper: TRANSFER_FROM_FAILED") so_du_quote_cua_victim_tai_fork=0 topped_up=false
+  (b) CO nap von:    victim_ok=true reason=None topped_up=true victim_out=137593520041394294029085 profit_sim_usdt=-0.037240 allowance=115792089237316195423570985008687907853269984665640564037772504007913129639935
+test sim_evm::tests::real_rpc_cluster_burner_victim_song_lai_khi_duoc_nap_von ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 30.17s
+
+DOC DUNG:
+- so_du_quote_cua_victim_tai_fork = 0 -> vi burner KHONG co dong USDT nao o
+  cuoi block truoc; no chi duoc seed cap von trong CHINH block dao.
+- allowance = 2^256-1 -> KHONG phai van de allowance (sim khong bao gio ghi de
+  allowance, day la so doc that tu chain).
+- profit_sim_usdt = -0.037 la voi front_in CO DINH 10 USDT do test dat cung —
+  test nay do CO CHE (victim replay duoc hay khong), KHONG do lai. So lai that
+  doc o bang muc 2 (front_in do search_max_front_in_victim_ok chon).

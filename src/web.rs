@@ -1962,7 +1962,7 @@ mod tests {
     /// bất kỳ đâu: bucket, pool, tổng, và `summary_line` đều phải kèm con số
     /// ĐÃ LOẠI victim thuộc cụm đối thủ. Dữ liệu thật 10.92 h trên VPS: 481/497
     /// cơ hội có lãi là ví burner của chính cụm đối thủ.
-    #[test]
+    ///
     /// Cụm `truth-victim-ok-and-memleak` (mục 6) — `net_pos` phải tách theo
     /// 2 cổng victim-ok, và TIỀN chỉ được cộng khi CẢ HAI `true`.
     ///

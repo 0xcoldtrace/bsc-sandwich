@@ -3373,4 +3373,171 @@ sim_evm[token_received={} back_out={} profit={}] victim_success={} buy_tax_bps={
         for (r, n) in &gated_reasons { println!("   ly do revert con lai {r:<50} = {n}"); }
         assert!(rows_printed >= 1, "phai phan dinh duoc it nhat 1 case (khong duoc pass rong - luat #3)");
     }
+
+    /// Cụm `verify-cluster-as-victim` (mục 2) — CHỨNG MINH TRÊN CHAIN THẬT
+    /// rằng `victim_ok=false` của ví burner cụm đối thủ là ARTIFACT của phép
+    /// đo, không phải sự thật kinh tế.
+    ///
+    /// Cách chạy (KHÔNG cần biết trước hash nào): quét lùi từ block mới nhất,
+    /// tìm block có `Transfer(USDT)` **từ** 1 trong 3 seed tới một địa chỉ X,
+    /// rồi tìm trong CHÍNH block đó một tx do X gửi tới V2 Router. Đó đúng là
+    /// mẫu hình "cấp vốn + swap trong cùng block". Với mẫu tìm được, chạy
+    /// `simulate_sandwich_quote_topup` tại `mined_block − 1` HAI LẦN:
+    ///
+    ///   (a) `victim_topup = None`  -> kỳ vọng `TRANSFER_FROM_FAILED`
+    ///       (ví X chưa có USDT nào ở cuối block trước)
+    ///   (b) `victim_topup = Some(amount_in)` -> kỳ vọng victim SỐNG
+    ///
+    /// Test in số THẬT (block, địa chỉ, `amount_in`, lãi mô phỏng) — luật #3
+    /// CLAUDE.md, không được "pass rỗng". Nếu quét hết ngân sách block mà
+    /// không gặp mẫu hình nào thì in `MISSING` và KHÔNG assert (cụm đối thủ có
+    /// thể đã ngừng/đổi cách hoạt động — đó là dữ kiện, không phải lỗi code).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn real_rpc_cluster_burner_victim_song_lai_khi_duoc_nap_von() {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use std::str::FromStr as _;
+
+        let urls = crate::transport::filter_read_urls(crate::transport::collect_rpc_urls_from_env("BSC_HTTP_SIM"));
+        let url = match urls.first() {
+            Some(u) => u.clone(),
+            None => {
+                println!("MISSING: BSC_HTTP_SIM rong - khong chay duoc test nay");
+                return;
+            }
+        };
+        let provider: DynProvider = ProviderBuilder::new().connect(&url).await.expect("ket noi RPC").erased();
+        assert_eq!(provider.get_chain_id().await.unwrap(), 56, "phai la BSC chain 56");
+        let head = provider.get_block_number().await.expect("eth_blockNumber");
+        let usdt = Address::from_str(crate::venues::USDT_ADDRESS).unwrap();
+        let v2_router = router();
+        let seeds = crate::competitor::seed_set();
+        let transfer_topic = crate::competitor::transfer_topic0();
+
+        // Ngan sach quet (block), doi duoc bang `CLUSTER_SCAN_BLOCKS`. Mac dinh
+        // 400: do that o phien nay la ~1 mau hinh moi 55 block, nen 400 cho
+        // bien an toan ma van chi ~3 phut chuoi. Moi block 1 `eth_getLogs`, va
+        // chi block CO log seed moi ton them 1 `eth_getBlockByNumber` full.
+        let budget: u64 = std::env::var("CLUSTER_SCAN_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+        let mut found: Option<(u64, Address, PendingTxRaw, U256)> = None;
+        let mut scanned = 0u64;
+        for b in (head.saturating_sub(budget + 2)..=head.saturating_sub(2)).rev() {
+            scanned += 1;
+            let logs = match provider
+                .get_logs(
+                    &alloy::rpc::types::Filter::new()
+                        .from_block(b)
+                        .to_block(b)
+                        .address(usdt)
+                        .event_signature(transfer_topic),
+                )
+                .await
+            {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+            let mut funded: std::collections::HashSet<Address> = std::collections::HashSet::new();
+            for l in &logs {
+                let (Some(from_t), Some(to_t)) = (l.topics().get(1), l.topics().get(2)) else { continue };
+                if seeds.contains(&crate::competitor::address_from_topic(*from_t)) {
+                    funded.insert(crate::competitor::address_from_topic(*to_t));
+                }
+            }
+            if funded.is_empty() {
+                continue;
+            }
+            let Ok(Some(blk)) = provider
+                .get_block_by_number(alloy::eips::BlockNumberOrTag::Number(b))
+                .full()
+                .await
+            else {
+                continue;
+            };
+            let txs = match blk.transactions.as_transactions() {
+                Some(t) => t,
+                None => continue,
+            };
+            for tx in txs {
+                use alloy::consensus::Transaction as _;
+                use alloy::network::TransactionResponse as _;
+                if tx.to() != Some(v2_router) || !funded.contains(&tx.from()) {
+                    continue;
+                }
+                let raw = transport_pending_tx_from_alloy(tx);
+                let Ok(dec) = crate::decoder::decode_swap_calldata(&raw.input, raw.value) else { continue };
+                // Chi lay chieu MUA bang USDT (dau vao path la quote USDT).
+                if dec.path.token_a != usdt {
+                    continue;
+                }
+                found = Some((b, dec.path.token_b, raw, dec.amount_in));
+                break;
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+
+        let Some((mined_block, token, victim, amount_in)) = found else {
+            println!(
+                "MISSING: quet {scanned} block lui tu {head} khong gap mau hinh \
+                 'seed cap von USDT + vi do swap qua V2 Router trong CUNG block'"
+            );
+            return;
+        };
+        let fork_block = mined_block - 1;
+        println!(
+            "MAU THAT: block dao={mined_block} fork={fork_block} victim={:#x} from={:#x} token={token:#x} amount_in={} USDT",
+            victim.hash,
+            victim.from,
+            amount_in.to::<u128>() as f64 / 1e18
+        );
+
+        // front_in nho, co dinh (10 USDT) - test nay do CO CHE, khong do lai.
+        let front_in = U256::from(10u64) * U256::from(10u64).pow(U256::from(18u64));
+
+        let khong_nap =
+            simulate_sandwich_quote_topup(provider.clone(), fork_block, front_in, token, usdt, &victim, None)
+                .await
+                .expect("sim (khong nap) phai chay duoc");
+        println!(
+            "  (a) KHONG nap von: victim_ok={} reason={:?} so_du_quote_cua_victim_tai_fork={} topped_up={}",
+            khong_nap.victim_success,
+            khong_nap.victim_revert_reason,
+            khong_nap.victim_quote_balance_before,
+            khong_nap.victim_quote_topped_up
+        );
+
+        let co_nap = simulate_sandwich_quote_topup(
+            provider.clone(),
+            fork_block,
+            front_in,
+            token,
+            usdt,
+            &victim,
+            Some(amount_in),
+        )
+        .await
+        .expect("sim (co nap) phai chay duoc");
+        println!(
+            "  (b) CO nap von:    victim_ok={} reason={:?} topped_up={} victim_out={} profit_sim_usdt={:.6} allowance={}",
+            co_nap.victim_success,
+            co_nap.victim_revert_reason,
+            co_nap.victim_quote_topped_up,
+            co_nap.victim_out,
+            co_nap.profit_wei as f64 / 1e18,
+            co_nap.victim_quote_allowance
+        );
+
+        assert!(
+            khong_nap.victim_quote_balance_before < amount_in,
+            "mau hinh phai la 'vi chua co du USDT tai block truoc' - neu khong, test nay khong chung minh gi"
+        );
+        assert!(!khong_nap.victim_success, "khong nap von -> victim PHAI hong (day la artifact can chung minh)");
+        assert!(co_nap.victim_quote_topped_up, "(b) phai thuc su nap von");
+        assert!(
+            co_nap.victim_success,
+            "nap dung so USDT victim sap tieu -> victim PHAI song; neu van hong, xem allowance = {}",
+            co_nap.victim_quote_allowance
+        );
+    }
 }
