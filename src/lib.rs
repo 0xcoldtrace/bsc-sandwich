@@ -8,6 +8,7 @@ pub mod calldata;
 pub mod competitor;
 pub mod config;
 pub mod decoder;
+pub mod discover_mv;
 pub mod executor;
 pub mod flash;
 pub mod logger;

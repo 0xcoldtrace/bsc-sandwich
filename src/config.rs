@@ -331,6 +331,16 @@ pub struct Config {
     /// Như trên, cho route arb vay bằng Pancake V2 flash swap (`pancakeCall`).
     pub gas_units_arb_v2flash: u64,
 
+    /// Cụm `planB-B4-multivenue-tool` — ngưỡng V2 reserve_quote (BNB) để 1
+    /// phía V2 được tính vào list đa venue. Ship `50`. CLI `--min-v2-bnb` đè.
+    pub multivenue_min_v2_bnb: f64,
+    /// Ngưỡng V2 reserve_quote (USDT). Ship `35000`.
+    pub multivenue_min_v2_usdt: f64,
+    /// Trần impact % V3 khi bán `multivenue_probe_bnb` qua QuoterV2. Ship `2`.
+    pub multivenue_min_v3_impact_pct: f64,
+    /// Cỡ bán (BNB) khi đo impact V3. Ship `1`.
+    pub multivenue_probe_bnb: f64,
+
     /// Mốc lần reload gần nhất — KHÔNG đọc/ghi từ `config.toml`
     /// (`#[serde(skip)]`, mặc định `None`). Dùng bởi `reload_if_due`, cùng
     /// quy ước `VictimBook::last_reload` (`src/victims.rs`).
@@ -426,7 +436,7 @@ impl Config {
         if self.chain_id != REQUIRED_CHAIN_ID {
             return Err(ConfigError::InvalidChainId(self.chain_id));
         }
-        let checks: [(&str, f64); 14] = [
+        let checks: [(&str, f64); 18] = [
             ("min_profit_bnb", self.min_profit_bnb),
             ("max_front_bnb", self.max_front_bnb),
             ("min_reserve_wbnb", self.min_reserve_wbnb),
@@ -441,6 +451,10 @@ impl Config {
             ("bribe_max_bnb", self.bribe_max_bnb),
             ("arb_max_borrow_bnb", self.arb_max_borrow_bnb),
             ("arb_max_borrow_usdt", self.arb_max_borrow_usdt),
+            ("multivenue_min_v2_bnb", self.multivenue_min_v2_bnb),
+            ("multivenue_min_v2_usdt", self.multivenue_min_v2_usdt),
+            ("multivenue_min_v3_impact_pct", self.multivenue_min_v3_impact_pct),
+            ("multivenue_probe_bnb", self.multivenue_probe_bnb),
         ];
         for (name, v) in checks {
             if !v.is_finite() || v < 0.0 {
@@ -872,6 +886,10 @@ multi_venue_path = "state/multi_venue.json"
 gas_units_arb_infinity = 420000
 gas_units_arb_v2flash = 380000
 allow_competitor_victims = false
+multivenue_min_v2_bnb = 50
+multivenue_min_v2_usdt = 35000
+multivenue_min_v3_impact_pct = 2
+multivenue_probe_bnb = 1
 "#
         .to_string()
     }
@@ -1449,5 +1467,32 @@ allow_competitor_victims = false
         let toml_str = base_toml().replace("pairs_require_vetted = true", "pairs_require_vetted = false");
         let cfg = Config::from_str(&toml_str).expect("pairs_require_vetted=false phai load duoc");
         assert!(!cfg.pairs_require_vetted);
+    }
+
+    /// Cụm `planB-B4-multivenue-tool` — 4 field ngưỡng list đa venue bắt buộc.
+    #[test]
+    fn missing_multivenue_threshold_fields_fail_load() {
+        for needle in [
+            "multivenue_min_v2_bnb = 50\n",
+            "multivenue_min_v2_usdt = 35000\n",
+            "multivenue_min_v3_impact_pct = 2\n",
+            "multivenue_probe_bnb = 1\n",
+        ] {
+            let toml_str = base_toml().replace(needle, "");
+            let err = Config::from_str(&toml_str).unwrap_err();
+            match err {
+                ConfigError::Parse(_) => {}
+                other => panic!("expected Parse error khi thieu '{needle}', got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn multivenue_thresholds_ship_defaults() {
+        let cfg = Config::from_str(&base_toml()).unwrap();
+        assert_eq!(cfg.multivenue_min_v2_bnb, 50.0);
+        assert_eq!(cfg.multivenue_min_v2_usdt, 35_000.0);
+        assert_eq!(cfg.multivenue_min_v3_impact_pct, 2.0);
+        assert_eq!(cfg.multivenue_probe_bnb, 1.0);
     }
 }

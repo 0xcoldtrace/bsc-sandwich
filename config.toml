@@ -218,3 +218,11 @@ multi_venue_path = "state/multi_venue.json"
 # overhead -> 380000. Chua phai toan bo lock path trong 1 tx revm.
 gas_units_arb_infinity = 420000
 gas_units_arb_v2flash = 380000
+
+# Cum `planB-B4-multivenue-tool` — nguong list da venue (PCS V2 + PCS V3).
+# CLI `discover_multivenue --min-v2-bnb` / `--min-v3-impact-pct` / `--probe-bnb` de.
+# VPS: cap nhat 4 field nay TRUOC khi deploy binary moi (thieu = fail load).
+multivenue_min_v2_bnb = 50
+multivenue_min_v2_usdt = 35000
+multivenue_min_v3_impact_pct = 2
+multivenue_probe_bnb = 1

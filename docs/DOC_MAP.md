@@ -25,7 +25,7 @@
 |---|---|
 | `AGENTS.md` | Luật vận hành đầy đủ cho Claude Code — không tự sửa trừ khi được lệnh. |
 | `README.md` | Hướng dẫn vận hành chính cho Chủ (không cần biết Rust). |
-| `DEX_REGISTRY.md` | Venue PancakeSwap đã pin (V2/V3/V4-Infinity) — địa chỉ, `eth_getCode`, nguồn. |
+| `DEX_REGISTRY.md` | Venue đã pin: Pancake V2/V3/V4-Infinity + Uniswap V3 BSC (giai đoạn 2, chưa lọc) + nguồn flash — địa chỉ, `eth_getCode`, nguồn. |
 | `Cargo.toml` / `Cargo.lock` | Khai báo dependency Rust + version khoá thực tế. |
 | `config.toml` | Toàn bộ ngưỡng/cờ runtime — nguồn sự thật duy nhất cho giá trị ship. |
 | `vps.json` | `chain_id` + RPC placeholder — **CÓ được code đọc thật**
@@ -82,10 +82,12 @@
 | `src/web.rs` | Axum server + toàn bộ route `/api/*` (kể cả `/api/shadow`), serve static `web/`. |
 | `src/bin/rpc_probe.rs` | Binary phụ đo RTT/`chain_ok` từng URL RPC (không gửi tx), dùng qua `scripts/run_rpc_probe.sh`. |
 | `src/bin/competitor_recon.rs` | Binary phụ trinh sát đối thủ MEV thật qua `eth_getLogs`/`eth_getTransactionByHash` (chỉ đọc, không gửi tx) — cụm `competitor-recon-and-strategy`. |
-| `src/bin/build_multi_venue.rs` | Sinh `state/multi_venue.json` từ `pairs.txt` + `getPair`/`getReserves`/`getPool` + `Initialize` Infinity (cửa sổ 5000 block). |
+| `src/bin/build_multi_venue.rs` | Sinh `state/multi_venue.json` từ `pairs.txt` + `getPair`/`getReserves`/`getPool` + `Initialize` Infinity (cửa sổ 5000 block) — list CŨ, cụm B0. |
+| `src/bin/discover_multivenue.rs` | Tool list MỚI đa venue (cụm `planB-B4-multivenue-tool`): volume 24 h Swap/Transfer PCS V2+V3 → top 500 → V2 reserve + V3 impact → `state/multi_venue.json` + report TSV + `multi_venue_candidates.txt`. KHÔNG đọc `pairs.txt`. |
+| `src/discover_mv.rs` | Quy tắc list thuần (V2+V3 cùng quote, ngưỡng, Uniswap không thay thế) + test. |
 | `src/bin/arb_measure.rs` | Replay `sim_arb` trên mẫu swap lớn (log VPS) × `multi_venue.json`. |
 | `src/bin/arb_crosscheck.rs` | Đối chiếu `sim_arb::route_out` với revm 2–3 hop trên fork. |
-| `src/multivenue.rs` | Load/tra `multi_venue.json` (token → pool V2 đủ sâu). |
+| `src/multivenue.rs` | Load/tra `multi_venue.json` (token → pool V2/V3/Uniswap V3). |
 | `src/flash.rs` / `src/sim_arb.rs` | Nguồn flash + math backrun-arb (cụm B0). |
 
 ### `web/` (dashboard tĩnh, serve qua `axum`)

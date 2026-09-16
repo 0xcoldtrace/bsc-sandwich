@@ -24,6 +24,10 @@ name = "build_multi_venue"
 path = "src/bin/build_multi_venue.rs"
 
 [[bin]]
+name = "discover_multivenue"
+path = "src/bin/discover_multivenue.rs"
+
+[[bin]]
 name = "arb_measure"
 path = "src/bin/arb_measure.rs"
 

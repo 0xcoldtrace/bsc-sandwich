@@ -1,0 +1,219 @@
+discover_multivenue chain=56 block=122239050 rpc=https://rpc-bsc.48.club/*** hours=2 top=500 min_v2_bnb=50 min_v3_impact=2 probe_bnb=1
+bridge WBNB/USDT pair=Some("0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae") reserve_wbnb=53492418657011544820199 reserve_usdt=38005790027113568799082157
+probe_usdt_wei=710489280187594235221 (1 BNB quy doi)
+block_time_est=0.450s/block hours=2 blocks_back=16000
+scan blocks 122223050..122239050 (16001 blocks)
+swap_unfiltered_probe logs=543 range=122239000-122239050 -> DUNG Swap log
+  v2 getLogs [122238051-122239050] chunk=1000 vol_tokens=0 cache=0
+    -> 12230 logs (total 12230)
+    warm 1648 pool meta (cache already 0)
+  v2 getLogs [122237051-122238050] chunk=1000 vol_tokens=465 cache=1648
+  v2 split chunk -> 500 (timeout 20s)
+  v2 getLogs [122237551-122238050] chunk=500 vol_tokens=465 cache=1648
+    -> 6260 logs (total 18490)
+    warm 462 pool meta (cache already 1648)
+  v2 getLogs [122236551-122237550] chunk=1000 vol_tokens=526 cache=2110
+  v2 split chunk -> 500 (timeout 20s)
+  v2 getLogs [122237051-122237550] chunk=500 vol_tokens=526 cache=2110
+    -> 6329 logs (total 24819)
+    warm 350 pool meta (cache already 2110)
+  v2 getLogs [122236051-122237050] chunk=1000 vol_tokens=575 cache=2460
+    -> 13052 logs (total 37871)
+    warm 600 pool meta (cache already 2460)
+  v2 getLogs [122235051-122236050] chunk=1000 vol_tokens=639 cache=3060
+    -> 14635 logs (total 52506)
+    warm 608 pool meta (cache already 3060)
+  v2 getLogs [122234051-122235050] chunk=1000 vol_tokens=713 cache=3668
+  v2 split chunk -> 500 (timeout 20s)
+  v2 getLogs [122234551-122235050] chunk=500 vol_tokens=713 cache=3668
+    -> 6578 logs (total 59084)
+    warm 246 pool meta (cache already 3668)
+  v2 getLogs [122233551-122234550] chunk=1000 vol_tokens=753 cache=3914
+    -> 14643 logs (total 73727)
+    warm 560 pool meta (cache already 3914)
+  v2 getLogs [122232551-122233550] chunk=1000 vol_tokens=804 cache=4474
+    -> 16260 logs (total 89987)
+    warm 451 pool meta (cache already 4474)
+  v2 getLogs [122231551-122232550] chunk=1000 vol_tokens=863 cache=4925
+    -> 16465 logs (total 106452)
+    warm 439 pool meta (cache already 4925)
+  v2 getLogs [122230551-122231550] chunk=1000 vol_tokens=925 cache=5364
+    -> 13456 logs (total 119908)
+    warm 411 pool meta (cache already 5364)
+  v2 getLogs [122229551-122230550] chunk=1000 vol_tokens=977 cache=5775
+    -> 15954 logs (total 135862)
+    warm 413 pool meta (cache already 5775)
+  v2 getLogs [122228551-122229550] chunk=1000 vol_tokens=1025 cache=6188
+    -> 19031 logs (total 154893)
+    warm 440 pool meta (cache already 6188)
+  v2 getLogs [122227551-122228550] chunk=1000 vol_tokens=1067 cache=6628
+    -> 19854 logs (total 174747)
+    warm 422 pool meta (cache already 6628)
+  v2 getLogs [122226551-122227550] chunk=1000 vol_tokens=1124 cache=7050
+    -> 21540 logs (total 196287)
+    warm 319 pool meta (cache already 7050)
+  v2 getLogs [122225551-122226550] chunk=1000 vol_tokens=1148 cache=7369
+  v2 split chunk -> 500 (timeout 20s)
+  v2 getLogs [122226051-122226550] chunk=500 vol_tokens=1148 cache=7369
+    -> 12246 logs (total 208533)
+    warm 250 pool meta (cache already 7369)
+  v2 getLogs [122225051-122226050] chunk=1000 vol_tokens=1168 cache=7619
+    -> 16718 logs (total 225251)
+    warm 552 pool meta (cache already 7619)
+  v2 getLogs [122224051-122225050] chunk=1000 vol_tokens=1198 cache=8171
+    -> 14750 logs (total 240001)
+    warm 538 pool meta (cache already 8171)
+  v2 getLogs [122223051-122224050] chunk=1000 vol_tokens=1238 cache=8709
+  v2 split chunk -> 500 (timeout 20s)
+  v2 getLogs [122223551-122224050] chunk=500 vol_tokens=1238 cache=8709
+    -> 7643 logs (total 247644)
+    warm 153 pool meta (cache already 8709)
+  v2 getLogs [122223050-122223550] chunk=1000 vol_tokens=1263 cache=8862
+  v2 split chunk -> 500 (het retry getLogs: HTTP error 429 with empty body)
+  v2 getLogs [122223051-122223550] chunk=500 vol_tokens=1263 cache=8862
+    -> 9612 logs (total 257256)
+    warm 248 pool meta (cache already 8862)
+  v2 getLogs [122223050-122223050] chunk=1000 vol_tokens=1288 cache=9110
+    -> 31 logs (total 257287)
+    warm 1 pool meta (cache already 9110)
+  scanned v2 swap logs_total=257287 vol_tokens=1288
+  v3 getLogs [122238051-122239050] chunk=1000 vol_tokens=1288 cache=9111
+    -> 3505 logs (total 260792)
+    warm 213 pool meta (cache already 9111)
+  v3 getLogs [122237051-122238050] chunk=1000 vol_tokens=1288 cache=9324
+    -> 2719 logs (total 263511)
+    warm 53 pool meta (cache already 9324)
+  v3 getLogs [122236051-122237050] chunk=1000 vol_tokens=1288 cache=9377
+    -> 3102 logs (total 266613)
+    warm 56 pool meta (cache already 9377)
+  v3 getLogs [122235051-122236050] chunk=1000 vol_tokens=1288 cache=9433
+    -> 4007 logs (total 270620)
+    warm 57 pool meta (cache already 9433)
+  v3 getLogs [122234051-122235050] chunk=1000 vol_tokens=1288 cache=9490
+  v3 split chunk -> 500 (timeout 20s)
+  v3 getLogs [122234551-122235050] chunk=500 vol_tokens=1288 cache=9490
+    -> 1893 logs (total 272513)
+    warm 13 pool meta (cache already 9490)
+  v3 getLogs [122233551-122234550] chunk=1000 vol_tokens=1288 cache=9503
+    -> 3735 logs (total 276248)
+    warm 45 pool meta (cache already 9503)
+  v3 getLogs [122232551-122233550] chunk=1000 vol_tokens=1288 cache=9548
+    -> 3135 logs (total 279383)
+    warm 19 pool meta (cache already 9548)
+  v3 getLogs [122231551-122232550] chunk=1000 vol_tokens=1288 cache=9567
+    -> 3626 logs (total 283009)
+    warm 18 pool meta (cache already 9567)
+  v3 getLogs [122230551-122231550] chunk=1000 vol_tokens=1288 cache=9585
+    -> 3451 logs (total 286460)
+    warm 19 pool meta (cache already 9585)
+  v3 getLogs [122229551-122230550] chunk=1000 vol_tokens=1288 cache=9604
+    -> 3778 logs (total 290238)
+    warm 27 pool meta (cache already 9604)
+  v3 getLogs [122228551-122229550] chunk=1000 vol_tokens=1288 cache=9631
+    -> 2910 logs (total 293148)
+    warm 11 pool meta (cache already 9631)
+  v3 getLogs [122227551-122228550] chunk=1000 vol_tokens=1288 cache=9642
+    -> 3496 logs (total 296644)
+    warm 23 pool meta (cache already 9642)
+  v3 getLogs [122226551-122227550] chunk=1000 vol_tokens=1288 cache=9665
+    -> 3220 logs (total 299864)
+    warm 12 pool meta (cache already 9665)
+  v3 getLogs [122225551-122226550] chunk=1000 vol_tokens=1288 cache=9677
+  v3 split chunk -> 500 (timeout 20s)
+  v3 getLogs [122226051-122226550] chunk=500 vol_tokens=1288 cache=9677
+    -> 2035 logs (total 301899)
+    warm 6 pool meta (cache already 9677)
+  v3 getLogs [122225051-122226050] chunk=1000 vol_tokens=1288 cache=9683
+    -> 3484 logs (total 305383)
+    warm 7 pool meta (cache already 9683)
+  v3 getLogs [122224051-122225050] chunk=1000 vol_tokens=1288 cache=9690
+    -> 3066 logs (total 308449)
+    warm 21 pool meta (cache already 9690)
+  v3 getLogs [122223051-122224050] chunk=1000 vol_tokens=1288 cache=9711
+    -> 3641 logs (total 312090)
+    warm 13 pool meta (cache already 9711)
+  v3 getLogs [122223050-122223050] chunk=1000 vol_tokens=1288 cache=9724
+    -> 6 logs (total 312096)
+  scanned v3 swap logs_total=312096 vol_tokens=1288
+volume_method=swap_logs_v2_v3 unique_tokens=1288 pcs_pools_seen=1309 logs=312096
+probe top 500 tokens (khong doc pairs.txt)
+  probe 10/500 last=0xb4deec7be3cd7ceb24245057dbb08464411bb674 sym=Some("运势老板") v2_ok=false v3_ok=false both=false
+  probe 20/500 last=0xd895ff3cc818ccbb652e887fc0126265f2e2996a sym=Some("属虎转运") v2_ok=false v3_ok=false both=false
+  probe 30/500 last=0x30f0bd9d666ceeb419c882452f546e5694d5d79a sym=Some("CZ健康") v2_ok=true v3_ok=false both=false
+  probe 40/500 last=0x84e2a96cd838ce5d614f69583a78e92fcc78ffff sym=Some("flybook") v2_ok=false v3_ok=false both=false
+  probe 50/500 last=0x9fdd2b6544a844bec7485b214c518d1399e858f7 sym=Some("银行链") v2_ok=false v3_ok=false both=false
+  probe 60/500 last=0x76198caaa0e132fb76713fa76dae31fa0c4230bd sym=Some("WTBC") v2_ok=true v3_ok=false both=false
+  probe 70/500 last=0xccfb3e8b1772bd3a9fc62deaf75127adad597777 sym=Some("苹果人生") v2_ok=true v3_ok=false both=false
+  probe 80/500 last=0x081806013a73e2e6a015e7195f0ef22d90007777 sym=Some("LimeWire") v2_ok=false v3_ok=false both=false
+  probe 90/500 last=0x2ab8a4dd2191989ac2898006df350b236d2b7777 sym=Some("Sue") v2_ok=true v3_ok=false both=false
+  probe 100/500 last=0x4e16b08fec4343d624969081c2f9b3eab45324e8 sym=Some("BEAR") v2_ok=false v3_ok=false both=false
+  probe 110/500 last=0xcd1717a442c654d0cec56f6c1272650d01779e9f sym=Some("ELO") v2_ok=false v3_ok=false both=false
+  probe 120/500 last=0xf3993422486c224e860cce187a49f23c459f7777 sym=Some("LimeWire") v2_ok=false v3_ok=false both=false
+  probe 130/500 last=0x3a232241605481d78e27857c0305937029ac7777 sym=Some("螢火計劃") v2_ok=true v3_ok=false both=false
+  probe 140/500 last=0xb9fd6493910b20942c475dacfeab1209a65451b0 sym=Some("FOMO") v2_ok=false v3_ok=false both=false
+  probe 150/500 last=0xda6b8806c38dca6067d522589cfbded7eac27777 sym=Some("LimeWire") v2_ok=false v3_ok=false both=false
+  probe 160/500 last=0xe8a9bf6313950544501db41d498ea6d6dc90b305 sym=Some("SSTZ") v2_ok=false v3_ok=false both=false
+  probe 170/500 last=0xd4cd118557d54abad6bfab42bfb38baf1481e49f sym=Some("屎壳郎") v2_ok=false v3_ok=false both=false
+  probe 180/500 last=0xfe040f064587c823672ef5a87a8041ae8b2327c0 sym=Some("万事币安") v2_ok=false v3_ok=false both=false
+  probe 190/500 last=0x453ac13166c1d2a20756e72514409309bb7c7777 sym=Some("逢低买") v2_ok=false v3_ok=false both=false
+  probe 200/500 last=0x7887cc7d440da880135c1db98681739cc4687777 sym=Some("牛B") v2_ok=false v3_ok=false both=false
+  probe 210/500 last=0x8af07fa763c0b2f1f86f47659bf24a0d48c67777 sym=Some("永生果蝇") v2_ok=true v3_ok=false both=false
+  probe 220/500 last=0xd49683186a1626e5d1de323f257c24989cf989e4 sym=Some("GOOF") v2_ok=false v3_ok=false both=false
+  probe 230/500 last=0xa0fd1b34e604224b467524f74bb185cefe97d7e6 sym=Some("Mai") v2_ok=true v3_ok=false both=false
+  probe 240/500 last=0xbf7e887991278d00f562d96beb168f3372910b3a sym=Some("ALT") v2_ok=false v3_ok=false both=false
+  probe 250/500 last=0xe5a2b2cc1aa4e2ae5e98739a23ee781d7a415555 sym=Some("大唐盛世") v2_ok=false v3_ok=false both=false
+  probe 260/500 last=0x4f06dba806d66e1caeb37516c0f7a28728067777 sym=Some("HOMER") v2_ok=false v3_ok=false both=false
+  probe 270/500 last=0xbf34dfbd98067119794691e39a5d0ed1685a9cb6 sym=Some("XL") v2_ok=false v3_ok=false both=false
+  probe 280/500 last=0xe29fa431a2b37e050e333102a6c448ac757d7777 sym=Some("FlyNeuron") v2_ok=false v3_ok=false both=false
+  probe 290/500 last=0x6d10aad4957b46256f672ba4f97fa573b888d022 sym=Some("DGAI") v2_ok=true v3_ok=false both=false
+  probe 300/500 last=0xdc71fe7d6e90baca0b213dfd4cf6408b26d9b7b1 sym=Some("AGS") v2_ok=true v3_ok=false both=false
+  probe 310/500 last=0x18b866363a03e1e1ef4e61648e253be8e2a2d682 sym=Some("RMT") v2_ok=true v3_ok=false both=false
+  probe 320/500 last=0x7e09d5612c203d859e19c4dd2b71e26ffa2f0fc5 sym=Some("AOU") v2_ok=true v3_ok=false both=false
+  probe 330/500 last=0x7e10c7e86f6f27d589232c4860483bcbabd6eeba sym=Some("PAX") v2_ok=true v3_ok=false both=false
+  probe 340/500 last=0xdf6ff8c8020e7777731d028d7778228fa4c7586c sym=Some("OPM") v2_ok=true v3_ok=false both=false
+  probe 350/500 last=0x701add4311e85c1f9c1549319fe2c476bc8a1b8b sym=Some("GOT") v2_ok=true v3_ok=false both=false
+  probe 360/500 last=0xc78dabf21594c76ad98a0b3ed103fcfcd9499999 sym=Some("ETZ") v2_ok=true v3_ok=false both=false
+  probe 370/500 last=0x651a4af431bdc62d1df399a5009cb91ab1948888 sym=Some("MIDX") v2_ok=false v3_ok=false both=false
+  probe 380/500 last=0x000ae314e2a2172a039b26378814c252734f556a sym=Some("ASTER") v2_ok=true v3_ok=true both=true
+  probe 390/500 last=0x42fc23434e474c17453f099afb3561ea82df7777 sym=Some("金甲虫") v2_ok=false v3_ok=false both=false
+  probe 400/500 last=0x2f959f620886ae0e2882fd5ca17a40713d3b6f43 sym=Some("GYS") v2_ok=false v3_ok=false both=false
+  probe 410/500 last=0xf0bb807997fa12c05b5d52b9e0068a0d36588888 sym=Some("HGs") v2_ok=true v3_ok=false both=false
+  probe 420/500 last=0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d sym=Some("USD1") v2_ok=true v3_ok=true both=true
+  probe 430/500 last=0x74836cc0e821a6be18e407e6388e430b689c66e9 sym=Some("Jager") v2_ok=true v3_ok=true both=true
+  probe 440/500 last=0xeed2a1b4b9cd285f3ab9ca96eeca8000e0f64ab5 sym=Some("FSEA") v2_ok=true v3_ok=false both=false
+  probe 450/500 last=0x3df3d71de710e27e69f4193a75d6596183220ba3 sym=Some("musebook") v2_ok=false v3_ok=false both=false
+  probe 460/500 last=0x9ef204a24a880cf42346dd2f8179b7f181557777 sym=Some("POINTS") v2_ok=false v3_ok=false both=false
+  probe 470/500 last=0xcbd8bb97b9fc45d548a66e513cd5b2649bd14ccc sym=Some("CCC") v2_ok=true v3_ok=false both=false
+  probe 480/500 last=0x78a5e9dde0e1c411251abf2ee6728aace1e1f957 sym=Some("FRT") v2_ok=true v3_ok=false both=false
+  probe 490/500 last=0x305f588be13df792c16d3776fb2ce9b4b8697777 sym=Some("币安飞蝶") v2_ok=false v3_ok=false both=false
+  probe 500/500 last=0x80106cb3ead06659a5ad19df39d9b4733863b9b0 sym=Some("MSFTB") v2_ok=false v3_ok=true both=false
+ETHERSCAN_API_KEY/BSCSCAN_API_KEY rong -> verified/proxy = null
+=== TOM TAT ===
+scanned_tokens_vol=1288 probed=500
+v2_ok=214 v3_ok=37 both_ok=22
+tier_dist_pcs_v3_ok={500: 16, 2500: 32, 100: 16, 10000: 16}
+volume_method=swap_logs_v2_v3
+=== TOP 30 both_ok theo vol24h (hoac top probed neu both=0) ===
+ 1 SKYAI   0x92aa03137385f18539301349dcfc9ebc923ffb10 vol24h=883.30 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.165493)
+ 2 4       0x0a43fc31a73013089df59194872ecae4cae14444 vol24h=225.85 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.334481)
+ 3 BabyDoge 0xc748673057861a797275cd8a068abb95a902e8de vol24h=136.94 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.0)
+ 4 USDC    0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d vol24h=39.87 v2_ok=true v3_ok=true both=true v3_impact_min=Some(2e-6)
+ 5 币安人生    0x924fa68a0fc644485b8df8abfa0a41c2e7744444 vol24h=23.30 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.224684)
+ 6 TRX     0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3 vol24h=14.59 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.068211)
+ 7 TST     0x86bb94ddd16efc8bc58e6b056e8df71d9e666429 vol24h=11.89 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.247436)
+ 8 DOT     0x7083609fce4d1d8dc0c979aab8c869ea2c873402 vol24h=11.87 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.213317)
+ 9 BTCB    0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c vol24h=9.32 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.00035)
+10 ETH     0x2170ed0880ac9a755fd29b2688956bd959f933f8 vol24h=8.22 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.000655)
+11 Cake    0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82 vol24h=4.03 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.006691)
+12 CAT     0x6894cde390a3f51155ea41ed24a33a4827d3063d vol24h=3.96 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.309776)
+13 INJ     0xa2b726b1145a4773f68593cf171187d8ebe4d495 vol24h=1.67 v2_ok=true v3_ok=true both=true v3_impact_min=Some(1.200332)
+14 COSA    0x5f980533b994c93631a639deda7892fc49995839 vol24h=1.02 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.0)
+15 Cheems  0x0df0587216a4a1bb7d5082fdc491d93d2dd4b413 vol24h=0.96 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.046985)
+16 SAFE    0x4d7fa587ec8e50bd0e9cd837cb4da796f47218a1 vol24h=0.88 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.082924)
+17 ASTER   0x000ae314e2a2172a039b26378814c252734f556a vol24h=0.86 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.019141)
+18 USD1    0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d vol24h=0.63 v2_ok=true v3_ok=true both=true v3_impact_min=Some(4.3e-5)
+19 Jager   0x74836cc0e821a6be18e407e6388e430b689c66e9 vol24h=0.57 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.110873)
+20 SFP     0xd41fdb03ba84762dd66a0af1a6c8540ff1ba5dfb vol24h=0.55 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.16945)
+21 Moolah  0xbab528425edb1e0e36d3719bc3307d9c8cce8888 vol24h=0.45 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.321042)
+22 INKY    0x75a320c97205dd2e70e09085d1408c73a73d4d8f vol24h=0.36 v2_ok=true v3_ok=true both=true v3_impact_min=Some(0.003325)
+WROTE state/multi_venue_2h.json tokens_probed=500 both_ok=22 report=state/multi_venue_2h_report.tsv candidates=state/multi_venue_2h_candidates.txt elapsed=2035.7s machine=WSL

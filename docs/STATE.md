@@ -1,8 +1,16 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `competitor-recon-and-strategy`, 2026-09-16)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B4-multivenue-tool`, 2026-09-16)
 
--1. Cụm mới nhất: `competitor-recon-and-strategy` (BAOCAO41, 2026-09-16) —
+-2. Cụm mới nhất: `planB-B4-multivenue-tool` (BAOCAO48, 2026-09-16) — TOOL
+    `discover_multivenue` + list đa venue MỚI (không dùng `pairs.txt` meme) +
+    pin Uniswap V3 BSC (Factory/QuoterV2/SwapRouter02, getCode > 0, chưa dùng
+    lọc). Quy tắc: PCS V2 đủ ngưỡng **và** PCS V3 cùng quote đủ impact ≤ 2 %
+    khi bán 1 BNB. Uniswap ghi nhận, không thay điều kiện. KHÔNG THENA/Biswap.
+    KHÔNG sim_arb V3, KHÔNG đo cơ hội, KHÔNG contract. Xem mục cùng tên cuối file.
+
+-1. Cụm liền trước đo: `planB-B0-complete` (BAOCAO47) — No-Go B1 (1,27 cơ
+    hội/ngày). Cụm `competitor-recon-and-strategy` (BAOCAO41, 2026-09-16) —
     trinh sát đối thủ MEV THẬT (RPC thật, `src/bin/competitor_recon.rs`),
     bribe model mô phỏng (F-02), SỬA bug Critical F-01 (bundle thiếu victim
     leg), raw tx reconstruction (`transport::fetch_raw_tx_verified`), shadow
@@ -5673,3 +5681,66 @@ Hoàn tất B0 (BAOCAO46 dừng dở). Chiến lược backrun-arb đã nối v�
 
 Balancer V2 trên BSC vẫn ~rỗng (0,000435 WBNB) + wind-down vote 25–29/09/2026
 — không chờ, đã ghi ở BAOCAO46.
+
+## `planB-B4-multivenue-tool` (BAOCAO48, 2026-09-16)
+
+Chủ CHỐT: list **MỚI** đa venue, không dùng list meme `pairs.txt`, không đo
+thị trường trước khi có list. Cụm này = TOOL + LIST + pin venue. Không sim
+V3, không đo cơ hội, không contract, không live.
+
+### Pin Uniswap V3 BSC (giai đoạn 2)
+
+Docs: `https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments`
+(fetch 2026-09-16). `eth_chainId=0x38` + `eth_getCode` RPC công khai
+`bsc-dataseed.binance.org`:
+
+| Contract | Address | getCode (byte) |
+|---|---|---|
+| UniswapV3Factory | `0xdB1d10011AD0Ff90774D0C6Bb92e5C5C8b4461F7` | 24535 |
+| QuoterV2 | `0x78D78E420Da98ad378D7799bE8f4AF69033EB077` | 8273 |
+| SwapRouter02 | `0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2` | 24497 |
+
+Fee tier Uniswap: 100/500/3000/10000 (khác Pancake 100/500/2500/10000).
+`registry_snapshot` thêm family `"Uniswap V3 BSC"` — `pinned=true`,
+`scan_enabled=false`, `live_enabled=false`. Pin trước, sim sau.
+
+### Quy tắc list (AGENTS.md Kế hoạch B điểm 7)
+
+- Giai đoạn 1 bắt buộc: **PCS V2 + PCS V3**. Uniswap V3 = ghi nhận.
+- KHÔNG THENA, KHÔNG Biswap.
+- Token vào list CHỈ khi: PCS V2 (WBNB hoặc USDT) đủ ngưỡng **VÀ** ≥1 PCS V3
+  **cùng quote** đủ ngưỡng. Thiếu 1 trong 2 → loại. Uniswap không thay thế.
+- Ngưỡng: V2 reserve_quote ≥ 50 BNB (≥ 35 000 USDT); V3 impact ≤ 2 % khi bán
+  1 BNB quy đổi qua QuoterV2 (`impact = 1 - out_probe / (out_spot * scale)`).
+- Nguồn: top 500 token volume theo cửa sổ `--hours` (lệnh gốc 24 h). Tool
+  `eth_getLogs` Swap V2/V3 topic0 dải 1000 block (timeout 20 s → tách đôi).
+  Lọc `factory()` đúng PCS V2/V3. **Không** quét PairCreated từ genesis.
+  **Không** đọc `pairs.txt`.
+- Output: `state/multi_venue.json` + `state/multi_venue_report.tsv` +
+  `state/multi_venue_candidates.txt` (`vetted` trống — Chủ vet tay).
+- Số thật BAOCAO48 (WSL): `--hours 2` **xong** 2035.7 s (14:39:21–15:16:25
+  UTC), block 122239050, `volume_method=swap_logs_v2_v3`, scanned=1288,
+  probed=500, v2_ok=214, v3_ok=37, both_ok=22, tier PCS V3 ok
+  `{100:16, 500:16, 2500:32, 10000:16}`. `--hours 24` **chưa xong** (Chủ
+  bảo báo cáo; lần chạy dở ~20 phút V2, 212k log, 633 token, abort).
+
+### Tool
+
+`cargo run --release --bin discover_multivenue -- --hours 24 --top 500
+--min-v2-bnb 50 --min-v3-impact-pct 2 --probe-bnb 1 --out state/multi_venue.json`
+
+Quy tắc thuần: `src/discover_mv.rs` (test không RPC). Probe 10 token RPC:
+`--probe-ten --skip-volume` hoặc
+`cargo test --lib real_rpc_discover_mv_ten_tokens -- --ignored --nocapture`.
+
+### Config mới (bắt buộc, thiếu = fail load)
+
+`multivenue_min_v2_bnb=50` `multivenue_min_v2_usdt=35000`
+`multivenue_min_v3_impact_pct=2` `multivenue_probe_bnb=1`.
+VPS phải thêm 4 field này **trước** khi nhận binary mới.
+
+### Còn nợ (không làm ở cụm này)
+
+- sim_arb V3 / đo cơ hội trên list mới — chờ Chủ vet candidates.
+- THENA/Biswap — cấm.
+- Kết luận thị trường / Go-No-Go lại B1 — cấm (chưa có list vet).

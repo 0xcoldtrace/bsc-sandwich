@@ -135,6 +135,9 @@ static SEL_GET_POOL: LazyLock<[u8; 4]> = LazyLock::new(|| selector("getPool(addr
 static SEL_GET_RESERVES: LazyLock<[u8; 4]> = LazyLock::new(|| selector("getReserves()"));
 static SEL_TOKEN0: LazyLock<[u8; 4]> = LazyLock::new(|| selector("token0()"));
 static SEL_TOKEN1: LazyLock<[u8; 4]> = LazyLock::new(|| selector("token1()"));
+static SEL_FACTORY: LazyLock<[u8; 4]> = LazyLock::new(|| selector("factory()"));
+static SEL_SYMBOL: LazyLock<[u8; 4]> = LazyLock::new(|| selector("symbol()"));
+static SEL_FEE: LazyLock<[u8; 4]> = LazyLock::new(|| selector("fee()"));
 
 pub fn wbnb() -> Address {
     Address::from_str(WBNB_ADDRESS).expect("WBNB_ADDRESS da pin phai la address hop le")
@@ -242,8 +245,21 @@ pub async fn resolve_v3_pools_for_quote(
     token: Address,
     quote: Address,
 ) -> Result<Vec<(Address, u32)>, String> {
+    resolve_v3_pools_for_quote_tiers(provider, factory, token, quote, &V3_FEE_TIERS).await
+}
+
+/// Cụm `planB-B4-multivenue-tool` — `getPool` với danh sách fee tier tuỳ
+/// factory (Pancake V3 = `V3_FEE_TIERS` 100/500/2500/10000; Uniswap V3 BSC =
+/// `UNI_V3_FEE_TIERS` 100/500/3000/10000). Không đoán tier ngoài list đã pin.
+pub async fn resolve_v3_pools_for_quote_tiers(
+    provider: &dyn Provider,
+    factory: Address,
+    token: Address,
+    quote: Address,
+    tiers: &[u32],
+) -> Result<Vec<(Address, u32)>, String> {
     let mut out = Vec::new();
-    for fee in V3_FEE_TIERS {
+    for &fee in tiers {
         let calldata = build_get_pool_calldata(token, quote, fee);
         let tx = TransactionRequest::default().to(factory).input(calldata.into());
         let ret = provider.call(tx).await.map_err(|e| format!("eth_call getPool(fee={fee}) that bai: {e}"))?;
@@ -253,6 +269,58 @@ pub async fn resolve_v3_pools_for_quote(
         }
     }
     Ok(out)
+}
+
+/// `pair.factory()` / `pool.factory()` — phân loại venue (PCS V2 / PCS V3 /
+/// Uniswap V3) sau khi lấy Swap log. Lỗi RPC tách `Err`, không đoán.
+pub async fn get_factory(provider: &dyn Provider, pool: Address) -> Result<Address, String> {
+    let tx = TransactionRequest::default().to(pool).input(SEL_FACTORY.to_vec().into());
+    let ret = provider.call(tx).await.map_err(|e| format!("eth_call factory() that bai: {e}"))?;
+    decode_address_return(&ret).ok_or_else(|| "factory() tra ve du lieu qua ngan".to_string())
+}
+
+/// `pool.fee()` (V3) — uint24 right-aligned trong word 32 byte.
+pub async fn get_v3_fee(provider: &dyn Provider, pool: Address) -> Result<u32, String> {
+    let tx = TransactionRequest::default().to(pool).input(SEL_FEE.to_vec().into());
+    let ret = provider.call(tx).await.map_err(|e| format!("eth_call fee() that bai: {e}"))?;
+    if ret.len() < 32 {
+        return Err("fee() tra ve du lieu qua ngan".into());
+    }
+    let word = &ret[ret.len() - 32..];
+    Ok(u32::from_be_bytes([word[28], word[29], word[30], word[31]]))
+}
+
+/// ERC-20 `symbol()` — nhận cả `string` (ABI dynamic) lẫn `bytes32` (MKR-style).
+pub fn decode_erc20_symbol(ret: &[u8]) -> Option<String> {
+    if ret.len() < 32 {
+        return None;
+    }
+    if ret.len() >= 96 {
+        let offset = U256::from_be_slice(&ret[0..32]);
+        if offset == U256::from(32u64) {
+            let len = U256::from_be_slice(&ret[32..64]);
+            let n = u64::try_from(len).ok()? as usize;
+            if ret.len() < 64 + n {
+                return None;
+            }
+            let bytes = &ret[64..64 + n];
+            let s = String::from_utf8_lossy(bytes).trim_matches(char::from(0)).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    // bytes32: cắt NUL
+    let bytes = &ret[0..32.min(ret.len())];
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let s = std::str::from_utf8(&bytes[..end]).ok()?.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+pub async fn erc20_symbol(provider: &dyn Provider, token: Address) -> Result<String, String> {
+    let tx = TransactionRequest::default().to(token).input(SEL_SYMBOL.to_vec().into());
+    let ret = provider.call(tx).await.map_err(|e| format!("eth_call symbol() that bai: {e}"))?;
+    decode_erc20_symbol(&ret).ok_or_else(|| "symbol() khong decode duoc".to_string())
 }
 
 /// `PancakeV2Pair.getReserves()` — trả `(reserveWBNB, reserveToken)` đã sắp
@@ -683,6 +751,23 @@ mod tests {
     #[test]
     fn v3_fee_tiers_match_pancake_factory_constructor() {
         assert_eq!(V3_FEE_TIERS, [100, 500, 2500, 10000]);
+    }
+
+    #[test]
+    fn decode_erc20_symbol_string_abi() {
+        // offset=32, len=4, "CAKE"
+        let mut ret = vec![0u8; 96];
+        ret[31] = 32;
+        ret[63] = 4;
+        ret[64..68].copy_from_slice(b"CAKE");
+        assert_eq!(decode_erc20_symbol(&ret).as_deref(), Some("CAKE"));
+    }
+
+    #[test]
+    fn decode_erc20_symbol_bytes32() {
+        let mut ret = [0u8; 32];
+        ret[..3].copy_from_slice(b"ETH");
+        assert_eq!(decode_erc20_symbol(&ret).as_deref(), Some("ETH"));
     }
 
     /// Parse hex (có/không `0x`) thành `Vec<u8>` — chỉ dùng dựng fixture test

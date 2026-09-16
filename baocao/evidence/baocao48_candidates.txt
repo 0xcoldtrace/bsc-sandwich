@@ -1,0 +1,23 @@
+# discover_multivenue — CHUA VET. Chu chay vet_bsc_token roi dien vetted YYYY-MM-DD.
+0x92aa03137385f18539301349dcfc9ebc923ffb10 # SKYAI | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=883.2953 v2=WBNB v3=WBNB@10000+USDT@100
+0x0a43fc31a73013089df59194872ecae4cae14444 # 4 | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=225.8530 v2=WBNB v3=WBNB@10000+USDT@2500
+0xc748673057861a797275cd8a068abb95a902e8de # BabyDoge | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=136.9409 v2=WBNB v3=WBNB@500+WBNB@10000
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d # USDC | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=39.8688 v2=WBNB+USDT v3=WBNB@100+WBNB@500+USDT@100+USDT@500
+0x924fa68a0fc644485b8df8abfa0a41c2e7744444 # 币安人生 | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=23.2985 v2=WBNB v3=WBNB@10000+USDT@10000
+0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3,0x55d398326f99059ff775485246999027b3197955 # TRX | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=14.5913 v2=USDT v3=WBNB@2500+WBNB@10000+USDT@2500
+0x86bb94ddd16efc8bc58e6b056e8df71d9e666429 # TST | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=11.8911 v2=WBNB v3=WBNB@10000
+0x7083609fce4d1d8dc0c979aab8c869ea2c873402 # DOT | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=11.8720 v2=WBNB v3=WBNB@2500
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c # BTCB | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=9.3234 v2=WBNB+USDT v3=WBNB@100+WBNB@500+WBNB@2500+USDT@100+USDT@500
+0x2170ed0880ac9a755fd29b2688956bd959f933f8 # ETH | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=8.2221 v2=WBNB+USDT v3=WBNB@100+WBNB@500+WBNB@2500+USDT@100+USDT@500+USDT@2500
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82 # Cake | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=4.0329 v2=WBNB+USDT v3=WBNB@100+WBNB@500+WBNB@2500+USDT@500+USDT@2500
+0x6894cde390a3f51155ea41ed24a33a4827d3063d # CAT | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=3.9591 v2=WBNB v3=WBNB@100
+0xa2b726b1145a4773f68593cf171187d8ebe4d495 # INJ | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=1.6733 v2=WBNB v3=WBNB@10000
+0x5f980533b994c93631a639deda7892fc49995839 # COSA | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=1.0215 v2=WBNB v3=WBNB@10000+USDT@500
+0x0df0587216a4a1bb7d5082fdc491d93d2dd4b413 # Cheems | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.9644 v2=WBNB v3=WBNB@2500
+0x4d7fa587ec8e50bd0e9cd837cb4da796f47218a1,0x55d398326f99059ff775485246999027b3197955 # SAFE | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.8839 v2=USDT v3=USDT@100+USDT@2500
+0x000ae314e2a2172a039b26378814c252734f556a # ASTER | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.8642 v2=WBNB v3=WBNB@500+WBNB@2500+USDT@500+USDT@2500
+0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d # USD1 | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.6330 v2=WBNB v3=WBNB@100+WBNB@500+USDT@100
+0x74836cc0e821a6be18e407e6388e430b689c66e9 # Jager | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.5710 v2=WBNB v3=WBNB@500+USDT@2500
+0xd41fdb03ba84762dd66a0af1a6c8540ff1ba5dfb # SFP | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.5467 v2=WBNB v3=WBNB@2500
+0xbab528425edb1e0e36d3719bc3307d9c8cce8888,0x55d398326f99059ff775485246999027b3197955 # Moolah | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.4494 v2=USDT v3=WBNB@2500+USDT@100
+0x75a320c97205dd2e70e09085d1408c73a73d4d8f,0x55d398326f99059ff775485246999027b3197955 # INKY | vetted  | tax ?/? | owner unknown | discover_multivenue vol24h_bnb=0.3570 v2=USDT v3=USDT@2500

@@ -1740,7 +1740,9 @@ mod tests {
              live_mode = \"off\"\nallow_competitor_victims = false\n\
              strategy = \"backrun\"\narb_max_borrow_bnb = 20.0\narb_max_borrow_usdt = 12000.0\n\
              flash_source_interval_sec = 300\nmulti_venue_path = \"state/multi_venue.json\"\n\
-             gas_units_arb_infinity = 420000\ngas_units_arb_v2flash = 330000\n",
+             gas_units_arb_infinity = 420000\ngas_units_arb_v2flash = 330000\n\
+             multivenue_min_v2_bnb = 50\nmultivenue_min_v2_usdt = 35000\n\
+             multivenue_min_v3_impact_pct = 2\nmultivenue_probe_bnb = 1\n",
         );
         for (needle, replacement) in overrides {
             s = s.replace(needle, replacement);

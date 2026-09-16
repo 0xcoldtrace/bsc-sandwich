@@ -27,17 +27,48 @@ pub struct MultiVenueFile {
     pub bridge_reserve_wbnb: Option<String>,
     pub bridge_reserve_usdt: Option<String>,
     pub tokens: Vec<TokenVenues>,
+    /// Cụm `planB-B4-multivenue-tool` — nguồn sinh file (`discover_multivenue`
+    /// vs `build_multi_venue` cũ từ pairs.txt).
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub hours: Option<u64>,
+    #[serde(default)]
+    pub scanned_tokens: Option<u64>,
+    #[serde(default)]
+    pub v2_ok_count: Option<u64>,
+    #[serde(default)]
+    pub v3_ok_count: Option<u64>,
+    #[serde(default)]
+    pub both_ok_count: Option<u64>,
+    #[serde(default)]
+    pub volume_method: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenVenues {
     pub token: String,
     pub symbol: Option<String>,
-    /// `true` khi có ≥2 pool V2, mỗi pool reserve_quote ≥ ngưỡng của đúng quote.
+    /// Cũ (B0): ≥2 pool V2 đủ sâu. Mới (B4 discover): `both_ok` (PCS V2 + PCS V3).
     pub arb_ready: bool,
     pub v2_pools: Vec<V2PoolRec>,
     pub v3_pools: Vec<V3PoolRec>,
+    #[serde(default)]
     pub infinity_pools: Vec<InfinityPoolRec>,
+    #[serde(default)]
+    pub uni_v3_pools: Vec<UniV3PoolRec>,
+    #[serde(default)]
+    pub vol24h_bnb: Option<f64>,
+    #[serde(default)]
+    pub v2_ok: bool,
+    #[serde(default)]
+    pub v3_ok: bool,
+    #[serde(default)]
+    pub both_ok: bool,
+    #[serde(default)]
+    pub verified: Option<bool>,
+    #[serde(default)]
+    pub proxy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +79,8 @@ pub struct V2PoolRec {
     pub reserve_quote: String,
     pub reserve_token: String,
     pub meets_min: bool,
+    #[serde(default)]
+    pub ok: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +89,20 @@ pub struct V3PoolRec {
     pub quote: String,
     pub quote_name: String,
     pub fee: u32,
+    #[serde(default)]
+    pub impact_pct: Option<f64>,
+    #[serde(default)]
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniV3PoolRec {
+    pub pool: String,
+    pub quote: String,
+    pub quote_name: String,
+    pub fee: u32,
+    #[serde(default)]
+    pub impact_pct: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

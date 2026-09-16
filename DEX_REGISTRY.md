@@ -55,6 +55,29 @@ cần cho `2.x/3.x`): `NonfungiblePositionManager`, `V3Migrator`, `TickLens`,
 hợp đồng quản lý LP/farm, không nằm trong đường swap bị sandwich → không pin,
 không cần thiết cho mục tiêu bot.
 
+### Uniswap V3 BSC (`planB-B4-multivenue-tool`, giai đoạn 2 — pin ngay, chưa dùng lọc)
+
+Venue arb **giai đoạn 2**: pin trước, sim sau. **Không** thay điều kiện list
+giai đoạn 1 (PCS V2 + PCS V3). KHÔNG THENA, KHÔNG Biswap.
+
+Nguồn docs chính thức (fetch 2026-09-16):
+https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments
+
+`eth_chainId=0x38` + `eth_getCode` qua RPC công khai
+`https://bsc-dataseed.binance.org/` (cùng quy ước pin BAOCAO02).
+
+| Contract | Address | source_url | pinned_date | getCode (len byte) | Trạng thái |
+|---|---|---|---|---|---|
+| UniswapV3Factory | `0xdB1d10011AD0Ff90774D0C6Bb92e5C5C8b4461F7` | https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments | 2026-09-16 | 24535 | PINNED — chưa dùng lọc |
+| QuoterV2 | `0x78D78E420Da98ad378D7799bE8f4AF69033EB077` | https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments | 2026-09-16 | 8273 | PINNED — chưa dùng lọc |
+| SwapRouter02 | `0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2` | https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments | 2026-09-16 | 24497 | PINNED — chưa dùng lọc |
+
+Fee tier Uniswap V3 trên BSC: `100 / 500 / 3000 / 10000` (khác Pancake V3:
+`100 / 500 / 2500 / 10000`). `src/venues.rs::UNI_V3_FEE_TIERS`.
+
+Không pin (ngoài phạm vi lọc giai đoạn 2): `NonfungiblePositionManager`,
+`UniversalRouter` Uniswap, `Permit2`, `TickLens`, `V3Migrator`.
+
 ### V4 / Infinity (`1.3`)
 
 Trang địa chỉ chính thức: `https://developer.pancakeswap.finance/contracts/infinity/resources/addresses`

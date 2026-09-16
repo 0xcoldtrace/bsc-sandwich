@@ -59,6 +59,20 @@ pub const V3_QUOTER_V2_ADDRESS: &str = "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e259
 pub const CL_POOL_MANAGER_ADDRESS: &str = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b";
 pub const BIN_POOL_MANAGER_ADDRESS: &str = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9";
 
+/// Uniswap V3 trên BSC — cụm `planB-B4-multivenue-tool` (BAOCAO48, 2026-09-16).
+/// Pin ngay (docs chính thức + eth_getCode > 0), **chưa dùng lọc** (giai đoạn 2).
+/// Nguồn: https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments
+pub const UNI_V3_FACTORY_ADDRESS: &str = "0xdB1d10011AD0Ff90774D0C6Bb92e5C5C8b4461F7";
+pub const UNI_V3_QUOTER_V2_ADDRESS: &str = "0x78D78E420Da98ad378D7799bE8f4AF69033EB077";
+pub const UNI_V3_SWAP_ROUTER02_ADDRESS: &str = "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2";
+pub const UNI_V3_FACTORY_GET_CODE_LEN: u64 = 24535;
+pub const UNI_V3_QUOTER_V2_GET_CODE_LEN: u64 = 8273;
+pub const UNI_V3_SWAP_ROUTER02_GET_CODE_LEN: u64 = 24497;
+/// Fee tier Uniswap V3 (khác Pancake V3: có 3000, không có 2500).
+pub const UNI_V3_FEE_TIERS: [u32; 4] = [100, 500, 3000, 10000];
+const UNI_V3_SRC: &str = "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-bnb-deployments";
+const UNI_V3_PINNED_DATE: &str = "2026-09-16";
+
 /// Cụm `foundation-fix-then-real-sim` (A2) — router `to` mà bot chấp nhận xử
 /// lý TIẾP (gate rẻ tiền, 0 RPC, chạy TRƯỚC decode). Đây là phân loại theo
 /// ĐỊA CHỈ ROUTER (`tx.to`) — KHÁC `decoder::SwapVenue` (A3, phân loại theo
@@ -148,6 +162,18 @@ pub fn registry_snapshot(scan_v2: bool, scan_v3: bool, scan_v4: bool, live_v2: b
             ],
         },
         VenueInfo {
+            family: "Uniswap V3 BSC",
+            pinned: true,
+            scan_enabled: false,
+            live_enabled: false,
+            status: "PINNED (giai doan 2: pin ngay, chua dung loc / sim)",
+            contracts: vec![
+                ContractPin { name: "UniswapV3Factory", address: UNI_V3_FACTORY_ADDRESS, source_url: UNI_V3_SRC, pinned_date: UNI_V3_PINNED_DATE, get_code_len: Some(UNI_V3_FACTORY_GET_CODE_LEN) },
+                ContractPin { name: "QuoterV2", address: UNI_V3_QUOTER_V2_ADDRESS, source_url: UNI_V3_SRC, pinned_date: UNI_V3_PINNED_DATE, get_code_len: Some(UNI_V3_QUOTER_V2_GET_CODE_LEN) },
+                ContractPin { name: "SwapRouter02", address: UNI_V3_SWAP_ROUTER02_ADDRESS, source_url: UNI_V3_SRC, pinned_date: UNI_V3_PINNED_DATE, get_code_len: Some(UNI_V3_SWAP_ROUTER02_GET_CODE_LEN) },
+            ],
+        },
+        VenueInfo {
             family: "Ban moi hon",
             pinned: false,
             scan_enabled: false,
@@ -211,9 +237,23 @@ mod tests {
     #[test]
     fn v2_v3_v4_are_pinned_after_registry_session() {
         let venues = registry_snapshot(true, true, true, false, false, false);
-        assert_eq!(venues.len(), 4);
+        assert_eq!(venues.len(), 5);
         let pinned_families: Vec<&str> = venues.iter().filter(|v| v.pinned).map(|v| v.family).collect();
-        assert_eq!(pinned_families, vec!["V2", "V3", "V4/Infinity"]);
+        assert_eq!(pinned_families, vec!["V2", "V3", "V4/Infinity", "Uniswap V3 BSC"]);
+        let uni = venues.iter().find(|v| v.family == "Uniswap V3 BSC").unwrap();
+        assert!(!uni.scan_enabled, "Uniswap V3 BSC pin nhung chua dung loc");
+        assert!(!uni.live_enabled);
+    }
+
+    #[test]
+    fn uniswap_v3_bsc_addresses_match_official_docs() {
+        assert_eq!(UNI_V3_FACTORY_ADDRESS, "0xdB1d10011AD0Ff90774D0C6Bb92e5C5C8b4461F7");
+        assert_eq!(UNI_V3_QUOTER_V2_ADDRESS, "0x78D78E420Da98ad378D7799bE8f4AF69033EB077");
+        assert_eq!(UNI_V3_SWAP_ROUTER02_ADDRESS, "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2");
+        assert_eq!(UNI_V3_FEE_TIERS, [100, 500, 3000, 10000]);
+        assert!(UNI_V3_FACTORY_GET_CODE_LEN > 0);
+        assert!(UNI_V3_QUOTER_V2_GET_CODE_LEN > 0);
+        assert!(UNI_V3_SWAP_ROUTER02_GET_CODE_LEN > 0);
     }
 
     #[test]
