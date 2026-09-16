@@ -571,10 +571,9 @@ Mọi phần còn lại đã có output thật dán kèm.
 2. **Chạy 6 giờ VPS + bảng 1b/1d tính lại trên cửa sổ đó: CHƯA XONG.** Unit
    systemd đang chạy từ 07:35 UTC, `Restart=always` đã verify. Phiên sau chỉ
    cần chạy `scripts/analyze_econ.sh` trên `/root/bsc-sandwich/logs/bot.jsonl`.
-3. ~~VPS lệch commit~~ — **ĐÃ XỬ LÝ trong phiên**: đã `deploy_vps.sh --build`
-   + `systemctl restart`, VPS nay ở `8724750a` = HEAD của WSL, binary
-   `c321840b…`. Đồng hồ 6 giờ vì vậy tính từ lần restart này
-   (~07:50 UTC 2026-09-16), KHÔNG phải từ 07:35.
+3. ~~VPS lệch commit~~ — **ĐÃ XỬ LÝ**: VPS nay ở `abb352a` = HEAD của WSL
+   (binary `0b813b73…`, `MainPID=387024`, `active`). Đồng hồ 6 giờ tính từ
+   lần restart CUỐI (~07:55 UTC 2026-09-16).
 4. **BUG #4 và #5 CHƯA verify sống** — phiên hết trước khi có mẫu
    `shadow.victim_diag` mới sau khi sửa. Hiện chỉ có test đơn vị + lập luận.
    Cách verify: chạy shadow ≥30 phút, kiểm `shadow.sim` còn dòng nào
@@ -595,13 +594,23 @@ Mọi phần còn lại đã có output thật dán kèm.
 10. **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ cũ từ
     `real-economics-mode2`).
 
-Commit: `6703c230e639361da40ca361d6d4a7b0984df575` (+ 1 commit bổ sung cho
-chính file này).
+Commit: `abb352a09f3023a58faf2434559f356ccd68b7df` (+ 1 commit bổ sung cho
+chính dòng này).
 
 **`sha256sum target/release/bsc_sandwich` tại commit đó (WSL)**:
 `89e953654bcfee85207e0a1d2b83bd4cece1fc6b77e599dcc6c2d9018e5c3c69`
+(không đổi ở commit `abb352a` — commit đó chỉ sửa file BAOCAO)
 
-**VPS** đang chạy `8724750a…` (binary `c321840b…`) — commit NGAY TRƯỚC
-`6703c23`. Chênh lệch duy nhất là `ECON_EVENTS_CAN_DUNG` (lọc dòng ở
-`/api/econ`), KHÔNG đụng đường quyết định/sim, nhưng theo CLAUDE.md thì 2 máy
-vẫn phải cùng commit — phiên sau redeploy trước khi lấy số 6 giờ.
+**VPS ĐÃ redeploy + restart về ĐÚNG commit này** (CLAUDE.md: "Hai máy phải
+cùng git commit"):
+
+```
+commit: abb352a09f3023a58faf2434559f356ccd68b7df
+binary: 0b813b7365fbe09570d8d00ec45cb03de09ac728fd6c7f700ffffdb2e0ee9574
+systemctl: ActiveState=active  MainPID=387024
+```
+
+Binary 2 máy KHÁC hash nhau (`89e95365…` trên WSL vs `0b813b73…` trên VPS) —
+bình thường: mỗi máy tự `cargo build --release` với toolchain/đường dẫn riêng,
+cùng commit nhưng không phải build tái lập bit-chính-xác. **Commit** là thứ
+CLAUDE.md yêu cầu khớp, và nó khớp.
