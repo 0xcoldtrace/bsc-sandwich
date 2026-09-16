@@ -1,0 +1,38 @@
+=== BAOCAO46 o5 - cargo test (may: WSL) ===
+git HEAD luc chay: edb44610e70ca247dcfa5f5f54c35c7e5fae1462  (test chay qua cargo -> dung HEAD hash theo luat #2)
+rustc: rustc 1.97.1 (8bab26f4f 2026-07-14)
+
+--- cargo test --lib flash:: sim_arb:: (18 test MOI cua cum nay) ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running unittests src/lib.rs (target/debug/deps/bsc_sandwich-2051256f4258e8bb)
+
+running 18 tests
+test flash::tests::fee_percent_1e18_doi_sang_bps ... ok
+test flash::tests::flash_fee_zero_bps_la_zero_va_lam_tron_len ... ok
+test flash::tests::chon_nguon_re_nhat_con_du_sau ... ok
+test flash::tests::fee_bps_doc_loi_thi_nguon_bi_loai_khong_coi_nhu_0 ... ok
+test flash::tests::khong_nguon_nao_du_sau_thi_none_chu_khong_phi_0 ... ok
+test flash::tests::pancake_v2_flash_fee_lon_hon_25bps_phang ... ok
+test flash::tests::nguon_re_nhung_can_thi_bi_bo_qua_khong_phai_bao_loi ... ok
+test flash::tests::flash_addresses_are_20_byte_hex_and_checksum_parse ... ok
+test flash::tests::v2_flash_swap_chi_duoc_chon_khi_caller_cho_phep_va_khong_bao_gio_thang_nguon_0_phi ... ok
+test sim_arb::tests::ap_victim_doi_dung_chieu_reserve ... ok
+test sim_arb::tests::bribe_khop_pipeline ... ok
+test sim_arb::tests::sanity_chan_so_vo_ly ... ok
+test sim_arb::tests::hai_pool_can_bang_thi_arb_luon_lo ... ok
+test sim_arb::tests::pool_lech_gia_thi_arb_co_lai_va_lai_nho_hon_do_lech ... ok
+test sim_arb::tests::gas_va_bribe_tru_that_va_bribe_khong_am ... ok
+test sim_arb::tests::phi_flash_lam_giam_lai_that_su ... ok
+test sim_arb::tests::khac_quote_phai_co_bridge_that ... ok
+test sim_arb::tests::best_arb_tu_chon_dung_huong ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 417 filtered out; finished in 0.01s
+
+
+--- cargo test --lib (TOAN BO) ---
+test transport::tests::rpc_pool_skips_wrong_chain_url_then_picks_correct_one ... ok
+test transport::tests::mark_current_unsupported_is_remembered_across_reconnects ... ok
+test transport::tests::rpc_pool_advance_and_reconnect_wraps_around ... ok
+
+test result: ok. 417 passed; 0 failed; 18 ignored; 0 measured; 0 filtered out; finished in 0.26s
+

@@ -1,0 +1,27 @@
+=== BAOCAO46 - nguon flash + getCode THAT (may: WSL, RPC cong khai bsc-dataseed1.bnbchain.org) ===
+thoi diem: 2026-09-16T11:19:22Z
+
+--- eth_chainId (bat buoc truoc moi getCode) ---
+{"jsonrpc":"2.0","id":1,"result":"0x38"}
+
+--- eth_getCode (do dai bytecode, byte) ---
+InfinityVault                    0x238a358808379702088667322f80aC48bAd5e6c4  getCode_len=8347
+BalancerV2Vault                  0xBA12222222228d8Ba445958a75a0704d566BF2C8  getCode_len=24512
+BalancerProtocolFeesCollector    0xce88686553686DA562CE7Cea497CE749DA109f9F  getCode_len=2880
+AaveV3Pool                       0x6807dc923806fE8Fd134338EABCA509979a7e0cB  getCode_len=1933
+
+--- chieu sau + phi THAT tai block 122212446 ---
+token        infinity_vault_balanceOf            balancer_v2_vault_balanceOf
+WBNB         188.925365039353240685              0.000435286748097377
+USDT         35597526.377583619785329791         0.000000000000500461
+ETH          74.293220896910964929               0.000000000000000016
+BTCB         2.286165503107133871                0.000000000000000000
+
+reservesOfApp(CLPoolManager , WBNB) = 132886104475849357421
+reservesOfApp(BinPoolManager, WBNB) = 4306988033198381
+  -> tong 2 app = 132.886 WBNB NHUNG balanceOf (cung block) = 188.925 WBNB:
+     tran vay THAT la balanceOf, chenh 56.04 WBNB (29.7%)
+     (take() goi currency.transfer thang, reservesOfApp chi la so ke toan per-app)
+
+Balancer ProtocolFeesCollector.getFlashLoanFeePercentage() = 0  (thang 1e18 -> 0 bps)
+Aave V3 Pool.FLASHLOAN_PREMIUM_TOTAL()                     = 5  (bps -> 0.05%)

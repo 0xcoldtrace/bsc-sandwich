@@ -1673,7 +1673,10 @@ mod tests {
              pairs_vet_interval_sec = 600\npairs_require_vetted = false\n\
              gas_units_front = 160000\ngas_units_back = 140000\ngas_price_max_gwei = 10\n\
              bribe_pct_of_profit = 0.0\nbribe_min_bnb = 0.0\nbribe_max_bnb = 0.0\nbribe_mode = \"builder_transfer\"\nblockrazor_builder_eoa = \"0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20\"\nclub48_builder_eoa = \"0x4848489f0b2BEdd788c696e2D79b6b69D7484848\"\n\
-             live_mode = \"off\"\nallow_competitor_victims = false\n",
+             live_mode = \"off\"\nallow_competitor_victims = false\n\
+             strategy = \"backrun\"\narb_max_borrow_bnb = 20.0\narb_max_borrow_usdt = 12000.0\n\
+             flash_source_interval_sec = 300\nmulti_venue_path = \"state/multi_venue.json\"\n\
+             gas_units_arb_infinity = 420000\ngas_units_arb_v2flash = 330000\n",
         );
         for (needle, replacement) in overrides {
             s = s.replace(needle, replacement);

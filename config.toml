@@ -190,3 +190,29 @@ live_mode = "off"
 # O live_mode="off" (paper thuan) co nay KHONG chan gi - van Simulated va van
 # ghi co `victim_in_competitor_cluster` vao sim.result de /api/econ dem duoc.
 allow_competitor_victims = false
+
+# ===== Cum `planB-backrun-opportunity` (Chu chot 2026-09-16) =====
+# strategy: "backrun" (ship) = backrun-arb nguyen tu bang flash loan, KHONG
+# can dung truoc victim, KHONG can victim_ok, KHONG can von xoay. "sandwich" =
+# duong cu (front/back kep victim) - code GIU NGUYEN, chi tat bang field nay.
+# Gia tri khac 2 chuoi nay = FAIL LOAD.
+strategy = "backrun"
+
+# Tran so tien VAY FLASH moi route arb. KHAC max_front_bnb (do la tran VON TU
+# CO cua sandwich) - tien nay vay va tra trong cung 1 tx, tran chi de chan
+# truot gia/gas, khong phai chan von.
+arb_max_borrow_bnb = 20
+arb_max_borrow_usdt = 12000
+
+# Chu ky (giay) task nen doc lai chieu sau + phi cac nguon flash (Infinity
+# Vault / Balancer V2 / Aave V3). Duong nong CHI doc snapshot da chup.
+flash_source_interval_sec = 300
+
+# Ban do venue thu 2 (sinh boi `cargo run --release --bin venue_map`).
+# Thieu file = moi tx `arb_no_second_venue`, bot KHONG crash.
+multi_venue_path = "state/multi_venue.json"
+
+# Gas UNIT do that cho 2 kieu route arb (muc 5). Fallback khi chua do duoc
+# bang revm luc boot, cung khuon gas_units_front/gas_units_back.
+gas_units_arb_infinity = 420000
+gas_units_arb_v2flash = 330000

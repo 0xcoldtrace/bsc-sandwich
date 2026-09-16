@@ -287,6 +287,50 @@ pub struct Config {
     /// mất hẳn số liệu để Chủ quyết định).
     pub allow_competitor_victims: bool,
 
+    /// Cụm `planB-backrun-opportunity` — CHIẾN LƯỢC thực thi:
+    /// - `"backrun"` (ship, Chủ chốt 2026-09-16): backrun-arb nguyên tử bằng
+    ///   flash loan. Không cần đứng trước victim, không cần `victim_ok`,
+    ///   không cần vốn xoay — xem CLAUDE.md mục "Chiến lược đã chốt".
+    /// - `"sandwich"`: đường cũ (front/back kẹp victim). Code KHÔNG bị xoá,
+    ///   chỉ TẮT bằng field này, bật lại được nếu Chủ đổi ý.
+    ///
+    /// Giá trị khác 2 chuỗi này = FAIL LOAD (cùng khuôn `sim_engine`/
+    /// `bribe_mode`/`live_mode` — gõ sai phải báo đỏ, không âm thầm chạy
+    /// nhầm chiến lược).
+    pub strategy: String,
+
+    /// Cụm `planB-backrun-opportunity` — trần số tiền VAY FLASH mỗi route arb
+    /// khi quote vay là WBNB (đơn vị BNB). Khác `max_front_bnb` (trần vốn TỰ
+    /// CÓ của sandwich): tiền này là tiền vay, trả trong cùng tx, nên trần
+    /// đóng vai trò chặn rủi ro trượt giá/gas chứ không phải chặn vốn. Ship
+    /// `20`. Chủ chỉnh tự do, hot-reload như mọi ngưỡng khác.
+    pub arb_max_borrow_bnb: f64,
+
+    /// Như trên, cho route vay bằng USDT (đơn vị USDT). Ship `12000`.
+    pub arb_max_borrow_usdt: f64,
+
+    /// Cụm `planB-backrun-opportunity` (mục 2) — chu kỳ (giây) task nền
+    /// `flash_source_task` đọc lại chiều sâu + phí của các nguồn flash
+    /// (Infinity Vault / Balancer V2 / Aave V3). Ship `300` (5 phút, đúng
+    /// khối lệnh). Độc lập đường nóng: đường nóng CHỈ đọc snapshot đã chụp,
+    /// không bao giờ tự gọi RPC để chọn nguồn.
+    pub flash_source_interval_sec: u64,
+
+    /// Cụm `planB-backrun-opportunity` (mục 1) — đường dẫn bản đồ venue
+    /// (`state/multi_venue.json`, sinh bởi `cargo run --bin venue_map`).
+    /// Thiếu file = không có token nào có venue thứ 2 → mọi tx `arb_no_second_venue`,
+    /// bot KHÔNG crash (đúng luật "thiếu dữ liệu thì skip, không đoán").
+    pub multi_venue_path: String,
+
+    /// Cụm `planB-backrun-opportunity` (mục 5) — gas UNIT đo thật cho route
+    /// arb đi qua `Vault.lock` của Infinity (take → 2 swap V2 → sync/settle).
+    /// Fallback khi chưa đo được bằng revm lúc boot, cùng khuôn
+    /// `gas_units_front`/`gas_units_back`.
+    pub gas_units_arb_infinity: u64,
+
+    /// Như trên, cho route arb vay bằng Pancake V2 flash swap (`pancakeCall`).
+    pub gas_units_arb_v2flash: u64,
+
     /// Mốc lần reload gần nhất — KHÔNG đọc/ghi từ `config.toml`
     /// (`#[serde(skip)]`, mặc định `None`). Dùng bởi `reload_if_due`, cùng
     /// quy ước `VictimBook::last_reload` (`src/victims.rs`).
@@ -382,7 +426,7 @@ impl Config {
         if self.chain_id != REQUIRED_CHAIN_ID {
             return Err(ConfigError::InvalidChainId(self.chain_id));
         }
-        let checks: [(&str, f64); 12] = [
+        let checks: [(&str, f64); 14] = [
             ("min_profit_bnb", self.min_profit_bnb),
             ("max_front_bnb", self.max_front_bnb),
             ("min_reserve_wbnb", self.min_reserve_wbnb),
@@ -395,6 +439,8 @@ impl Config {
             ("bribe_pct_of_profit", self.bribe_pct_of_profit),
             ("bribe_min_bnb", self.bribe_min_bnb),
             ("bribe_max_bnb", self.bribe_max_bnb),
+            ("arb_max_borrow_bnb", self.arb_max_borrow_bnb),
+            ("arb_max_borrow_usdt", self.arb_max_borrow_usdt),
         ];
         for (name, v) in checks {
             if !v.is_finite() || v < 0.0 {
@@ -434,6 +480,14 @@ impl Config {
                 self.bribe_mode
             )));
         }
+        // Cum `planB-backrun-opportunity` - cung khuon `sim_engine`: go sai
+        // `strategy` = FAIL LOAD, khong am tham chay nham chien luoc.
+        if self.strategy != "backrun" && self.strategy != "sandwich" {
+            return Err(ConfigError::InvalidNumber(format!(
+                "strategy phai la \"backrun\" hoac \"sandwich\" (nhan duoc {:?})",
+                self.strategy
+            )));
+        }
         if self.live_mode != "off" && self.live_mode != "shadow" && self.live_mode != "live" {
             return Err(ConfigError::InvalidNumber(format!(
                 "live_mode phai la \"off\", \"shadow\" hoac \"live\" (nhan duoc {:?})",
@@ -441,6 +495,12 @@ impl Config {
             )));
         }
         Ok(())
+    }
+
+    /// Cụm `planB-backrun-opportunity` — điểm đọc DUY NHẤT của `strategy`
+    /// trong production path (cùng quy ước `sim_engine_is_evm`).
+    pub fn strategy_is_backrun(&self) -> bool {
+        self.strategy == "backrun"
     }
 
     /// F-02/mục 4 — `true` chỉ khi `live_mode="shadow"` — điểm đọc DUY NHẤT
@@ -795,6 +855,13 @@ bribe_mode = "builder_transfer"
 blockrazor_builder_eoa = "0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20"
 club48_builder_eoa = "0x4848489f0b2BEdd788c696e2D79b6b69D7484848"
 live_mode = "off"
+strategy = "backrun"
+arb_max_borrow_bnb = 20
+arb_max_borrow_usdt = 12000
+flash_source_interval_sec = 300
+multi_venue_path = "state/multi_venue.json"
+gas_units_arb_infinity = 420000
+gas_units_arb_v2flash = 330000
 allow_competitor_victims = false
 "#
         .to_string()

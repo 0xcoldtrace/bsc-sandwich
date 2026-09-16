@@ -5514,3 +5514,131 @@ Cổng này **không** được áp khi wallet-mode bật (mode 1 route theo đ�
 `from`, không theo pool) hoặc universal-mode bật (mode 3 quét mọi pool WBNB,
 không cần có trong `pairs.txt`) — có test riêng cho cả hai, và một test đọc
 thẳng `config.toml` ship để hỏng ngay nếu cờ ship đổi.
+
+## `planB-backrun-opportunity` (BAOCAO46, 2026-09-16) — CHƯA XONG, Chủ ra lệnh dừng giữa phiên
+
+Chủ CHỐT chuyển từ sandwich sang **backrun-arb nguyên tử bằng flash loan**
+(khối lệnh `planB-backrun-opportunity`). Phiên này là cụm **B0** — chỉ ĐO cơ
+hội bằng số, không contract, không live, không gửi tx. Chủ ra lệnh
+"dừng an toàn" khi mới xong phần nền, nên phần lớn mục ĐO **chưa chạy**; xem
+`baocao/BAOCAO46.md` ô 10.
+
+### Nguồn flash — đã xác minh bằng mã nguồn + on-chain, KHÔNG suy đoán
+
+Đọc trực tiếp `github.com/pancakeswap/infinity-core` phiên này (`src/Vault.sol`,
+`src/interfaces/IVault.sol`). Trích nguyên văn phần quyết định:
+
+```solidity
+function lock(bytes calldata data) external override returns (bytes memory result) {
+    SettlementGuard.setLocker(msg.sender);
+    result = ILockCallback(msg.sender).lockAcquired(data);
+    if (SettlementGuard.getUnsettledDeltasCount() != 0) revert CurrencyNotSettled();
+    if (AppDeficit.count() != 0) revert AppCurrencyNotFullyRepaid();
+    SettlementGuard.setLocker(address(0));
+}
+
+function take(Currency currency, address to, uint256 amount) external override isLocked {
+    unchecked {
+        SettlementGuard.accountDelta(msg.sender, currency, -(amount.toInt128()));
+        currency.transfer(to, amount);
+    }
+}
+
+function _settle(address recipient) internal returns (uint256 paid) {
+    (Currency currency, uint256 reservesBefore) = VaultReserve.getVaultReserve();
+    if (!currency.isNative()) {
+        if (msg.value > 0) revert SettleNonNativeCurrencyWithValue();
+        uint256 reservesNow = currency.balanceOfSelf();
+        paid = reservesNow - reservesBefore;
+        VaultReserve.setVaultReserve(CurrencyLibrary.NATIVE, 0);
+    } else {
+        paid = msg.value;
+    }
+    SettlementGuard.accountDelta(recipient, currency, paid.toInt128());
+}
+```
+
+Ba kết luận rút ra từ ĐÚNG đoạn mã trên (không phải từ blog/docs marketing):
+
+1. **Phí = 0.** Không dòng nào trong `take`/`_settle` trừ phí. Chi phí duy
+   nhất của vòng vay-trả là gas.
+2. **Trình tự bắt buộc là `take → arb → sync(currency) → trả token → settle()`.**
+   `_settle` tính `paid` bằng CHÊNH LỆCH `balanceOfSelf` so với
+   `VaultReserve` — mà `VaultReserve` chỉ được đặt bởi `sync()`. Quên `sync`
+   trước khi chuyển token về thì `paid` sai và `lock` revert
+   `CurrencyNotSettled`. Đây là cái bẫy dễ mất tiền gas nhất khi viết
+   `ArbExecutor`.
+3. **Trần vay THẬT là `IERC20(token).balanceOf(VAULT)`, KHÔNG phải
+   `reservesOfApp`.** `take` gọi `currency.transfer` thẳng từ số dư thật;
+   `reservesOfApp` chỉ là sổ kế toán theo từng app đã đăng ký, phục vụ
+   `AppDeficit`, và locker thường KHÔNG chạm vào sổ đó (chỉ
+   `accountAppBalanceDelta` mới chạm). Đo thật tại block `122212446`:
+   `balanceOf` = **188,925 WBNB** trong khi
+   `reservesOfApp(CLPoolManager)+reservesOfApp(BinPoolManager)` = **132,886 WBNB**
+   — lấy nhầm `reservesOfApp` là tự cắt **29,7 %** chiều sâu mà không có lý do.
+
+### Chiều sâu + phí đo thật (WSL, `bsc-dataseed1.bnbchain.org`, `eth_chainId=0x38`)
+
+Block `122212446`, bằng chứng đầy đủ: `baocao/evidence/baocao46_flash_sources.txt`.
+
+| Nguồn | Phí đo thật | WBNB | USDT | Dùng được? |
+|---|---|---|---|---|
+| Infinity Vault `0x238a…5e6c4` | **0** (đọc mã nguồn) | **188,93** | **35 597 526** | **CÓ — nguồn chính** |
+| Balancer V2 Vault `0xBA12…F2C8` | **0** (`getFlashLoanFeePercentage()=0`) | 0,000435 | 5,0e-13 | **KHÔNG** |
+| Pancake V2 flash swap | ~25,06 bps | reserve pool đang arb | — | CÓ, đắt nhất |
+| Aave V3 Pool `0x6807…e0cB` | **5 bps** (`FLASHLOAN_PREMIUM_TOTAL()=5`) | theo aToken | theo aToken | CÓ |
+
+**Phát hiện đổi thứ tự ưu tiên của khối lệnh:** Balancer V2 trên **BSC** gần
+như RỖNG — 0,000435 WBNB và 5,0e-13 USDT. Nó vô dụng NGAY BÂY GIỜ, độc lập
+hoàn toàn với chuyện wind-down. Khối lệnh xếp Balancer ở vị trí 2 vì phí 0,
+nhưng phí 0 trên một vault không có tiền thì không có nghĩa gì. Thứ tự thực
+tế dùng được là: **Infinity Vault → Aave V3 (5 bps) → Pancake V2 flash swap
+(25 bps)**. `flash::choose_flash_source` không hardcode thứ tự này — nó chọn
+nguồn rẻ nhất còn ĐỦ SÂU tại block, nên Balancer tự rơi ra vì không đủ sâu,
+và tự quay lại nếu có ngày vault được nạp.
+
+Rủi ro wind-down vẫn ghi nhận (không phải lý do loại, nhưng là lý do KHÔNG
+bao giờ phụ thuộc): đề xuất đóng Balancer nộp 2026-09-14, snapshot vote
+**25–29/09/2026**, pool pausable chuyển sang chỉ-rút từ **30/10/2026**.
+
+### Phí Pancake V2 flash swap KHÔNG phải 25 bps phẳng
+
+Vay `amount` rồi trả lại CÙNG token thì ràng buộc `k` bắt hoàn
+`ceil(amount × 10000 / 9975)` — phí 0,25 % tính trên phần VÀO, không phải trên
+phần vay. Với 1 BNB: phí thật `2 506 265 664 160 402` wei, cao hơn
+`amount×25/10000` = `2 500 000 000 000 000` wei. Chênh 0,25 % của chính phí —
+nhỏ, nhưng tính thiếu thì mọi kết luận Go/No-Go lệch về phía lạc quan.
+`flash::flash_fee_wei` tính đúng, test `pancake_v2_flash_fee_lon_hon_25bps_phang`
+khoá lại.
+
+### Cấu trúc venue thứ 2 — 87/128 token `pairs.txt` có đủ 2 pool V2
+
+Đo thật qua `V2Factory.getPair(token, WBNB)` và `getPair(token, USDT)`:
+**87/128** token có CẢ hai khác `address(0)`
+(`baocao/evidence/baocao46_two_venue_v2.txt`). Nghĩa là arb 2-venue **thuần
+V2** khả thi về CẤU TRÚC, không cần mở V3/Infinity trước.
+
+**Cảnh báo phải đọc kèm:** con số này CHƯA lọc reserve. Có pool tồn tại
+không có nghĩa là đủ sâu để arb — `state/multi_venue.json` (chưa làm) mới là
+thứ có reserve thật, và ngưỡng `min_reserve` phải áp cho **CẢ HAI** pool chứ
+không chỉ pool victim đụng.
+
+### Vì sao enumerate pool Infinity theo `poolId` KHÔNG làm được
+
+Đã thử: `PoolId = keccak256(PoolKey)` tính offline được
+(`pool::compute_pool_id`, đã verify bit-for-bit với log thật từ BAOCAO19), nên
+về lý thuyết có thể dò pool bằng `eth_call` rẻ thay vì `eth_getLogs` đắt.
+Nhưng mẫu log `Initialize` THẬT lấy phiên này cho thấy `PoolKey` thực tế có
+`hooks` khác `address(0)` (ví dụ pool WBNB thật: `hooks=0xadbecd36…a815`,
+`fee=10000`, `parameters=0x…00c80cc1`) và `fee` chạy tự do tới 995 600
+(pool bonding-curve/launchpad). Không enumerate được không gian
+`(hooks, fee, tickSpacing)` → **bắt buộc quét log**.
+
+Mà quét log toàn lịch sử Infinity (~15 M block) là không khả thi với RPC
+free-tier: đo thật phiên này, `bsc-dataseed1` trả `limit exceeded` với MỌI
+dải; `rpc-bsc.48.club` chặn cứng **5 000 block/lần**; `bsc-rpc.publicnode.com`
+đòi token archive. 15 M block ÷ 5 000 = ~3 000 lời gọi cho MỖI pool manager.
+→ Việc "ghi nhận ứng viên venue thứ 2 ở Infinity" (mục 1 khối lệnh) phải làm
+bằng cửa sổ block CÓ GIỚI HẠN và ghi rõ cửa sổ đó, hoặc bằng nguồn index
+ngoài chain. "Không tìm thấy trong cửa sổ X" ≠ "không có pool" — phiên sau
+không được viết ngược lại.
