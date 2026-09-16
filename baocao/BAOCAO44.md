@@ -34,9 +34,10 @@ vào bất kỳ file nào trong repo.
 
 ## 3. FILE ĐỔI
 
-Commit cuối: xem dòng `Commit:` cuối file. 3 commit trong phiên:
+Commit cuối: xem dòng `Commit:` cuối file. 5 commit trong phiên:
 `9b2115f` (mục 1–6 + BUG #1/#2/#3), `8e09735` (mục 5, `config.runtime.toml`),
-`ac9406c` (BUG #4/#5).
+`ac9406c` (BUG #4/#5), `8724750` (BAOCAO44 + docs), `6703c23`
+(`ECON_EVENTS_CAN_DUNG` + cập nhật báo cáo).
 
 **MỚI**
 
@@ -106,9 +107,8 @@ ssh ... 'kill -9 $(systemctl show bsc-sandwich-paper -p MainPID --value)'  # thu
 
 **Máy**: WSL `/home/dmin/bsc-sandwich` cho mọi phần code/test/đo; VPS
 `VPS-511043-157` cho deploy + chạy dài.
-**git HEAD cuối phiên**: `ac9406c38fd6a47bd44954aa03268fc2b3f385f7`.
-**`sha256sum target/release/bsc_sandwich` (WSL, HEAD cuối)**:
-`8c653aca5093d9674d2102e8de648c9e51d364911c8755b02d07e206b37540bb`.
+**git HEAD cuối phiên**: xem dòng `Commit:` cuối file (`sha256` binary WSL
+tương ứng dán kèm ở đó).
 **Binary chạy shadow/mem 65 phút (WSL)**:
 `2d5c0e0f417b98f6fd4b5bbc11183d4c72adf10ddc3f2b403f8fca8c65e34893`
 (= sau BUG #1/#2/#3 + mục 1–6, TRƯỚC BUG #4/#5 — ghi rõ, không gộp).
@@ -595,5 +595,13 @@ Mọi phần còn lại đã có output thật dán kèm.
 10. **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ cũ từ
     `real-economics-mode2`).
 
-Commit: `ac9406c38fd6a47bd44954aa03268fc2b3f385f7` (+ commit bổ sung cho
-chính file này, hash ghi lúc commit)
+Commit: `6703c230e639361da40ca361d6d4a7b0984df575` (+ 1 commit bổ sung cho
+chính file này).
+
+**`sha256sum target/release/bsc_sandwich` tại commit đó (WSL)**:
+`89e953654bcfee85207e0a1d2b83bd4cece1fc6b77e599dcc6c2d9018e5c3c69`
+
+**VPS** đang chạy `8724750a…` (binary `c321840b…`) — commit NGAY TRƯỚC
+`6703c23`. Chênh lệch duy nhất là `ECON_EVENTS_CAN_DUNG` (lọc dòng ở
+`/api/econ`), KHÔNG đụng đường quyết định/sim, nhưng theo CLAUDE.md thì 2 máy
+vẫn phải cùng commit — phiên sau redeploy trước khi lấy số 6 giờ.
