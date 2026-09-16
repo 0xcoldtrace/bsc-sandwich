@@ -28,8 +28,8 @@ Giữa phiên Chủ nhắn **"dừng an toàn"**.
 
 ## 3. FILE ĐỔI
 
-Commit: `<HASH>` (điền bằng `git log -1 --format=%H` sau commit — xem dòng
-`Commit:` cuối file).
+Commit nội dung: `71e3c15002a20f12816d821b28616363e52bea91`.
+Commit cuối phiên (chỉ điền hash vào chính file này): xem dòng `Commit:` cuối file.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -239,4 +239,6 @@ cuộc đua vẫn MISSING; đường `sim_engine="evm"` vẫn dùng trần gas c
 
 ---
 
-Commit: `<HASH>`
+Commit: `71e3c15002a20f12816d821b28616363e52bea91` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này của `baocao/BAOCAO46.md`,
+không đổi code — đúng tiền lệ BAOCAO45 (`edb4461`).
