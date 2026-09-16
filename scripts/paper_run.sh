@@ -225,13 +225,41 @@ if [ "$LIVE_MODE" = "shadow" ]; then
   RUN_LOG | grep -E '"event":"shadow\.(signer_loaded|signer_load_failed)"' || echo "(khong thay dong nao)"
   echo "---- dem bundle.shadow (da ky THAT, KHONG gui) ----"
   count_matches '"event":"bundle.shadow"'
-  echo "---- dem tx.abort reason=pre_sign_revet_failed ----"
-  count_matches_in '"event":"tx.abort"' '"reason":"pre_sign_revet_failed"'
-  echo "---- 10 dong bundle.shadow cuoi ----"
-  RUN_LOG | grep '"event":"bundle.shadow"' | tail -10 || true
-  echo "---- 10 dong tx.abort cuoi ----"
-  RUN_LOG | grep '"event":"tx.abort"' | tail -10 || true
+  echo "---- dem tx.abort theo tung ly do (cum bugfix-presign-and-contract-plan, A4) ----"
+  for R in vet_stale reserve_stale mined_index_cold victim_already_mined nonce_not_prefetched sign_failed_front sign_failed_back pre_sign_revet_failed; do
+    printf '  %-24s %s\n' "$R" "$(count_matches_in '"event":"tx.abort"' "\"reason\":\"$R\"")"
+  done
+  echo "---- 5 dong bundle.shadow cuoi (rut gon: bo raw_hex) ----"
+  RUN_LOG | grep '"event":"bundle.shadow"' | tail -5 | jq -c 'del(.front.raw_hex, .back.raw_hex)' 2>/dev/null || RUN_LOG | grep '"event":"bundle.shadow"' | tail -2
+  echo "---- presign.ms p50/p95 (A4, muc tieu p95 < 20 ms) ----"
+  RUN_LOG | grep -E '"event":"(bundle\.shadow|tx\.abort)"' | jq -r '.presign_ms.total_before_sign // empty' 2>/dev/null \
+    | sort -n | awk '{v[NR]=$1} END{
+        if (NR==0) { print "(khong co mau presign_ms)" ; exit }
+        i50=int((NR+1)/2); if(i50<1)i50=1
+        i95=int(NR*0.95); if(i95<1)i95=1
+        printf "n=%d p50=%.3f ms p95=%.3f ms max=%.3f ms\n", NR, v[i50], v[i95], v[NR]
+      }'
+  echo "---- bundle.shadow_econ (A7: bribe / net sau bribe / co doi thu) ----"
+  RUN_LOG | grep '"event":"bundle.shadow_econ"' | tail -10 || true
+  echo "---- shadow.sim (A7: mo phong bundle 3 chan bang revm NEN) ----"
+  RUN_LOG | grep '"event":"shadow.sim"' | tail -10 || true
+  echo "---- dem shadow.sim victim_ok=true / co loi ----"
+  count_matches_in '"event":"shadow.sim"' '"victim_ok":true'
+  count_matches_in '"event":"shadow.sim"' '"error"'
+  echo "---- latency.decision_vs_mined 10 dong cuoi ----"
+  RUN_LOG | grep '"event":"latency.decision_vs_mined"' | tail -10 || true
 fi
+echo "---- cum A5: rpc.bg_pool (tach RPC nen khoi duong nong) ----"
+RUN_LOG | grep '"event":"rpc.bg_pool"' | tail -2 || echo "(khong thay)"
+echo "---- cum A3: competitor.subscribed / competitor.funded (dem) ----"
+RUN_LOG | grep '"event":"competitor.subscribed"' | tail -2 || echo "(khong thay)"
+echo "competitor.funded = $(count_matches '"event":"competitor.funded"')"
+echo "victim_in_competitor_cluster=true = $(count_matches '"victim_in_competitor_cluster":true')"
+echo "---- cum A2: dem skip sanity_reject / competitor_victim ----"
+echo "sanity_reject = $(count_matches_in '"event":"tx.skip"' '"reason":"sanity_reject"')"
+echo "competitor_victim = $(count_matches_in '"event":"tx.skip"' '"reason":"competitor_victim"')"
+echo "---- cum A4: mined_index.ready / pair.vet_cycle ----"
+RUN_LOG | grep -E '"event":"(mined_index.ready|pair.vet_cycle)"' | tail -5 || echo "(khong thay)"
 
 # ---- halt sach: cho halt.triggered THAT truoc khi kill (muc 13b) ----
 echo "== halt bot (ghi state/halt.lock, cho halt.triggered toi da 10s, roi kill PID) =="

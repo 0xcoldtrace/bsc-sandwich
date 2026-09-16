@@ -88,7 +88,30 @@
     <tbody id="econ-buckets-body"></tbody>
   </table>
   <p id="econ-decode-fail"></p>
-  <p>Bucket <code>victim_in</code> CHỈ áp dụng cho quote WBNB (không quy đổi USDT sang BNB — CLAUDE.md cấm price oracle). <code>gross_pos</code>/<code>net_pos</code> chỉ đếm được từ dòng <code>sim.result</code> (candidate đã tới bước sim). Xem đầy đủ qua <code>GET /api/econ</code>.</p>
+  <h3>Vốn cần (cụm bugfix-presign-and-contract-plan, A6)</h3>
+  <table>
+    <thead><tr><th>bucket front_in (BNB)</th><th>count</th><th>net_pos</th><th>sum_net_pos_bnb</th><th>best_net_bnb</th></tr></thead>
+    <tbody id="econ-front-buckets-body"></tbody>
+  </table>
+  <p id="econ-capital80"></p>
+  <p id="econ-competitor"></p>
+  <p id="econ-rate-health"></p>
+  <h3>Top pool (cột "cụm đối thủ chạm" — A6)</h3>
+  <table>
+    <thead><tr><th>pool</th><th>symbol</th><th>count</th><th>net_pos</th><th>sum_net_bnb</th><th>cụm đối thủ chạm?</th></tr></thead>
+    <tbody id="econ-top-pools-body"></tbody>
+  </table>
+  <p>Bucket <code>victim_in</code> nay ap dung cho CA 2 quote asset (USDT quy doi qua <code>amount_in_bnb_equiv</code> — reserve THAT, khong price oracle). <code>rate_inverted_rejected</code> phai LUON = 0 sau ban sua A1 (<code>ReserveCache</code> khoa kem <code>quote</code>); khac 0 nghia la con dong log ghi boi binary cu. Xem day du qua <code>GET /api/econ</code>.</p>
+</section>
+
+<section id="shadow">
+  <h2>Shadow mode (ký thật, KHÔNG gửi — cụm competitor-recon + A4/A7)</h2>
+  <p id="shadow-meta"></p>
+  <table>
+    <thead><tr><th>victim hash</th><th>front hash</th><th>back hash</th><th>presign (ms)</th></tr></thead>
+    <tbody id="shadow-body"></tbody>
+  </table>
+  <p>Đường ký sau cụm A4 KHÔNG gọi RPC nào: 4 cổng đọc từ bộ nhớ (vet tươi / reserve đúng block / victim chưa lên block theo <code>MinedTxIndex</code> / nonce prefetch). Bribe theo <code>bribe_mode="builder_transfer"</code> = chuyển BNB tới VÍ EOA BUILDER (không phải <code>block.coinbase</code>) — CHƯA implement leg chuyển, mới tính+log.</p>
 </section>
 
 <section id="validate">

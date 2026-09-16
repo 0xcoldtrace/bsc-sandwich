@@ -188,6 +188,13 @@ pub const SKIP_REASONS: &[&str] = &[
     "nonce_future",
     // Cum `real-economics-mode2` (F-03)
     "gas_cap",
+    // Cum `bugfix-presign-and-contract-plan` (A2) - cong tinh tao truoc
+    // `Simulated` (front_in <=10% reserve, profit_net <=2% reserve,
+    // victim amount_in <= reserve), xem `pipeline::sanity_check`.
+    "sanity_reject",
+    // Cum `bugfix-presign-and-contract-plan` (A3) - tx.from thuoc cum doi thu
+    // da nhan dien + allow_competitor_victims=false + live_mode != "off".
+    "competitor_victim",
 ];
 
 #[cfg(test)]

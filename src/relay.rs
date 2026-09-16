@@ -82,6 +82,55 @@ use serde_json::{json, Map, Value};
 pub const CLUB48_RPC_URL: &str = "https://puissant-builder.48.club/";
 pub const BLOCKRAZOR_RPC_URL: &str = "https://bsc.blockrazor.xyz";
 
+/// Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN, Chủ dán docs
+/// chính thức BlockRazor **Block Builder**, 2026-09-16) — ĐƯỜNG 1 (ưu tiên):
+/// endpoint builder riêng cho vùng, VPS đặt tại NJ/US nên dùng
+/// `virginia.builder.blockrazor.io`. Khác `BLOCKRAZOR_RPC_URL` (đường 2,
+/// `eth_sendMevBundle`, không auth) ở 3 điểm: (a) method `eth_sendBundle`,
+/// (b) BẮT BUỘC header `Authorization: <BLOCKRAZOR_AUTH>`, (c) có thêm field
+/// `noMerge`/`positionFirst`.
+pub const BLOCKRAZOR_BUILDER_URL_VIRGINIA: &str = "https://virginia.builder.blockrazor.io";
+
+/// Endpoint builder GLOBAL (dự phòng nếu vùng Virginia lỗi) — cùng method/
+/// auth với `BLOCKRAZOR_BUILDER_URL_VIRGINIA`.
+pub const BLOCKRAZOR_BUILDER_URL_GLOBAL: &str = "https://rpc.blockrazor.builders";
+
+/// **Ví EOA của builder BlockRazor** — bribe đi tới ĐỊA CHỈ NÀY bằng 1
+/// transfer BNB thường, **KHÔNG PHẢI `block.coinbase`** (đây là khác biệt
+/// quan trọng so với mô hình Flashbots/Ethereum mà cụm `competitor-recon-and-strategy`
+/// đã giả định sai với `bribe_mode="coinbase"` cũ). Pin từ docs chính thức Chủ
+/// dán 2026-09-16.
+pub const BLOCKRAZOR_BUILDER_EOA: &str = "0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20";
+
+/// Gas price TỐI THIỂU relay BlockRazor chấp nhận cho bundle gửi qua đường
+/// builder (docs: ≥ 0.05 gwei). Đường 2 (`eth_sendMevBundle`) cho phép tx
+/// 0 gwei miễn TRUNG BÌNH bundle ≥ 0.05 gwei.
+pub const BLOCKRAZOR_MIN_GAS_PRICE_WEI: u128 = 50_000_000; // 0.05 gwei
+
+/// **Builder Control EOA của 48 Club Puissant** — bribe đi tới đây bằng
+/// transfer BNB (docs chính thức Chủ dán 2026-09-16). Cơ chế xếp hạng bundle
+/// của 48 Club: `0.9 × gas fee của tx unique + BNB chuyển tới EOA này` — hệ
+/// số 0.9 nghĩa là 1 BNB trả qua **gas** chỉ được tính bằng 0.9 BNB, còn 1
+/// BNB **chuyển thẳng** được tính đủ 1.0 → **luôn ưu tiên nhét bribe vào
+/// transfer**, giữ gas ở mức tối thiểu (0.05 gwei).
+pub const CLUB48_BUILDER_EOA: &str = "0x4848489f0b2BEdd788c696e2D79b6b69D7484848";
+
+/// Hệ số 48 Club áp cho phần bribe trả qua GAS (docs: `0.9 × gas fee`).
+/// Dùng khi so sánh 2 cách trả bribe — KHÔNG phải hằng số dùng để tính tiền
+/// gửi đi.
+pub const CLUB48_GAS_FEE_WEIGHT: f64 = 0.9;
+
+/// Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN) — bảng
+/// `relay -> ví EOA builder` (cùng nội dung pin trong `DEX_REGISTRY.md`, kèm
+/// `source_url` + ngày đọc docs).
+pub fn builder_eoa_for(relay: &str) -> Option<&'static str> {
+    match relay {
+        "blockrazor" => Some(BLOCKRAZOR_BUILDER_EOA),
+        "club48" => Some(CLUB48_BUILDER_EOA),
+        _ => None,
+    }
+}
+
 /// `front_raw_hex`/`back_raw_hex` có thể tới không kèm tiền tố `0x` — chuẩn
 /// hoá về dạng có `0x` (quy ước hex chuẩn của mọi field `txs` trong 2 relay
 /// trên). Hàm THUẦN chuỗi, KHÔNG validate độ dài/tính hợp lệ RLP của tx (chưa
@@ -112,6 +161,69 @@ pub struct Club48BundleOptions {
 pub struct BlockRazorBundleOptions {
     pub reverting_tx_hashes: Option<Vec<String>>,
     pub max_block_number: Option<u64>,
+    /// Đường BUILDER (`eth_sendBundle`) — docs chính thức 2026-09-16.
+    pub no_merge: Option<bool>,
+    /// Đường BUILDER — yêu cầu bundle đứng ĐẦU block.
+    pub position_first: Option<bool>,
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN) — request
+/// `eth_sendBundle` cho **BlockRazor Block Builder** (đường 1) kèm header
+/// `Authorization`. Trả CẢ body lẫn endpoint/header để tầng gửi (chưa tồn
+/// tại — `7.3`) không phải tự đoán; module này vẫn KHÔNG mở kết nối nào.
+#[derive(Debug, Clone)]
+pub struct BuilderRequest {
+    pub url: &'static str,
+    /// Giá trị header `Authorization` — LẤY TỪ `.env` (`BLOCKRAZOR_AUTH`),
+    /// KHÔNG BAO GIỜ log nguyên văn (xem `build_and_log_relay_bundle_previews`).
+    pub auth: String,
+    pub body: Value,
+}
+
+/// Build request `eth_sendBundle` cho BlockRazor **Block Builder** (đường 1,
+/// CÓ auth). Hàm THUẦN. `auth` rỗng -> trả `None`: relay này bị TẮT, caller
+/// phải log rõ và rơi về đường 2 (`eth_sendMevBundle`, không auth) — KHÔNG
+/// được tự bịa token, KHÔNG được panic (đúng yêu cầu Chủ: "thiếu → relay
+/// disabled, log rõ, không panic").
+pub fn build_blockrazor_builder_send_bundle_request(
+    front_raw_hex: &str,
+    victim_raw_hex: &str,
+    back_raw_hex: &str,
+    current_block: u64,
+    request_id: u64,
+    auth: &str,
+    url: &'static str,
+    opts: &BlockRazorBundleOptions,
+) -> Option<BuilderRequest> {
+    if auth.trim().is_empty() {
+        return None;
+    }
+    let max_block_number = opts.max_block_number.unwrap_or(current_block + 100);
+    let mut bundle = Map::new();
+    bundle.insert(
+        "txs".to_string(),
+        json!([normalize_raw_tx_hex(front_raw_hex), normalize_raw_tx_hex(victim_raw_hex), normalize_raw_tx_hex(back_raw_hex)]),
+    );
+    bundle.insert("maxBlockNumber".to_string(), json!(max_block_number));
+    if let Some(ref v) = opts.reverting_tx_hashes {
+        bundle.insert("revertingTxHashes".to_string(), json!(v));
+    }
+    if let Some(v) = opts.no_merge {
+        bundle.insert("noMerge".to_string(), json!(v));
+    }
+    if let Some(v) = opts.position_first {
+        bundle.insert("positionFirst".to_string(), json!(v));
+    }
+    Some(BuilderRequest {
+        url,
+        auth: auth.to_string(),
+        body: json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "eth_sendBundle",
+            "params": [Value::Object(bundle)],
+        }),
+    })
 }
 
 /// Build request `eth_sendBundle` cho 48 Club (Puissant Builder v2). Hàm
@@ -375,11 +487,104 @@ mod tests {
         assert!(bundle.get("positionFirst").is_none());
     }
 
+    // ===== Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN) =====
+
+    /// ĐẠT CẦN DÁN — đường BUILDER (`eth_sendBundle` + header `Authorization`)
+    /// theo docs chính thức BlockRazor Chủ dán 2026-09-16.
+    #[test]
+    fn blockrazor_builder_request_has_auth_header_method_and_all_doc_fields() {
+        let opts = BlockRazorBundleOptions {
+            reverting_tx_hashes: None,
+            max_block_number: Some(500),
+            no_merge: Some(true),
+            position_first: Some(true),
+        };
+        let req = build_blockrazor_builder_send_bundle_request(
+            FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
+            FIXTURE_BACK_RAW_TX_HEX,
+            400,
+            9,
+            "SECRET_TOKEN_TEST",
+            BLOCKRAZOR_BUILDER_URL_VIRGINIA,
+            &opts,
+        )
+        .expect("co auth -> phai build duoc");
+        assert_eq!(req.url, "https://virginia.builder.blockrazor.io");
+        assert_eq!(req.auth, "SECRET_TOKEN_TEST");
+        assert_eq!(req.body["method"], "eth_sendBundle", "duong builder dung eth_sendBundle, KHAC eth_sendMevBundle cua duong 2");
+        let b = &req.body["params"][0];
+        assert_eq!(b["txs"].as_array().unwrap().len(), 3, "bundle LUON 3 chan [front, victim, back]");
+        assert_eq!(b["txs"][1], FIXTURE_VICTIM_RAW_TX_HEX);
+        assert_eq!(b["maxBlockNumber"], 500);
+        assert_eq!(b["noMerge"], true);
+        assert_eq!(b["positionFirst"], true);
+        assert!(b.get("revertingTxHashes").is_none(), "None -> bi loai khoi JSON, khong ghi null");
+    }
+
+    /// ĐẠT CẦN DÁN — "thiếu `BLOCKRAZOR_AUTH` → relay disabled, log rõ,
+    /// KHÔNG panic" (yêu cầu Chủ). Hàm trả `None`, caller rơi về đường 2.
+    #[test]
+    fn blockrazor_builder_request_without_auth_is_disabled_not_panic() {
+        let opts = BlockRazorBundleOptions::default();
+        for empty in ["", "   "] {
+            let r = build_blockrazor_builder_send_bundle_request(
+                FIXTURE_FRONT_RAW_TX_HEX,
+                FIXTURE_VICTIM_RAW_TX_HEX,
+                FIXTURE_BACK_RAW_TX_HEX,
+                1,
+                1,
+                empty,
+                BLOCKRAZOR_BUILDER_URL_GLOBAL,
+                &opts,
+            );
+            assert!(r.is_none(), "auth rong -> relay TAT, khong bia token, khong panic");
+        }
+    }
+
+    /// ĐẠT CẦN DÁN — bảng `relay -> ví EOA builder` (pin trong
+    /// `DEX_REGISTRY.md`): bribe là transfer BNB tới 2 địa chỉ NÀY, KHÔNG
+    /// phải `block.coinbase`.
+    #[test]
+    fn builder_eoa_table_matches_official_docs() {
+        assert_eq!(builder_eoa_for("blockrazor"), Some("0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20"));
+        assert_eq!(builder_eoa_for("club48"), Some("0x4848489f0b2BEdd788c696e2D79b6b69D7484848"));
+        assert_eq!(builder_eoa_for("khong_ton_tai"), None, "relay la relay chua pin -> None, khong doan dia chi");
+        // 2 vi builder PHAI khac nhau (moi relay mot vi rieng).
+        assert_ne!(BLOCKRAZOR_BUILDER_EOA, CLUB48_BUILDER_EOA);
+    }
+
+    /// ĐẠT CẦN DÁN — 48 Club: `backrunTarget` = hash victim (điền khi có),
+    /// `revertingTxHashes` để RỖNG (front/back KHÔNG được phép revert;
+    /// victim là tx public nên cũng không nằm trong danh sách).
+    #[test]
+    fn club48_bundle_carries_backrun_target_and_empty_reverting_list() {
+        let victim_hash = "0x3a8fa10d00000000000000000000000000000000000000000000000000000000";
+        let opts = Club48BundleOptions {
+            backrun_target: Some(victim_hash.to_string()),
+            reverting_tx_hashes: None,
+            ..Default::default()
+        };
+        let req = build_48club_send_bundle_request(
+            FIXTURE_FRONT_RAW_TX_HEX,
+            FIXTURE_VICTIM_RAW_TX_HEX,
+            FIXTURE_BACK_RAW_TX_HEX,
+            1_000,
+            3,
+            &opts,
+        );
+        let b = &req["params"][0];
+        assert_eq!(b["backrunTarget"], victim_hash);
+        assert!(b.get("revertingTxHashes").is_none(), "de RONG - khong chan nao duoc phep revert");
+        assert!(b.get("48spSign").is_none(), "chua la member -> bo qua, khong bia chu ky");
+    }
+
     #[test]
     fn blockrazor_request_includes_reverting_tx_hashes_and_explicit_max_block_number() {
         let opts = BlockRazorBundleOptions {
             reverting_tx_hashes: Some(vec!["0xcccc".to_string()]),
             max_block_number: Some(123_456),
+            ..Default::default()
         };
         let req = build_blockrazor_send_mev_bundle_request(
             FIXTURE_FRONT_RAW_TX_HEX,

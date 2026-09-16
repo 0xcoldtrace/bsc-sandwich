@@ -118,6 +118,25 @@ pub enum PipelineSkip {
     /// `Unprofitable` (profit dương nhưng dưới `min_profit_bnb`) — đây là gas
     /// tự nó đã quá đắt, chưa cần tính tới profit.
     GasCap,
+    /// Cụm `bugfix-presign-and-contract-plan` (A2) — cổng TỈNH TÁO chạy NGAY
+    /// TRƯỚC khi trả `Simulated`: kết quả sim vi phạm ít nhất 1 trong 3 giới
+    /// hạn vật lý của chính pool đang xét (xem `sanity_check`):
+    /// `front_in > 10% reserve_quote`, `profit_net > 2% reserve_quote`, hoặc
+    /// `victim amount_in > reserve_quote`. Đây KHÔNG phải ngưỡng kinh tế
+    /// (khác `Unprofitable`/`GasCap`, những cái đó Chủ chỉnh được trong
+    /// `config.toml`) mà là chặn "số sim vô lý" — một sim đòi nuốt >10% pool
+    /// hoặc hứa lãi >2% pool trong 1 tx là dấu hiệu reserve/tỉ giá đang sai
+    /// chiều/sai đơn vị (đúng loại bug A1 vừa sửa), KHÔNG được phép đi tiếp
+    /// tới đường ký.
+    SanityReject,
+    /// Cụm `bugfix-presign-and-contract-plan` (A3) — `tx.from` thuộc CỤM ĐỐI
+    /// THỦ MEV đã nhận diện on-chain (xem `competitor::ClusterIndex`) và
+    /// `allow_competitor_victims=false` (ship) trong khi `live_mode` khác
+    /// `"off"`. KHÔNG phải lý do kinh tế — là lựa chọn chiến lược: front-run
+    /// một chân của bot khác là đối đầu trực tiếp với hệ thống đã có hạ tầng
+    /// bundle riêng. Ở `live_mode="off"` (paper thuần) reason này KHÔNG bao
+    /// giờ phát sinh (vẫn `Simulated` + ghi cờ, để còn số liệu).
+    CompetitorVictim,
 }
 
 impl PipelineSkip {
@@ -142,6 +161,8 @@ impl PipelineSkip {
             PipelineSkip::NonceStale => "nonce_stale",
             PipelineSkip::NonceFuture => "nonce_future",
             PipelineSkip::GasCap => "gas_cap",
+            PipelineSkip::SanityReject => "sanity_reject",
+            PipelineSkip::CompetitorVictim => "competitor_victim",
         }
     }
 }
@@ -540,6 +561,12 @@ fn evaluate_candidate(
     if U256::from(net_after_bribe as u128) < cfg.min_profit_wei() {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
+    // Cụm `bugfix-presign-and-contract-plan` (A2) — cổng tỉnh táo CUỐI CÙNG
+    // trước `Simulated` (xem `sanity_check`). Không bao giờ để một sim vô lý
+    // đi tiếp tới đường ký shadow/live.
+    if !sanity_check(quote.front_in, quote.profit_wei, amount_in, reserves.reserve_wbnb) {
+        return PipelineOutcome::Skip(PipelineSkip::SanityReject);
+    }
     PipelineOutcome::Simulated(quote)
 }
 
@@ -904,6 +931,13 @@ fn evaluate_candidate_quote(
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
 
+    // Cụm `bugfix-presign-and-contract-plan` (A2) — cùng cổng tỉnh táo của
+    // `evaluate_candidate`, áp cho CẢ 2 quote asset (mọi đại lượng đã cùng
+    // đơn vị quote của pool, không quy đổi).
+    if !sanity_check(quote_result.front_in, quote_result.profit_wei, amount_in, reserves.reserve_wbnb) {
+        return PipelineOutcome::Skip(PipelineSkip::SanityReject);
+    }
+
     PipelineOutcome::Simulated(quote_result)
 }
 
@@ -1012,6 +1046,44 @@ pub fn convert_usdt_to_bnb_wei(amount_usdt_wei: u128, reserve_wbnb: U256, reserv
         Some(v) => u128::try_from(v).unwrap_or(u128::MAX),
         None => u128::MAX,
     }
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (A2) — CỔNG TỈNH TÁO, thuần, chạy
+/// NGAY TRƯỚC khi trả `PipelineOutcome::Simulated` ở CẢ 2 nhánh quote
+/// (`evaluate_candidate` WBNB và `evaluate_candidate_quote` WBNB/USDT).
+///
+/// 3 bất đẳng thức, MỌI đại lượng cùng đơn vị QUOTE ASSET của chính pool đó
+/// (không quy đổi, không tỉ giá — nên không thể tự mình sai đơn vị):
+///
+/// 1. `front_in <= 10% * reserve_quote` — mua vào quá 10% pool là trượt giá
+///    tự sát, không phải sandwich.
+/// 2. `profit_net <= 2% * reserve_quote` — lãi ròng 1 tx không thể vượt 2%
+///    thanh khoản pool; vượt là dấu hiệu reserve/tỉ giá sai (chính xác loại
+///    bug A1: pool WBNB/USDT bị cache ĐẢO CHIỀU làm "lãi" phồng 720 lần).
+/// 3. `victim_amount_in <= reserve_quote` — victim không thể nạp vào nhiều
+///    hơn toàn bộ reserve quote của pool; lớn hơn nghĩa là decode sai đơn vị
+///    hoặc reserve đọc sai pool.
+///
+/// `reserve_quote == 0` -> `false` (không có pool thì mọi sim đều vô nghĩa).
+/// Trả `true` = AN TOÀN đi tiếp; `false` -> caller trả
+/// `PipelineSkip::SanityReject`.
+pub fn sanity_check(front_in: U256, profit_net_wei: i128, victim_amount_in: U256, reserve_quote: U256) -> bool {
+    if reserve_quote.is_zero() {
+        return false;
+    }
+    if front_in * U256::from(10u64) > reserve_quote {
+        return false;
+    }
+    if profit_net_wei > 0 {
+        let profit_u256 = U256::from(profit_net_wei as u128);
+        if profit_u256 * U256::from(50u64) > reserve_quote {
+            return false;
+        }
+    }
+    if victim_amount_in > reserve_quote {
+        return false;
+    }
+    true
 }
 
 pub fn decide_paper(victims: &VictimBook, tax_cache: &TaxCache, cfg: &Config, input: &PaperDecision) -> PipelineOutcome {
@@ -1288,6 +1360,10 @@ pub struct TxLogMeta {
     /// `docs/TASKS.md` mục nợ `hotpath-fix-then-decoder-ur`). `None` khi
     /// chưa tính tới bước đó, hoặc không quy đổi được (`u128::MAX` sentinel).
     pub amount_in_bnb_equiv: Option<String>,
+    /// Cụm `bugfix-presign-and-contract-plan` (A3) — `tx.from` có thuộc CỤM
+    /// ĐỐI THỦ đã nhận diện không (`competitor::ClusterIndex`). `None` cho
+    /// đường không đi qua `main.rs::handle_paper_tx` (test/log cũ).
+    pub victim_in_competitor_cluster: Option<bool>,
     /// Cụm `competitor-recon-and-strategy` (F-02) — bribe MÔ PHỎNG (wei BNB
     /// hoặc USDT, cùng đơn vị `profit_wei` của candidate — xem
     /// `compute_bribe_wei`), CHỈ điền cho `Simulated` (caller tự tính lại từ
@@ -1337,6 +1413,7 @@ pub fn log_outcome_v2(
                     "gas_price_gwei": meta.gas_price_gwei,
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
                     "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
+                    "victim_in_competitor_cluster": meta.victim_in_competitor_cluster,
                 }),
             );
         }
@@ -1394,6 +1471,7 @@ pub fn log_outcome_v2(
                     "profit_net_wei": q.profit_wei.to_string(),
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
                     "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
+                    "victim_in_competitor_cluster": meta.victim_in_competitor_cluster,
                     // Cum `competitor-recon-and-strategy` (F-02)
                     "bribe_wei": meta.bribe_wei,
                     "net_pos_after_bribe_wei": meta.net_pos_after_bribe_wei,
@@ -1470,6 +1548,31 @@ mod tests {
         }
     }
 
+    /// Cụm `bugfix-presign-and-contract-plan` (A2) — pool WBNB **hợp lệ về
+    /// mặt vật lý** cho các test đi tới `Simulated`: 20 WBNB (đúng
+    /// `min_reserve_wbnb=20` ship, cùng giá token như `fixture_reserves()`).
+    ///
+    /// `fixture_reserves()` (1 WBNB) KHÔNG dùng được cho các test đó nữa: lợi
+    /// nhuận sandwich V2 TĂNG ĐƠN ĐIỆU theo `front_in` (không có cực trị nội
+    /// như arbitrage thuần), nên `search_max_front_in` luôn chạm TRẦN
+    /// `max_front_bnb` — với pool 1 WBNB, trần 1.5 BNB nghĩa là "mua 150%
+    /// pool", `profit` 3.9% reserve: đúng loại số vô lý mà `sanity_check`
+    /// (A2) sinh ra để chặn. Pool 20 WBNB + victim 1 BNB cho front 1.5/20 =
+    /// 7.5% reserve, profit ~0.13 BNB = 0.65% reserve — khớp ĐÚNG dải quan
+    /// sát THẬT trên `logs/bot.jsonl` (106/106 dòng `sim.result` thật có
+    /// front ≤ 6.76% và profit ≤ 0.31% reserve).
+    fn fixture_reserves_sanity_ok() -> PoolReserves {
+        PoolReserves {
+            reserve_wbnb: U256::from(20u64) * U256::from(1_000_000_000_000_000_000u128), // 20 WBNB
+            reserve_token: U256::from(20_000_000u64) * U256::from(1_000_000_000_000_000_000u128),
+        }
+    }
+
+    /// Victim 1 BNB — 5% của `fixture_reserves_sanity_ok()`, ĐÚNG tỉ lệ
+    /// victim/pool của cặp `fixture_reserves()`+0.05 BNB trước đây (giữ
+    /// nguyên price impact, chỉ đổi QUY MÔ tuyệt đối cho hợp lý vật lý).
+    const VICTIM_1_BNB_WEI: u128 = 1_000_000_000_000_000_000;
+
     const MAX_FRONT_WEI: u64 = 1_500_000_000_000_000_000; // 1.5 BNB, khop config.toml ship
 
     /// Config test khớp `config.toml` ship, TRỪ `min_reserve_wbnb` hạ về `0`
@@ -1502,8 +1605,8 @@ mod tests {
              front_slippage_bps = 10\nback_slippage_bps = 50\n\
              pairs_vet_interval_sec = 600\npairs_require_vetted = false\n\
              gas_units_front = 160000\ngas_units_back = 140000\ngas_price_max_gwei = 10\n\
-             bribe_pct_of_profit = 0.0\nbribe_min_bnb = 0.0\nbribe_max_bnb = 0.0\nbribe_mode = \"coinbase\"\n\
-             live_mode = \"off\"\n",
+             bribe_pct_of_profit = 0.0\nbribe_min_bnb = 0.0\nbribe_max_bnb = 0.0\nbribe_mode = \"builder_transfer\"\nblockrazor_builder_eoa = \"0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20\"\nclub48_builder_eoa = \"0x4848489f0b2BEdd788c696e2D79b6b69D7484848\"\n\
+             live_mode = \"off\"\nallow_competitor_victims = false\n",
         );
         for (needle, replacement) in overrides {
             s = s.replace(needle, replacement);
@@ -2029,7 +2132,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // trong victims_ab, min 0.01
-        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let victims = victims_ab();
         let pairbook = PairBook::new(); // rong - khong lien quan wallet mode
         let mut cache = TaxCache::new();
@@ -2041,7 +2144,7 @@ mod tests {
             from,
             calldata: &calldata,
             tx_value,
-            reserves: fixture_reserves(),
+            reserves: fixture_reserves_sanity_ok(),
             pair_addr,
             current_block: 1000,
             gas_cost_wei: cfg.gas_wei(),
@@ -2063,7 +2166,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0x9999999999999999999999999999999999999999"); // KHONG trong victims_ab
-        let tx_value = U256::from(60_000_000_000_000_000u64); // 0.06 BNB >= pairs_min_swap_bnb 0.05
+        let tx_value = U256::from(VICTIM_1_BNB_WEI); // 0.06 BNB >= pairs_min_swap_bnb 0.05
         let victims = victims_ab();
         let mut pairbook = PairBook::new();
         let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
@@ -2076,7 +2179,7 @@ mod tests {
             from,
             calldata: &calldata,
             tx_value,
-            reserves: fixture_reserves(),
+            reserves: fixture_reserves_sanity_ok(),
             pair_addr,
             current_block: 1000,
             gas_cost_wei: cfg.gas_wei(),
@@ -2123,7 +2226,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0x9999999999999999999999999999999999999999"); // khong trong victims_ab
-        let tx_value = U256::from(60_000_000_000_000_000u64); // 0.06 BNB >= pairs_min_swap_bnb 0.05
+        let tx_value = U256::from(VICTIM_1_BNB_WEI); // 0.06 BNB >= pairs_min_swap_bnb 0.05
         let victims = victims_ab();
         let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         let (_dir, logger) = pairbook_test_logger();
@@ -2139,7 +2242,7 @@ mod tests {
             from,
             calldata: &calldata,
             tx_value,
-            reserves: fixture_reserves(),
+            reserves: fixture_reserves_sanity_ok(),
             pair_addr,
             current_block: 1000,
             gas_cost_wei: cfg.gas_wei(),
@@ -2190,7 +2293,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0x9999999999999999999999999999999999999999");
-        let tx_value = U256::from(60_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let victims = victims_ab();
         let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
         let (_dir, logger) = pairbook_test_logger();
@@ -2206,7 +2309,7 @@ mod tests {
             from,
             calldata: &calldata,
             tx_value,
-            reserves: fixture_reserves(),
+            reserves: fixture_reserves_sanity_ok(),
             pair_addr,
             current_block: 1000,
             gas_cost_wei: cfg_no_bribe.gas_wei(),
@@ -2353,7 +2456,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0x9999999999999999999999999999999999999999"); // khong trong victims_ab
-        let tx_value = U256::from(60_000_000_000_000_000u64); // 0.06 BNB >= pairs_min_swap_bnb 0.05
+        let tx_value = U256::from(VICTIM_1_BNB_WEI); // 0.06 BNB >= pairs_min_swap_bnb 0.05
         let victims = victims_ab();
         let pairbook = PairBook::new(); // rong - pair_addr khong khop, chi con nhanh universal
         let mut cache = TaxCache::new();
@@ -2362,7 +2465,7 @@ mod tests {
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("pair_scan_universal = false", "pair_scan_universal = true")]))
             .expect("cfg universal=true phai load duoc");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead"); // pool la, khong trong pairs.txt
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves_sanity_ok(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "universal");
         match outcome {
@@ -2437,7 +2540,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // trong victims_ab, min 0.01
-        let tx_value = U256::from(60_000_000_000_000_000u64); // >= pairs_min_swap_bnb 0.05
+        let tx_value = U256::from(VICTIM_1_BNB_WEI); // >= pairs_min_swap_bnb 0.05
         let victims = victims_ab();
         let mut pairbook = PairBook::new();
         let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
@@ -2447,7 +2550,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = crate::config::Config::from_str(&test_config_toml(&[("wallet_scan_enabled = true", "wallet_scan_enabled = false")]))
             .expect("cfg wallet_scan_enabled=false phai load duoc");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves_sanity_ok(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "pair", "wallet_scan_enabled=false phai khien tx roi xuong pair mode");
         match outcome {
@@ -2485,7 +2588,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0x9999999999999999999999999999999999999999"); // khong trong victims_ab
-        let tx_value = U256::from(60_000_000_000_000_000u64); // >= pairs_min_swap_bnb 0.05
+        let tx_value = U256::from(VICTIM_1_BNB_WEI); // >= pairs_min_swap_bnb 0.05
         let victims = victims_ab();
         let mut pairbook = PairBook::new();
         let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
@@ -2498,7 +2601,7 @@ mod tests {
             ("pair_scan_universal = false", "pair_scan_universal = true"),
         ]))
         .expect("cfg pair_scan_enabled=false + universal=true phai load duoc");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves_sanity_ok(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
         let (outcome, source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert_eq!(source, "universal", "pair_scan_enabled=false phai khien tx roi xuong universal mode");
         match outcome {
@@ -2540,7 +2643,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // trong victims_ab, min 0.01
-        let tx_value = U256::from(60_000_000_000_000_000u64); // du ca min victims (0.01) lan pairs_min_swap_bnb (0.05)
+        let tx_value = U256::from(VICTIM_1_BNB_WEI); // du ca min victims (0.01) lan pairs_min_swap_bnb (0.05)
         let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
 
         let build_pairbook = || {
@@ -2567,7 +2670,7 @@ mod tests {
             from,
             calldata: &calldata,
             tx_value,
-            reserves: fixture_reserves(),
+            reserves: fixture_reserves_sanity_ok(),
             pair_addr,
             current_block: 1000,
             gas_cost_wei: cfg_wallet_only.gas_wei(),
@@ -2659,7 +2762,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // trong victims_ab, min 0.01
-        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let victims = victims_ab();
         let pairbook = PairBook::new();
         let mut cache = TaxCache::new();
@@ -2669,7 +2772,7 @@ mod tests {
         assert!(cfg.dry_run, "test_config phai dry_run=true (khop config ship)");
         assert!(cfg.sim_engine_is_evm(), "test_config ship sim_engine=evm");
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves_sanity_ok(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, source) = decide_and_build_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &logger, &input);
         assert_eq!(source, "wallet");
@@ -2697,7 +2800,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let victims = victims_ab();
         let pairbook = PairBook::new();
         let mut cache = TaxCache::new();
@@ -2706,7 +2809,7 @@ mod tests {
         let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
         assert!(!cfg.sim_engine_is_evm());
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves_sanity_ok(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, _source) = decide_and_build_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &logger, &input);
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)));
@@ -2905,7 +3008,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0); // deadline=9_999_999_999
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let victims = victims_ab();
         let pairbook = PairBook::new();
         let mut cache = TaxCache::new();
@@ -2913,7 +3016,7 @@ mod tests {
         let risk = RiskGuard::new();
         let cfg = Config::from_str(&test_config_toml(&[("sim_engine = \"evm\"", "sim_engine = \"v2\"")])).unwrap();
         let pair_addr = addr("0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead");
-        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
+        let input = PaperDecisionV2 { from, calldata: &calldata, tx_value, reserves: fixture_reserves_sanity_ok(), pair_addr, current_block: 1000, gas_cost_wei: cfg.gas_wei() };
 
         let (outcome, _source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "expect Simulated, got {outcome:?}");
@@ -2939,13 +3042,20 @@ mod tests {
         out
     }
 
-    /// Pool quote USDT SÂU (20.000 USDT — TRÊN `min_reserve_usdt=15000` ship),
-    /// cùng tỉ lệ token như `fixture_reserves()` (chỉ scale phần quote lên
-    /// 20.000x) — dùng cho mọi test USDT cần qua khỏi `thin_liq`.
+    /// Pool quote USDT SÂU (60.000 USDT — TRÊN `min_reserve_usdt=15000` ship),
+    /// cùng tỉ lệ token như `fixture_reserves()` — dùng cho mọi test USDT cần
+    /// qua khỏi `thin_liq`.
+    ///
+    /// Cụm `bugfix-presign-and-contract-plan` (A2) — NÂNG từ 20.000 lên
+    /// 60.000 USDT: `max_front_usdt=3000` ship, mà `search_max_front_in` luôn
+    /// chạm trần (profit sandwich tăng đơn điệu theo `front_in`) — 3000/20000
+    /// = 15% pool, vi phạm cổng `sanity_check` "front_in ≤ 10% reserve".
+    /// 3000/60.000 = 5%, khớp ĐÚNG dải THẬT quan sát trên `logs/bot.jsonl`
+    /// (front 3000 USDT trên pool 52.270 USDT = 5.7%).
     fn usdt_deep_reserves() -> PoolReserves {
         PoolReserves {
-            reserve_wbnb: U256::from(20_000u64) * U256::from(1_000_000_000_000_000_000u128), // 20.000 USDT (field tai dung, xem doc-comment QuoteAsset)
-            reserve_token: U256::from(1_000_000u64) * U256::from(1_000_000_000_000_000_000u128),
+            reserve_wbnb: U256::from(60_000u64) * U256::from(1_000_000_000_000_000_000u128), // 60.000 USDT (field tai dung, xem doc-comment QuoteAsset)
+            reserve_token: U256::from(3_000_000u64) * U256::from(1_000_000_000_000_000_000u128),
         }
     }
 
@@ -3165,14 +3275,14 @@ mod tests {
     fn decide_paper_quote_wbnb_branch_still_works_when_usdt_disabled() {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
-        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let mut cache = TaxCache::new();
         cache.insert(token, TaxMeasurement::manual(0, 995));
         let cfg = test_config(); // scan_quote_usdt=false ship
         let pairbook = PairBook::new();
         let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
         let (outcome, tag) =
-            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, tx_value, fixture_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei());
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, tx_value, fixture_reserves_sanity_ok(), 1000, cfg.gas_wei(), cfg.gas_wei());
         assert_eq!(tag, "wbnb");
         match outcome {
             PipelineOutcome::Simulated(q) => assert!(q.profit_wei > 0),
@@ -3314,7 +3424,7 @@ mod tests {
         let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
         let calldata = build_eth_for_tokens(token, 0);
         let from = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let tx_value = U256::from(50_000_000_000_000_000u64);
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
         let victims = victims_ab();
         let pairbook = PairBook::new();
         let mut cache = TaxCache::new();
@@ -3326,13 +3436,125 @@ mod tests {
             from,
             calldata: &calldata,
             tx_value,
-            reserves: fixture_reserves(),
+            reserves: fixture_reserves_sanity_ok(),
             pair_addr,
             current_block: 1000,
             gas_cost_wei: cfg.gas_wei(),
         };
         let (outcome, _source) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &input);
         assert!(matches!(outcome, PipelineOutcome::Simulated(_)), "gas_cost_wei == tran (khong vuot) khong duoc gas_cap, got {outcome:?}");
+    }
+
+    // ===== Cụm `bugfix-presign-and-contract-plan` (A2) — cổng tỉnh táo =====
+
+    /// ĐẠT CẦN DÁN (A2) — 3 bất đẳng thức của `sanity_check`, mỗi cái test
+    /// RIÊNG ở đúng biên (bằng = pass, vượt 1 wei = fail).
+    #[test]
+    fn sanity_check_three_limits_each_at_its_boundary() {
+        let reserve = U256::from(1_000u64);
+        // (1) front_in <= 10% reserve
+        assert!(sanity_check(U256::from(100u64), 0, U256::ZERO, reserve), "front = dung 10% reserve -> pass");
+        assert!(!sanity_check(U256::from(101u64), 0, U256::ZERO, reserve), "front > 10% reserve -> reject");
+        // (2) profit_net <= 2% reserve
+        assert!(sanity_check(U256::ZERO, 20, U256::ZERO, reserve), "profit = dung 2% reserve -> pass");
+        assert!(!sanity_check(U256::ZERO, 21, U256::ZERO, reserve), "profit > 2% reserve -> reject");
+        // (3) victim amount_in <= reserve
+        assert!(sanity_check(U256::ZERO, 0, reserve, reserve), "victim = dung reserve -> pass");
+        assert!(!sanity_check(U256::ZERO, 0, reserve + U256::from(1u64), reserve), "victim > reserve -> reject");
+        // reserve = 0 -> khong co pool, moi sim vo nghia
+        assert!(!sanity_check(U256::ZERO, 0, U256::ZERO, U256::ZERO));
+        // profit AM (lo) khong bi cong (2) chan - de cac gate kinh te phia
+        // truoc tu quyet dinh, sanity chi chan so VO LY.
+        assert!(sanity_check(U256::from(50u64), -999_999, U256::from(10u64), reserve));
+    }
+
+    /// ĐẠT CẦN DÁN (A2) — CHỨNG MINH cổng thật sự chặn trên đường thật:
+    /// CÙNG victim/config, chỉ đổi ĐỘ SÂU POOL. Pool 20 WBNB (thật) ->
+    /// `Simulated`; pool 1 WBNB (`fixture_reserves()`, front 1.5 BNB = 150%
+    /// pool) -> `sanity_reject`, KHÔNG BAO GIỜ tới đường ký.
+    #[test]
+    fn decide_paper_v2_shallow_pool_front_over_10pct_reserve_is_sanity_reject() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_eth_for_tokens(token, 0);
+        let from = addr("0xdddddddddddddddddddddddddddddddddddddddd");
+        let tx_value = U256::from(VICTIM_1_BNB_WEI);
+        let victims = victims_ab();
+        let pair_addr = addr("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, wbnb());
+        let cache = TaxCache::new();
+        let risk = RiskGuard::new();
+        let cfg = test_config();
+
+        let deep = PaperDecisionV2 {
+            from,
+            calldata: &calldata,
+            tx_value,
+            reserves: fixture_reserves_sanity_ok(),
+            pair_addr,
+            current_block: 1000,
+            gas_cost_wei: cfg.gas_wei(),
+        };
+        let (outcome_deep, _) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &deep);
+        let q = match outcome_deep {
+            PipelineOutcome::Simulated(q) => q,
+            other => panic!("pool 20 WBNB (hop ly) phai Simulated, got {other:?}"),
+        };
+        println!(
+            "pool 20 WBNB: front_in={} wei ({:.2}% reserve) profit={} wei ({:.4}% reserve) -> Simulated",
+            q.front_in,
+            q.front_in.to::<u128>() as f64 / 20e18 * 100.0,
+            q.profit_wei,
+            q.profit_wei as f64 / 20e18 * 100.0
+        );
+
+        let shallow = PaperDecisionV2 { reserves: fixture_reserves(), ..deep };
+        let (outcome_shallow, _) = decide_paper_v2(&victims, &pairbook, &cache, &cfg, &risk, &shallow);
+        assert!(
+            matches!(outcome_shallow, PipelineOutcome::Skip(PipelineSkip::SanityReject)),
+            "pool 1 WBNB + front tran 1.5 BNB = 150% pool -> phai sanity_reject, got {outcome_shallow:?}"
+        );
+    }
+
+    /// ĐẠT CẦN DÁN (A2) — nhánh QUOTE (USDT) cũng có cổng: cùng victim, pool
+    /// 60.000 USDT -> `Simulated`; pool 20.000 USDT (front 3000 = 15%) ->
+    /// `sanity_reject`.
+    #[test]
+    fn decide_paper_quote_usdt_shallow_pool_is_sanity_reject() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let calldata = build_tokens_for_tokens(USDT_VICTIM_1000_WEI, 0, usdt(), token);
+        let cache = TaxCache::new();
+        let cfg = cfg_usdt_enabled(&[]);
+        let pair_addr = addr("0xf00df00df00df00df00df00df00df00df00df00d");
+        let mut pairbook = PairBook::new();
+        pairbook.insert_test_vetted_pair(pair_addr, usdt());
+
+        let (ok_outcome, tag) = decide_paper_quote(
+            &pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, usdt_deep_reserves(), 1000, cfg.gas_wei(), cfg.gas_wei(),
+        );
+        assert_eq!(tag, "usdt");
+        assert!(matches!(ok_outcome, PipelineOutcome::Simulated(_)), "pool 60k USDT phai Simulated, got {ok_outcome:?}");
+
+        let shallow = PoolReserves {
+            reserve_wbnb: U256::from(20_000u64) * U256::from(1_000_000_000_000_000_000u128),
+            reserve_token: U256::from(1_000_000u64) * U256::from(1_000_000_000_000_000_000u128),
+        };
+        let (bad_outcome, _) =
+            decide_paper_quote(&pairbook, pair_addr, &cache, &cfg, &calldata, U256::ZERO, shallow, 1000, cfg.gas_wei(), cfg.gas_wei());
+        assert!(
+            matches!(bad_outcome, PipelineOutcome::Skip(PipelineSkip::SanityReject)),
+            "front 3000 USDT tren pool 20.000 USDT = 15% -> phai sanity_reject, got {bad_outcome:?}"
+        );
+    }
+
+    /// ĐẠT CẦN DÁN (A2) — victim nạp vào NHIỀU HƠN toàn bộ reserve quote
+    /// (dấu hiệu decode sai đơn vị / đọc sai pool) -> `sanity_reject` chứ
+    /// KHÔNG được trở thành candidate béo bở.
+    #[test]
+    fn sanity_check_rejects_victim_amount_bigger_than_whole_pool() {
+        let reserve = U256::from(20u64) * U256::from(1_000_000_000_000_000_000u128); // 20 WBNB
+        let victim = U256::from(500u64) * U256::from(1_000_000_000_000_000_000u128); // 500 BNB (fixture cu)
+        assert!(!sanity_check(U256::from(1u64), 1, victim, reserve), "victim 500 BNB vao pool 20 BNB la vo ly");
     }
 
     // ===== Cụm `econ-truth-latency-vps` (mục 1) — convert_usdt_to_bnb_wei =====

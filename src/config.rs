@@ -236,12 +236,34 @@ pub struct Config {
     /// F-02 — trần bribe (BNB) — `0` = không trần (chỉ dùng `bribe_pct_of_profit`
     /// + sàn). Ship `0.01`.
     pub bribe_max_bnb: f64,
-    /// F-02 — cơ chế bribe MÔ PHỎNG (CHƯA gửi thật, xem `docs/STATE.md` mục
-    /// `competitor-recon-and-strategy`): `"coinbase"` (chuyển thẳng BNB cho
-    /// `block.coinbase`, kiểu 48 Club/BlockRazor builder) hoặc
-    /// `"gaspriority"` (tăng `maxPriorityFeePerGas`, kiểu public mempool ưu
-    /// tiên gas). Giá trị khác 2 chuỗi này = FAIL LOAD (cùng khuôn `sim_engine`).
+    /// F-02 — cơ chế bribe: `"builder_transfer"` hoặc `"gaspriority"`.
+    ///
+    /// **Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN,
+    /// 2026-09-16) — ĐỔI TÊN `"coinbase"` → `"builder_transfer"`, và đó KHÔNG
+    /// chỉ là đổi tên**: docs chính thức BlockRazor (Chủ dán) xác nhận bribe
+    /// trên BSC đi tới **ví EOA của builder**
+    /// (`relay::BLOCKRAZOR_BUILDER_EOA` = `0x1266C6bE…dD9c5F20`), KHÔNG PHẢI
+    /// `block.coinbase` như mô hình Flashbots/Ethereum mà cụm
+    /// `competitor-recon-and-strategy` đã giả định. Transfer BNB đó nằm
+    /// TRONG CHÂN BACK của bundle. Giá trị `"coinbase"` cũ = FAIL LOAD với
+    /// thông báo chỉ rõ tên mới (không âm thầm nhận, vì ngữ nghĩa đã khác).
+    ///
+    /// `"gaspriority"` (tăng `maxPriorityFeePerGas`) giữ nguyên ý nghĩa.
     pub bribe_mode: String,
+
+    /// Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN) — ví EOA
+    /// builder của **BlockRazor** nhận bribe khi `bribe_mode="builder_transfer"`.
+    /// Ship = địa chỉ pin trong docs BlockRazor (`relay::BLOCKRAZOR_BUILDER_EOA`,
+    /// bảng đối chiếu trong `DEX_REGISTRY.md`). Mỗi relay có ví builder KHÁC
+    /// NHAU nên là 2 field riêng. Không phải address 20 byte hex = FAIL LOAD.
+    pub blockrazor_builder_eoa: String,
+
+    /// Ví **Builder Control EOA của 48 Club Puissant** nhận bribe (docs chính
+    /// thức Chủ dán 2026-09-16: `relay::CLUB48_BUILDER_EOA` =
+    /// `0x4848489f…D7484848`). Xếp hạng bundle của 48 Club =
+    /// `0.9 × gas fee của tx unique + BNB chuyển tới EOA này` → **ưu tiên
+    /// nhét bribe vào transfer**, giữ gas ở mức tối thiểu 0.05 gwei.
+    pub club48_builder_eoa: String,
 
     /// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — chế độ
     /// thực thi: `"off"` (ship, KHÔNG có gì khác paper mode hiện có — không
@@ -254,11 +276,31 @@ pub struct Config {
     /// = FAIL LOAD (cùng khuôn `sim_engine`/`bribe_mode`).
     pub live_mode: String,
 
+    /// Cụm `bugfix-presign-and-contract-plan` (A3) — cho phép coi tx của CỤM
+    /// ĐỐI THỦ đã nhận diện (xem `competitor::ClusterIndex`) là nạn nhân hợp
+    /// lệ hay không. Ship `false`: khi `live_mode` khác `"off"` (shadow/live
+    /// — tức đã có khả năng KÝ thật), candidate có `from` thuộc cụm sẽ KHÔNG
+    /// được `Simulated` mà bị skip `competitor_victim`. Ở `live_mode="off"`
+    /// (paper thuần) cờ này KHÔNG chặn gì — vẫn `Simulated` và vẫn ghi cờ
+    /// `victim_in_competitor_cluster` vào `sim.result`, để `/api/econ` đếm
+    /// được nhóm này là bao nhiêu phần trăm cơ hội (nếu chặn ngay ở paper thì
+    /// mất hẳn số liệu để Chủ quyết định).
+    pub allow_competitor_victims: bool,
+
     /// Mốc lần reload gần nhất — KHÔNG đọc/ghi từ `config.toml`
     /// (`#[serde(skip)]`, mặc định `None`). Dùng bởi `reload_if_due`, cùng
     /// quy ước `VictimBook::last_reload` (`src/victims.rs`).
     #[serde(skip)]
     pub last_reload: Option<Instant>,
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (BỔ SUNG GIỮA PHIÊN) — kiểm 1
+/// chuỗi có phải address 20 byte hex (`0x` + 40 ký tự hex) không. THUẦN,
+/// không phụ thuộc `alloy` (giữ `config.rs` không kéo thêm dependency chỉ để
+/// validate 1 field).
+pub fn is_address_20_bytes(s: &str) -> bool {
+    let t = s.trim();
+    t.len() == 42 && t.starts_with("0x") && t[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[derive(Debug)]
@@ -371,9 +413,24 @@ impl Config {
         }
         // Cụm `competitor-recon-and-strategy` (F-02) — cùng khuôn `sim_engine`:
         // gõ sai `bribe_mode` fail load rõ ràng, không âm thầm rơi về mặc định.
-        if self.bribe_mode != "coinbase" && self.bribe_mode != "gaspriority" {
+        // Cum BO SUNG GIUA PHIEN - "coinbase" CU khong con hop le (ngu nghia
+        // doi han: bribe di toi vi EOA builder, khong phai block.coinbase).
+        if self.bribe_mode == "coinbase" {
+            return Err(ConfigError::InvalidNumber(
+                "bribe_mode = \"coinbase\" da doi thanh \"builder_transfer\" (docs BlockRazor 2026-09-16: bribe la transfer BNB toi VI EOA cua builder, KHONG phai block.coinbase) — sua config.toml".to_string(),
+            ));
+        }
+        for (name, value) in [
+            ("blockrazor_builder_eoa", &self.blockrazor_builder_eoa),
+            ("club48_builder_eoa", &self.club48_builder_eoa),
+        ] {
+            if !is_address_20_bytes(value) {
+                return Err(ConfigError::InvalidNumber(format!("{name} phai la address 20 byte hex (nhan duoc {value:?})")));
+            }
+        }
+        if self.bribe_mode != "builder_transfer" && self.bribe_mode != "gaspriority" {
             return Err(ConfigError::InvalidNumber(format!(
-                "bribe_mode phai la \"coinbase\" hoac \"gaspriority\" (nhan duoc {:?})",
+                "bribe_mode phai la \"builder_transfer\" hoac \"gaspriority\" (nhan duoc {:?})",
                 self.bribe_mode
             )));
         }
@@ -734,8 +791,11 @@ gas_price_max_gwei = 10
 bribe_pct_of_profit = 0.0
 bribe_min_bnb = 0.0
 bribe_max_bnb = 0.0
-bribe_mode = "coinbase"
+bribe_mode = "builder_transfer"
+blockrazor_builder_eoa = "0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20"
+club48_builder_eoa = "0x4848489f0b2BEdd788c696e2D79b6b69D7484848"
 live_mode = "off"
+allow_competitor_victims = false
 "#
         .to_string()
     }

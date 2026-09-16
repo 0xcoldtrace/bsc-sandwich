@@ -357,7 +357,23 @@ async fn main() -> anyhow::Result<()> {
         "khong xac dinh qua /proc/version (co the VPS/Linux thuong)"
     });
 
-    let urls = transport::filter_read_urls(transport::collect_rpc_urls_from_env("BSC_HTTP"));
+    // Cum `bugfix-presign-and-contract-plan` (A5) - trinh sat la viec NEN:
+    // uu tien `BSC_HTTP_BG`; rong thi lay 3 URL CUOI cua `BSC_HTTP` (khong
+    // dung URL dau - do la duong nong cua bot neu bot dang chay song song).
+    let bg = transport::filter_read_urls(transport::collect_rpc_urls_from_env("BSC_HTTP_BG"));
+    let urls = if !bg.is_empty() {
+        println!("(A5) dung BSC_HTTP_BG: {} URL", bg.len());
+        bg
+    } else {
+        let all = transport::filter_read_urls(transport::collect_rpc_urls_from_env("BSC_HTTP"));
+        if all.len() >= 2 {
+            let start = all.len().saturating_sub(3).max(1);
+            println!("(A5) BSC_HTTP_BG rong -> dung {} URL CUOI cua BSC_HTTP (bo qua URL dau = duong nong)", all.len() - start);
+            all[start..].to_vec()
+        } else {
+            all
+        }
+    };
     if urls.is_empty() {
         println!("MISSING: BSC_HTTP rong trong .env — khong the trinh sat that. Dung: set -a; . .env; set +a; cargo run --release --bin competitor_recon");
         return Ok(());

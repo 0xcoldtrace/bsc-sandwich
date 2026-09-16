@@ -1,0 +1,73 @@
+# A8 — 2 dia chi nhan USDT trong tx 0x7574d418…cc8bc (block 121919996)
+# Cum `bugfix-presign-and-contract-plan`, may WSL, 2026-09-16.
+# RPC: https://bsc-dataseed1.bnbchain.org (eth_chainId = 0x38) va
+#      https://rpc-bsc.48.club (cho eth_getLogs range lon).
+# CHI DOC — khong gui tx nao.
+
+=== 1. Receipt tx goc ===
+block = 121919996 (KHOP so lenh ghi) tx_index = 2 status = 0x1 gasUsed = 94089
+from = 0xb406021e07b31e1f7850fcccd7076094f18d07ef
+to   = 0xa739dfab40ef6585f1174fce90ec96330669758c
+selector = 0x5aab2274  gasPrice = 0.05 gwei  value = 0.0 BNB
+4 log: 2 x Transfer(USDT) + 2 x Approval(USDT)
+  Transfer USDT 0xb406… -> 0x3164240e9dd40c69cf6ffefde66fbb1ed16fa7ae  306.900000 USDT
+  Transfer USDT 0xb406… -> 0x40cc5efd0cf20f304300104b342778dfbdb5e5a5   19.680000 USDT
+
+=== 2. DIA CHI DAY DU (tu topic2) — CHINH LA 2 DIA CHI CHU HOI O BAOCAO41 ===
+0x3164240e…Ed16Fa7Ae = 0x3164240e9dd40c69cf6ffefde66fbb1ed16fa7ae
+0x40cC5EfD…fBdb5E5A5 = 0x40cc5efd0cf20f304300104b342778dfbdb5e5a5
+(2 dia chi nay o BAOCAO41 bi rut gon nen "khong du ky tu de tra RPC" —
+ nay tim ra day du qua chinh receipt Chu chi dinh.)
+
+=== 3. CO PHAI BUILDER/VALIDATOR FEE KHONG? KHONG ===
+block 121919996 miner/coinbase = 0x4d15d9bcd0c2f33e7510c0de8b42697ca558234a
+  0x3164240e… == miner? False
+  0x40cc5efd… == miner? False
+eth_getCode: ca 2 deu = 0 byte (EOA, khong phai contract)
+nonce: 0x3164240e… = 430 ; 0x40cc5efd… = 342 (co tu gui tx, khong phai vi thu dong)
+
+=== 4. VAI TRO THAT: VI "BURNER" GIAO DICH, KHONG PHAI VI FEE/CHIA LAI ===
+Quet Transfer(USDT) quanh block goc [121916996..121922996] (~5 gio):
+
+0x3164240e9dd40c69cf6ffefde66fbb1ed16fa7ae
+  NHAN: 2 lan / 326.34 USDT / tu DUNG 1 dia chi
+     <- 0xb406021e07b31e1f7850fcccd7076094f18d07ef  x2   (SEED kho USDT)
+  GUI : 2 lan / 326.34 USDT / toi 2 dia chi
+     -> 0xdfe23efbdb03ea985c2423eb916fca8cae1d02ef  x1
+     -> 0x7fd71204a755f128d788ee1cd89b9cee8b8812e8  x1
+  balanceOf(USDT) hien tai = 0.0000 USDT
+
+0x40cc5efd0cf20f304300104b342778dfbdb5e5a5
+  NHAN: 1 lan / 19.68 USDT / tu DUNG 1 dia chi
+     <- 0xb406021e07b31e1f7850fcccd7076094f18d07ef  x1   (SEED kho USDT)
+  GUI : 1 lan / 19.68 USDT / toi 1 dia chi
+     -> 0x7fd71204a755f128d788ee1cd89b9cee8b8812e8  x1
+  balanceOf(USDT) hien tai = 0.0000 USDT
+
+VAO = RA DUNG BANG NHAU (326.34 / 326.34 ; 19.68 / 19.68) -> KHONG giu lai
+dong nao => KHONG PHAI vi thu phi, KHONG PHAI vi chia lai.
+
+=== 5. 2 DIA CHI NHAN TIEN TU CHUNG LA POOL V2 (khong phai vi) ===
+0xdfe23efbdb03ea985c2423eb916fca8cae1d02ef:
+   code = 14981 byte
+   token0 = 0x01fbed06a70eb1b4a0b43dbc6a94f99944cd7777 (BNC)
+   token1 = 0x55d398326f99059ff775485246999027b3197955 (USDT)
+   factory = 0xca143ce32fe78f1f7019d7d551a6402fc5350c73  <-- V2 Factory DA PIN
+0x7fd71204a755f128d788ee1cd89b9cee8b8812e8:
+   code = 14981 byte
+   token0 = 0x55d398326f99059ff775485246999027b3197955 (USDT)
+   token1 = 0xb391e9bef634adf52a0972fbd0943935e6097777
+   factory = 0xca143ce32fe78f1f7019d7d551a6402fc5350c73  <-- V2 Factory DA PIN
+
+=== 6. KET LUAN ===
+(a) 2 dia chi = VI "BURNER" DUNG MOT LAN cua chinh cum doi thu, y het 3 vi
+    trong tx 0x4916caa0f1… (BAOCAO41). Duoc kho 0xB406 cap von, chuyen TOAN BO
+    thang vao POOL roi goi pair.swap(), xong thi so du ve 0.
+(b) Vi chuyen USDT THANG VAO PAIR (khong qua Router) — dung mau "transfer +
+    pair.swap()" ma docs/CONTRACT_DESIGN.md muc B2 de xuat de tiet kiem gas.
+    Day la XAC NHAN DOC LAP rang thiet ke do la thuc te dang chay.
+(c) Cau hoi phu cua lenh ("neu la fee: ti le fee/lai tren 100 tx cum ->
+    moc bribe_pct_of_profit") KHONG AP DUNG — khong co khoan fee nao de do.
+    Muon do bribe THAT cua cum nay can `debug_traceTransaction` (internal
+    transfer BNB), method nay KHONG co tren RPC cong khai dang dung (xac nhan
+    BAOCAO41). Ghi MISSING, khong suy dien so.

@@ -190,3 +190,54 @@ chép, mà là giới hạn lịch sử git thật của repo).
     nhiều pool "nóng" đồng thời để có tín hiệu thống kê rõ) — mục tiêu
     "p95<500ms giữ vững với 126 pool" CHƯA đối chiếu số cụ thể.
   - `resolve_reserves_cached`/USDT nhánh chưa có nonce gate (chỉ WBNB).
+
+## Cụm `bugfix-presign-and-contract-plan` (BAOCAO42, 2026-09-16)
+
+### ĐÃ XONG
+
+- **A1** — nguyên nhân gốc "econ USDT→BNB sai chiều": `ReserveCache` khoá
+  thiếu `quote` nên 1 pool hỏi bằng 2 quote asset dùng chung entry (chiều
+  ĐẢO). Sửa khoá `(pair, quote, block)` + lớp phòng thủ `rate_rejected` ở
+  `/api/econ`. Xem `docs/STATE.md` mục A1.
+- **A2** — cổng `sanity_reject` trước `Simulated` (3 bất đẳng thức theo
+  reserve của chính pool). 106/106 dòng `sim.result` THẬT đều qua.
+- **A3** — `src/competitor.rs` + task WS nhận diện ví "burner" được cụm đối
+  thủ cấp vốn; cờ `victim_in_competitor_cluster`; config
+  `allow_competitor_victims` (ship false, chỉ chặn khi `live_mode != "off"`).
+- **A4** — pre-sign KHÔNG fork: 4 cổng đọc từ bộ nhớ (`MinedTxIndex`,
+  `SelfNonceCache`, `ReserveCache`, `PairBook`), 0 RPC; vet 300 s cho pool
+  nóng.
+- **A5** — `BSC_HTTP_BG` + `bg_provider` cho mọi việc nền; nhận diện thêm lỗi
+  `-32602 archive/personal token` để đổi URL.
+- **A6** — `/api/econ`: `buckets_front_in_bnb`, `capital_for_80pct_profit`,
+  `competitor`, `top_pools[].competitor_touched`, `rate_rejected`.
+- **BỔ SUNG GIỮA PHIÊN** — relay BlockRazor Block Builder (auth) + 48 Club;
+  `bribe_mode="builder_transfer"` (bribe = transfer BNB tới VÍ EOA BUILDER,
+  KHÔNG phải `block.coinbase`); 2 ví builder pin trong `DEX_REGISTRY.md`.
+- **PHẦN B** — `docs/CONTRACT_DESIGN.md` (thiết kế B1–B7, KHÔNG code, KHÔNG
+  deploy).
+
+### CÒN NỢ (mới, của chính cụm này)
+
+- **`shadow.sim` chưa hỗ trợ quote USDT** — `sim_evm::simulate_sandwich` dựng
+  chân front bằng `swapExactETHForTokens*` (native BNB). Nhánh USDT ghi
+  `skipped:"usdt_not_supported_by_simulate_sandwich"`. Muốn có `profit_sim`
+  cho USDT phải thêm biến thể token→token (approve + `swapExactTokensForTokens`)
+  trong `sim_evm.rs`.
+- **`bribe_mode="builder_transfer"` mới chỉ TÍNH + LOG** — chưa có leg chuyển
+  BNB tới ví EOA builder. Leg đó phải nằm TRONG chân back và chỉ chạy sau khi
+  contract kiểm lãi (`docs/CONTRACT_DESIGN.md` B2/B3) ⇒ chờ cụm 6.
+- **Tầng gửi relay + tra trạng thái bundle 48 Club → `RiskGuard::record_result`**
+  vẫn chưa tồn tại (`relay.rs` giữ charter "không network").
+- **`vet_stale` ở đầu mỗi lần chạy**: vet nền cần vài phút để phủ hết 126 pool
+  nên các candidate sớm nhất luôn abort `vet_stale`. Có thể nạp lại
+  `state/pairs_vetted.json` lúc boot (đã ghi sẵn file này) để cổng (a) ấm ngay
+  — chưa làm.
+- **`pair.vet_error "missing trie node"`** trên các node public không lưu đủ
+  state: một phần pool không bao giờ vet được qua RPC hiện có → không bao giờ
+  ký được cho pool đó. Cần node archive riêng (hoặc `BSC_HTTP_SIM` trả phí).
+- **`CompetitorVictim` + `SanityReject` chưa có trong bảng skip của CLAUDE.md**
+  — 2 reason mới do lệnh A2/A3 yêu cầu; Chủ cần cập nhật CLAUDE.md (phiên này
+  KHÔNG được sửa file đó).
+- **Dashboard tĩnh** (`web/app.js`) vẫn chưa vẽ các khối mới (`shadow`,
+  `bribe`, `competitor`, `buckets_front_in_bnb`) — API đã đủ.

@@ -5,6 +5,7 @@
 //! `rpc-probe`. Không đổi nội dung bất kỳ module nào — chỉ đổi nơi khai báo.
 
 pub mod calldata;
+pub mod competitor;
 pub mod config;
 pub mod decoder;
 pub mod executor;

@@ -128,6 +128,15 @@ pub struct AppStateInner {
     /// `-32000 not supported` cho vài method cần cho fork). `None` khi chưa
     /// kết nối được URL nào trong `BSC_HTTP_SIM`/fallback `BSC_HTTP`.
     pub sim_provider: RwLock<Option<DynProvider>>,
+    /// Cụm `bugfix-presign-and-contract-plan` (A5) — provider RPC **NỀN**
+    /// (`BSC_HTTP_BG`, mặc định = 3 URL CUỐI của `BSC_HTTP`): dùng bởi
+    /// `spawn_shadow_sign_task` (pre-sign/nonce/gas), `spawn_post_simulated_tracker`
+    /// (`compete.check` + `decision_vs_mined_block`) và `spawn_victim_validator`.
+    /// Tách khỏi `provider` (đường nóng `handle_paper_tx`, luôn ưu tiên URL
+    /// ĐẦU danh sách) sau khi BAOCAO41 đo được p95 `seen_to_decision` tăng
+    /// 321→356 ms khi thêm task nền dùng chung pool. `None` khi chưa kết nối
+    /// được URL nền nào (caller rơi về `provider`, có nhãn `hot_fallback`).
+    pub bg_provider: RwLock<Option<DynProvider>>,
     /// Cụm `econ-truth-latency-vps` (mục 1) — dedup hash tx DÙNG CHUNG giữa 3
     /// nguồn tx (WS/txpool/inject), đóng khoảng hở khi WS fallback sang
     /// txpool giữa chừng (xem `transport::SeenHashSet`).
@@ -142,6 +151,26 @@ pub struct AppStateInner {
     /// shadow). Nạp 1 LẦN lúc boot (không hot-reload — đổi `PRIVATE_KEY`
     /// cần khởi động lại bot, khác các field `config.toml` khác).
     pub shadow_wallet: Option<(Address, alloy::network::EthereumWallet)>,
+    /// Cụm `bugfix-presign-and-contract-plan` (A4) — "mempool view" của bot:
+    /// hash tx của 3 block gần nhất, nạp bởi `main.rs::mined_and_nonce_prefetch_task`
+    /// (1 `eth_getBlockByNumber` không-full mỗi block, RPC NỀN). Đường ký
+    /// shadow dùng cache này thay cho `eth_getTransactionReceipt(victim)`.
+    pub mined_index: RwLock<crate::transport::MinedTxIndex>,
+    /// Cụm `bugfix-presign-and-contract-plan` (A4) — nonce ví shadow prefetch
+    /// mỗi block (cùng task trên), để đường ký không gọi
+    /// `eth_getTransactionCount`.
+    pub self_nonce: RwLock<crate::transport::SelfNonceCache>,
+    /// Cụm `bugfix-presign-and-contract-plan` (A3) — cụm địa chỉ ĐỐI THỦ đã
+    /// nhận diện (3 seed + ví nhận Transfer quote từ seed trong block hiện
+    /// tại/trước), xem `competitor::ClusterIndex`.
+    pub competitor_cluster: RwLock<crate::competitor::ClusterIndex>,
+    /// Cụm `bugfix-presign-and-contract-plan` (A4) — `pair_addr -> lần cuối
+    /// pool đó thực sự có candidate đi tới bước sim`. `pairs_vet_task` dùng
+    /// để rút chu kỳ vet xuống `HOT_VET_INTERVAL_SEC` (300 s) cho ĐÚNG các
+    /// pool đang nóng, thay vì vet đều mọi pool theo `pairs_vet_interval_sec`
+    /// (600 s) — kết quả vet TƯƠI là điều kiện (a) của đường ký shadow, nên
+    /// pool đang có cơ hội phải được đo lại thường xuyên hơn.
+    pub candidate_seen: RwLock<std::collections::HashMap<Address, std::time::Instant>>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -276,6 +305,12 @@ async fn shadow_status(State(state): State<AppState>) -> Json<Value> {
 
     let mut bundles: Vec<Value> = Vec::new();
     let mut aborts: Vec<Value> = Vec::new();
+    // Cụm `bugfix-presign-and-contract-plan` (A4) — `tx.abort` giờ mang lý do
+    // CỤ THỂ (`vet_stale`/`reserve_stale`/`victim_already_mined`/
+    // `mined_index_cold`/`nonce_not_prefetched`/`sign_failed_*`) thay cho 1
+    // chữ `pre_sign_revet_failed` chung. Lọc theo tên cũ sẽ trả 0 abort dù
+    // thực tế có — đếm THEO TỪNG lý do.
+    let mut abort_by_reason: HashMap<String, u64> = HashMap::new();
     for line in &all_lines[start..] {
         let Ok(row) = serde_json::from_str::<Value>(line) else { continue };
         if row["ts"].as_str().map(|t| t < boot_ts.as_str()).unwrap_or(true) {
@@ -283,12 +318,24 @@ async fn shadow_status(State(state): State<AppState>) -> Json<Value> {
         }
         match row["event"].as_str() {
             Some("bundle.shadow") => bundles.push(row),
-            Some("tx.abort") if row["reason"] == "pre_sign_revet_failed" => aborts.push(row),
+            Some("tx.abort") => {
+                if let Some(r) = row["reason"].as_str() {
+                    *abort_by_reason.entry(r.to_string()).or_insert(0) += 1;
+                }
+                aborts.push(row);
+            }
             _ => {}
         }
     }
     let bundle_count = bundles.len();
     let abort_count = aborts.len();
+    // Tỉ lệ "ký kịp" — chính là điều kiện go/no-go #1 của
+    // `docs/CONTRACT_DESIGN.md` B7 (≥ 50%).
+    let sign_rate_pct = if bundle_count + abort_count > 0 {
+        bundle_count as f64 / (bundle_count + abort_count) as f64 * 100.0
+    } else {
+        0.0
+    };
     bundles.reverse();
     aborts.reverse();
     bundles.truncate(20);
@@ -299,7 +346,9 @@ async fn shadow_status(State(state): State<AppState>) -> Json<Value> {
         "shadow_armed": shadow_self_address.is_some(),
         "shadow_self_address": shadow_self_address,
         "bundle_shadow_count": bundle_count,
-        "pre_sign_revet_failed_count": abort_count,
+        "abort_count": abort_count,
+        "abort_by_reason": abort_by_reason,
+        "sign_rate_pct": sign_rate_pct,
         "recent_bundles": bundles,
         "recent_aborts": aborts,
         "note": "shadow mode KHONG gui/broadcast - khong co PnL THAT (chua co ket qua on-chain nao de biet lai/lo that), day chi la hoat dong KY duoc",
@@ -365,6 +414,13 @@ pub struct FunnelCounters {
     nonce_future: AtomicU64,
     /// Cụm `real-economics-mode2` (F-03) — `PipelineSkip::GasCap`.
     gas_cap: AtomicU64,
+    /// Cụm `bugfix-presign-and-contract-plan` (A2) — `PipelineSkip::SanityReject`
+    /// (cổng tỉnh táo trước `Simulated`, xem `pipeline::sanity_check`).
+    sanity_reject: AtomicU64,
+    /// Cụm `bugfix-presign-and-contract-plan` (A3) — candidate bị chặn vì
+    /// `from` (hoặc ví vừa nhận quote từ) thuộc CỤM ĐỐI THỦ đã nhận diện
+    /// (`allow_competitor_victims=false` + `live_mode != "off"`).
+    competitor_victim: AtomicU64,
 }
 
 impl FunnelCounters {
@@ -432,6 +488,12 @@ impl FunnelCounters {
     pub fn record_gas_cap(&self) {
         self.gas_cap.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn record_sanity_reject(&self) {
+        self.sanity_reject.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn record_competitor_victim(&self) {
+        self.competitor_victim.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// Đọc snapshot HIỆN TẠI (không reset) — dùng cho `GET /api/funnel`.
     pub fn snapshot(&self) -> Value {
@@ -455,6 +517,8 @@ impl FunnelCounters {
             "nonce_stale": self.nonce_stale.load(Ordering::Relaxed),
             "nonce_future": self.nonce_future.load(Ordering::Relaxed),
             "gas_cap": self.gas_cap.load(Ordering::Relaxed),
+            "sanity_reject": self.sanity_reject.load(Ordering::Relaxed),
+            "competitor_victim": self.competitor_victim.load(Ordering::Relaxed),
         })
     }
 
@@ -481,6 +545,8 @@ impl FunnelCounters {
             "nonce_stale": self.nonce_stale.swap(0, Ordering::Relaxed),
             "nonce_future": self.nonce_future.swap(0, Ordering::Relaxed),
             "gas_cap": self.gas_cap.swap(0, Ordering::Relaxed),
+            "sanity_reject": self.sanity_reject.swap(0, Ordering::Relaxed),
+            "competitor_victim": self.competitor_victim.swap(0, Ordering::Relaxed),
         });
         out
     }
@@ -842,6 +908,12 @@ struct PoolAcc {
     count: u64,
     net_pos: u64,
     sum_net_bnb: f64,
+    /// Cụm `bugfix-presign-and-contract-plan` (A6) — pool này có bị CỤM ĐỐI
+    /// THỦ chạm tới không: `true` khi có ít nhất 1 dòng trên pool có
+    /// `victim_in_competitor_cluster=true` (victim chính là ví của cụm), HOẶC
+    /// 1 dòng `compete.result` trên pool đó tìm thấy tx liền kề của địa chỉ
+    /// khác chạm ĐÚNG pool (`competitor` khác null).
+    competitor_touched: bool,
 }
 
 #[derive(Default)]
@@ -932,13 +1004,47 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     // quy đổi được sang BNB (`quote_to_bnb_rate`, cùng cơ chế `sum_net_bnb`).
     let mut sum_bribe_bnb: f64 = 0.0;
     let mut bribe_samples: u64 = 0;
+    // Cụm `bugfix-presign-and-contract-plan` (A1) — số dòng bị loại vì tỉ giá
+    // quote→BNB bất khả thi (xem trong vòng lặp).
+    let mut rate_inverted_rejected: u64 = 0;
+    let mut rate_unavailable: u64 = 0;
+    // Cụm `bugfix-presign-and-contract-plan` (A6) — bucket theo VỐN CẦN
+    // (`front_in`, quy về BNB-equivalent bằng đúng tỉ giá của dòng đó), song
+    // song với bucket theo `victim_in` đã có. Trả lời câu "muốn ăn nhóm cơ
+    // hội này thì phải có bao nhiêu vốn", khác hẳn câu "victim to cỡ nào".
+    let mut front_buckets: [BucketAcc; 5] = Default::default();
+    // (quote, front_in native, net profit native) cho mỗi dòng Simulated có
+    // lãi — dùng tính "vốn để lấy 80% tổng lãi" THEO QUOTE.
+    let mut capital_rows: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
+    // Cụm A3/A6 — nhóm victim thuộc CỤM ĐỐI THỦ đếm RIÊNG.
+    let mut competitor_candidate: u64 = 0;
+    let mut competitor_simulated: u64 = 0;
+    let mut competitor_sum_net_bnb: f64 = 0.0;
+    let mut competitor_pools: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for row in rows {
         let event = row["event"].as_str().unwrap_or("");
+        // Cụm A6 — `compete.result` (task nền `spawn_post_simulated_tracker`)
+        // là nguồn THỨ 2 đánh dấu pool bị đối thủ chạm: tx liền kề victim
+        // trong cùng block có chạm ĐÚNG pool đó.
+        if event == "compete.result" {
+            if let (Some(pair), true) = (row["pair"].as_str(), !row["competitor"].is_null()) {
+                by_pool.entry(pair.to_string()).or_default().competitor_touched = true;
+                competitor_pools.insert(pair.to_string());
+            }
+            continue;
+        }
         if event != "tx.skip" && event != "sim.result" {
             continue;
         }
         candidate_count += 1;
+        let in_cluster = row["victim_in_competitor_cluster"].as_bool().unwrap_or(false);
+        if in_cluster {
+            competitor_candidate += 1;
+            if let Some(pair) = row["pair"].as_str() {
+                competitor_pools.insert(pair.to_string());
+            }
+        }
 
         if let Some(q) = row["quote"].as_str() {
             *by_quote.entry(q.to_string()).or_insert(0) += 1;
@@ -982,11 +1088,42 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
             (None, Some(_)) if row["quote"].as_str() == Some("wbnb") => Some(1.0),
             _ => None,
         };
+        // Cụm `bugfix-presign-and-contract-plan` (A1) — LỚP PHÒNG THỦ THỨ 2
+        // (lớp 1 là fix chiều cache ở `transport::ReserveCache`): 1 đơn vị
+        // USDT KHÔNG THỂ đáng giá ≥ 1 BNB, nên tỉ giá quote→BNB > 1.0 cho
+        // quote khác WBNB là bằng chứng dòng log đó có `amount_in_bnb_equiv`
+        // ĐẢO CHIỀU (ghi bởi binary TRƯỚC bản sửa). Không đoán/không tự đảo
+        // ngược lại (không biết chắc chiều nào đúng cho dòng cũ) — loại dòng
+        // đó khỏi mọi phép cộng BNB và đếm riêng `rate_rejected` để Chủ thấy
+        // ngay còn bao nhiêu dòng lịch sử bị nhiễm.
+        let quote_is_wbnb = row["quote"].as_str() == Some("wbnb");
+        let quote_to_bnb_rate = match quote_to_bnb_rate {
+            // Tỉ giá 0/âm/NaN = KHÔNG quy đổi được (quan sát thật: dòng
+            // `no_pool`/`rpc_error` có `amount_in_bnb_equiv="0"` vì pool
+            // WBNB/USDT chưa resolve được lúc đó) — khác hẳn "tỉ giá đảo
+            // chiều" của bug A1, nên đếm ở bộ đếm RIÊNG để 2 hiện tượng
+            // không lẫn vào nhau.
+            Some(r) if !r.is_finite() || r <= 0.0 => {
+                rate_unavailable += 1;
+                None
+            }
+            Some(r) if !quote_is_wbnb && r > 1.0 => {
+                rate_inverted_rejected += 1;
+                None
+            }
+            other => other,
+        };
+        // Tỉ giá bị loại -> `amount_in_bnb_equiv` của CHÍNH dòng đó cũng sai
+        // (cùng một phép quy đổi sai sinh ra cả 2) -> không bucket dòng này.
+        let bnb_equiv_amount = if quote_to_bnb_rate.is_none() && !quote_is_wbnb { None } else { bnb_equiv_amount };
 
         let pair = row["pair"].as_str().map(|s| s.to_string());
         if let Some(pair) = &pair {
             let acc = by_pool.entry(pair.clone()).or_default();
             acc.count += 1;
+            if in_cluster {
+                acc.competitor_touched = true;
+            }
             if event == "sim.result" {
                 if let (Some(net_wei), Some(rate)) = (parse_profit_wei(&row["profit_net_wei"]), quote_to_bnb_rate) {
                     if net_wei > 0 {
@@ -1036,12 +1173,99 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                 }
             }
         }
+
+        // ===== Cụm `bugfix-presign-and-contract-plan` (A6) =====
+        // (1) bucket theo VỐN CẦN (`front_in`, quy về BNB-equivalent).
+        // (2) mẫu (front_in, net) THEO QUOTE cho "vốn lấy 80% tổng lãi".
+        // (3) tổng riêng cho nhóm victim thuộc cụm đối thủ.
+        if event == "sim.result" {
+            let front_native = row["front_in_wei"].as_str().and_then(parse_wei_str_to_bnb);
+            let net_native = parse_profit_wei(&row["profit_net_wei"]).map(|w| w as f64 / 1e18);
+            if let (Some(front), Some(rate)) = (front_native, quote_to_bnb_rate) {
+                let front_bnb = front * rate;
+                if let Some(idx) = BNB_BUCKETS.iter().position(|(_, lo, hi)| front_bnb >= *lo && front_bnb < *hi) {
+                    let acc = &mut front_buckets[idx];
+                    acc.count += 1;
+                    if let Some(net) = net_native {
+                        if net > 0.0 {
+                            acc.net_pos += 1;
+                            acc.sum_net_pos_bnb += net * rate;
+                            acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net * rate, |b: f64| b.max(net * rate)));
+                        }
+                    }
+                }
+            }
+            if let (Some(front), Some(net)) = (front_native, net_native) {
+                if net > 0.0 && front > 0.0 {
+                    let q = row["quote"].as_str().unwrap_or("unknown").to_string();
+                    capital_rows.entry(q).or_default().push((front, net));
+                }
+            }
+            if in_cluster {
+                competitor_simulated += 1;
+                if let (Some(net), Some(rate)) = (net_native, quote_to_bnb_rate) {
+                    if net > 0.0 {
+                        competitor_sum_net_bnb += net * rate;
+                    }
+                }
+            }
+        }
     }
+
+    // Cụm A6 — "vốn để lấy 80% tổng lãi" THEO QUOTE: sắp các cơ hội có lãi
+    // theo `front_in` TĂNG DẦN, cộng dồn lãi tới khi đạt ≥80% tổng lãi; con
+    // số trả về là `front_in` của cơ hội CUỐI CÙNG phải lấy — tức mức vốn tối
+    // thiểu (đơn vị quote gốc) đủ để với tới 80% lợi nhuận quan sát được.
+    // Không quy đổi sang BNB ở đây (mỗi quote báo bằng chính đơn vị của nó,
+    // tránh mọi khả năng sai tỉ giá — đúng bài học A1).
+    let capital_80: Value = {
+        let mut m = serde_json::Map::new();
+        for (q, mut rows_q) in capital_rows {
+            rows_q.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let total: f64 = rows_q.iter().map(|(_, n)| n).sum();
+            let target = total * 0.8;
+            let mut acc = 0.0;
+            let mut needed_front = 0.0;
+            let mut taken = 0u64;
+            for (front, net) in &rows_q {
+                acc += net;
+                taken += 1;
+                needed_front = *front;
+                if acc >= target {
+                    break;
+                }
+            }
+            m.insert(
+                q,
+                json!({
+                    "opportunities": rows_q.len(),
+                    "taken_for_80pct": taken,
+                    "capital_needed_native": needed_front,
+                    "total_net_native": total,
+                    "captured_native": acc,
+                }),
+            );
+        }
+        Value::Object(m)
+    };
 
     // Cụm `econ-truth-latency-vps` (mục 1) — `top_pools` (pair/count/net_pos/
     // sum_net_bnb) THAY `top_tokens` cũ — `symbol` được đính kèm SAU (ở
     // `econ()`, hàm THUẦN này không có quyền truy cập `PairBook`).
     let mut top_pools: Vec<(String, PoolAcc)> = by_pool.into_iter().collect();
+    // Cụm `bugfix-presign-and-contract-plan` (A6) — `top_pools` sắp theo
+    // COUNT (pool bận nhất). Đo thật 30 phút cho thấy như vậy CHƯA ĐỦ để
+    // trả lời go/no-go: 2 pool DUY NHẤT có lãi (`0xdfe23efb…`, `0xcec13213…`)
+    // đều KHÔNG lọt top-10 theo count, nên bảng đó toàn `net_pos=0`. Thêm
+    // danh sách THỨ 2 sắp theo LÃI — đây mới là bảng trả lời "pool nào đáng
+    // làm, và pool đó có bị cụm đối thủ chạm không".
+    let mut top_pools_by_net: Vec<(String, u64, f64, bool)> = top_pools
+        .iter()
+        .filter(|(_, acc)| acc.net_pos > 0)
+        .map(|(p, acc)| (p.clone(), acc.net_pos, acc.sum_net_bnb, acc.competitor_touched))
+        .collect();
+    top_pools_by_net.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    top_pools_by_net.truncate(10);
     top_pools.sort_by(|a, b| b.1.count.cmp(&a.1.count));
     top_pools.truncate(10);
 
@@ -1071,6 +1295,17 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
             "count": acc.count,
             "net_pos": acc.net_pos,
             "sum_net_bnb": acc.sum_net_bnb,
+            // Cụm A6 — "cụm đối thủ chạm: có/không" (2 nguồn: victim CHÍNH LÀ
+            // ví của cụm, hoặc `compete.result` thấy tx liền kề chạm cùng pool).
+            "competitor_touched": acc.competitor_touched,
+        })).collect::<Vec<_>>(),
+        // A6 — pool ĐÁNG LÀM (có lãi), kèm cờ cụm đối thủ chạm: đây là bảng
+        // dùng cho điều kiện go/no-go #2 (`docs/CONTRACT_DESIGN.md` B7).
+        "top_pools_by_net": top_pools_by_net.into_iter().map(|(pair, net_pos, sum_net_bnb, competitor_touched)| json!({
+            "pair": pair,
+            "net_pos": net_pos,
+            "sum_net_bnb": sum_net_bnb,
+            "competitor_touched": competitor_touched,
         })).collect::<Vec<_>>(),
         "decode_fail_by_router": decode_fail_by_router,
         "latency_ms": { "p50": p50, "p95": p95, "samples": latency_ms_samples.len() },
@@ -1087,6 +1322,32 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         "bribe": {
             "sum_bribe_bnb": sum_bribe_bnb,
             "samples": bribe_samples,
+        },
+        // Cụm `bugfix-presign-and-contract-plan` (A1) — dòng log có tỉ giá
+        // quote→BNB bất khả thi (ghi bởi binary trước bản sửa chiều cache
+        // reserve) đã bị LOẠI khỏi mọi phép cộng BNB, không phải bị bỏ quên.
+        // `rate_inverted_rejected`: dòng có tỉ giá quote→BNB **> 1.0** (bất
+        // khả thi) — dấu vết bug A1 (ghi bởi binary trước bản sửa
+        // `ReserveCache`). Kỳ vọng = 0 với mọi dòng ghi SAU bản sửa.
+        "rate_inverted_rejected": rate_inverted_rejected,
+        // `rate_unavailable`: dòng KHÔNG quy đổi được (tỉ giá 0/NaN, thường
+        // do `no_pool`/`rpc_error` khiến `amount_in_bnb_equiv="0"`) — bình
+        // thường, KHÔNG phải bug.
+        "rate_unavailable": rate_unavailable,
+        // Cụm `bugfix-presign-and-contract-plan` (A6) — bucket theo VỐN CẦN
+        // (`front_in` quy về BNB-equivalent), song song `buckets_bnb` (theo
+        // `victim_in`).
+        "buckets_front_in_bnb": front_buckets.iter().zip(BNB_BUCKETS.iter()).map(|(acc, (label, _, _))| acc.snapshot(label)).collect::<Vec<_>>(),
+        // A6 — vốn tối thiểu (ĐƠN VỊ QUOTE GỐC, không quy đổi) để với tới 80%
+        // tổng lãi quan sát được, tách theo quote asset.
+        "capital_for_80pct_profit": capital_80,
+        // A3/A6 — nhóm victim thuộc CỤM ĐỐI THỦ, đếm RIÊNG.
+        "competitor": {
+            "candidate": competitor_candidate,
+            "simulated": competitor_simulated,
+            "sum_net_bnb": competitor_sum_net_bnb,
+            "pools_touched": competitor_pools.len(),
+            "pct_of_candidate": if candidate_count > 0 { competitor_candidate as f64 / candidate_count as f64 * 100.0 } else { 0.0 },
         },
     })
 }
@@ -1418,6 +1679,118 @@ mod tests {
         let bucket = econ["buckets_bnb"].as_array().unwrap().iter().find(|b| b["bucket"] == ">=1").unwrap();
         assert_eq!(bucket["net_pos"], 1, "profit lon (String, vuot i64::MAX) phai duoc dem, khong roi mat");
         assert!((bucket["sum_net_pos_bnb"].as_f64().unwrap() - 17.579175023944993805).abs() < 1e-6);
+    }
+
+    /// ĐẠT CẦN DÁN (cụm `bugfix-presign-and-contract-plan`, A1) — FIXTURE
+    /// dựng từ CHÍNH dòng `sim.result` THẬT Chủ chỉ ra (VPS, paper 24h port
+    /// 18910): hash `0x9a248ea3a185744c1d6bf61f36fe1c42eb044e59a56838ad18089b20eff47922`,
+    /// `quote=usdt`, `profit_net_wei=219550516598821986047` (= 219.55 USDT).
+    /// Ở tỉ giá THẬT quan sát được trong `logs/bot.jsonl` cùng khung giờ
+    /// (~720–732 USDT/BNB, suy từ chính cặp `amount_in`/`amount_in_bnb_equiv`
+    /// của các dòng USDT khác), 219.55 USDT ≈ **0.3 BNB** — KHÔNG PHẢI 55803
+    /// BNB như `/api/econ` báo trước bản sửa.
+    #[test]
+    fn compute_econ_real_vps_usdt_row_converts_to_about_0_3_bnb() {
+        // Ty gia dung: 1000 USDT = 1.366 BNB (~732 USDT/BNB).
+        let rows = vec![json!({
+            "event": "sim.result",
+            "hash": "0x9a248ea3a185744c1d6bf61f36fe1c42eb044e59a56838ad18089b20eff47922",
+            "from": "0xaabae02d453823e0ce3c86f8a1d29d3da0a3eaf7",
+            "pair": "0xcec13213c390d51121f82ba2ecafb8e11e0af7a3",
+            "quote": "usdt",
+            "amount_in": wei(1000.0),
+            "amount_in_bnb_equiv": wei(1.366),
+            "profit_gross_wei": "219550516598821986047",
+            "profit_net_wei": "219550516598821986047",
+        })];
+        let econ = compute_econ_from_rows(&rows, None);
+        let best = econ["best_net_bnb"].as_f64().expect("phai bucket duoc, khong duoc null");
+        assert!(
+            (best - 0.3).abs() < 0.005,
+            "219.55 USDT phai ra ~0.3 BNB (ty gia ~732 USDT/BNB), nhan duoc {best} — chieu quy doi USDT->BNB sai"
+        );
+        assert_eq!(econ["rate_inverted_rejected"], 0, "dong nay ty gia HOP LE, khong duoc bi loai");
+        assert!((econ["top_pools"][0]["sum_net_bnb"].as_f64().unwrap() - 0.3).abs() < 0.005);
+    }
+
+    /// ĐẠT CẦN DÁN (A1) — CÙNG dòng trên nhưng `amount_in_bnb_equiv` ĐẢO
+    /// CHIỀU (dạng THẬT do binary trước bản sửa ghi ra: 1000 USDT ->
+    /// "732 BNB"). Tỉ giá suy ra = 732 > 1.0, bất khả thi cho quote USDT ->
+    /// PHẢI bị loại (`rate_rejected=1`), KHÔNG được cộng vào `best_net_bnb`
+    /// (trước bản sửa: 219.55 × 732 = **160.700 BNB** báo lên dashboard).
+    #[test]
+    fn compute_econ_inverted_usdt_rate_row_is_rejected_not_astronomical() {
+        let rows = vec![json!({
+            "event": "sim.result",
+            "pair": "0xcec13213c390d51121f82ba2ecafb8e11e0af7a3",
+            "quote": "usdt",
+            "amount_in": wei(1000.0),
+            "amount_in_bnb_equiv": wei(732_000.0), // DAO CHIEU: nhan thay vi chia
+            "profit_gross_wei": "219550516598821986047",
+            "profit_net_wei": "219550516598821986047",
+        })];
+        let econ = compute_econ_from_rows(&rows, None);
+        assert_eq!(econ["rate_inverted_rejected"], 1, "ty gia USDT->BNB > 1.0 la bat kha thi, phai bi loai");
+        assert!(econ["best_net_bnb"].is_null(), "khong duoc bao so lai thien van tu dong log hong");
+        let total_bucket_count: i64 = econ["buckets_bnb"].as_array().unwrap().iter().map(|b| b["count"].as_i64().unwrap()).sum();
+        assert_eq!(total_bucket_count, 0, "dong ty gia hong khong duoc bucket");
+        assert_eq!(econ["candidate"], 1, "van dem la candidate (khong giau dong do khoi tong)");
+    }
+
+    /// ĐẠT CẦN DÁN (A6) — bucket theo VỐN CẦN (`front_in`) + "vốn để lấy 80%
+    /// tổng lãi" + đếm riêng nhóm cụm đối thủ + cột `competitor_touched`.
+    #[test]
+    fn compute_econ_front_in_buckets_capital80_and_competitor_split() {
+        let rows = vec![
+            // 3 co hoi WBNB: von 0.02/0.3/2.0 BNB, lai 0.01/0.05/0.004 BNB.
+            json!({"event":"sim.result","quote":"wbnb","pair":"0xp1",
+                   "amount_in": wei(0.5), "amount_in_bnb_equiv": wei(0.5),
+                   "front_in_wei": wei(0.02), "profit_gross_wei": wei(0.01), "profit_net_wei": wei(0.01)}),
+            json!({"event":"sim.result","quote":"wbnb","pair":"0xp2",
+                   "amount_in": wei(3.0), "amount_in_bnb_equiv": wei(3.0),
+                   "front_in_wei": wei(0.3), "profit_gross_wei": wei(0.05), "profit_net_wei": wei(0.05)}),
+            json!({"event":"sim.result","quote":"wbnb","pair":"0xp3",
+                   "amount_in": wei(9.0), "amount_in_bnb_equiv": wei(9.0),
+                   "front_in_wei": wei(2.0), "profit_gross_wei": wei(0.004), "profit_net_wei": wei(0.004),
+                   "victim_in_competitor_cluster": true}),
+            // compete.result: pool p1 co tx lien ke cua dia chi khac cham cung pool
+            json!({"event":"compete.result","pair":"0xp1","competitor":"0xbeef"}),
+        ];
+        let econ = compute_econ_from_rows(&rows, None);
+
+        let fb = econ["buckets_front_in_bnb"].as_array().unwrap();
+        let get = |label: &str| fb.iter().find(|b| b["bucket"] == label).unwrap().clone();
+        assert_eq!(get("0.01-0.05")["count"], 1, "von 0.02 BNB -> bucket 0.01-0.05");
+        assert_eq!(get("0.2-1")["count"], 1, "von 0.3 BNB -> bucket 0.2-1");
+        assert_eq!(get(">=1")["count"], 1, "von 2.0 BNB -> bucket >=1");
+
+        // Tong lai = 0.064; 80% = 0.0512. Sap theo von tang dan:
+        // 0.02 (lai 0.01, cong don 0.010) -> 0.3 (lai 0.05, cong don 0.060 >= 0.0512, DUNG).
+        let cap = &econ["capital_for_80pct_profit"]["wbnb"];
+        assert_eq!(cap["opportunities"], 3);
+        assert_eq!(cap["taken_for_80pct"], 2);
+        assert!((cap["capital_needed_native"].as_f64().unwrap() - 0.3).abs() < 1e-9, "von can = 0.3 BNB");
+
+        let comp = &econ["competitor"];
+        assert_eq!(comp["candidate"], 1);
+        assert_eq!(comp["simulated"], 1);
+        assert!((comp["sum_net_bnb"].as_f64().unwrap() - 0.004).abs() < 1e-9);
+
+        // A6 — pool CO LAI phai xuat hien o `top_pools_by_net` (bang dung cho
+        // go/no-go), ke ca khi khong lot top-10 theo count.
+        let by_net = econ["top_pools_by_net"].as_array().unwrap();
+        assert_eq!(by_net.len(), 3, "3 pool deu co net_pos>0");
+        assert_eq!(by_net[0]["pair"], "0xp2", "pool lai nhieu nhat (0.05) dung dau");
+        assert_eq!(by_net[0]["competitor_touched"], false);
+        assert_eq!(by_net.iter().find(|p| p["pair"] == "0xp3").unwrap()["competitor_touched"], true);
+
+        let pools = econ["top_pools"].as_array().unwrap();
+        let p1 = pools.iter().find(|p| p["pair"] == "0xp1").unwrap();
+        let p2 = pools.iter().find(|p| p["pair"] == "0xp2").unwrap();
+        let p3 = pools.iter().find(|p| p["pair"] == "0xp3").unwrap();
+        assert_eq!(p1["competitor_touched"], true, "compete.result danh dau pool p1");
+        assert_eq!(p2["competitor_touched"], false);
+        assert_eq!(p3["competitor_touched"], true, "victim chinh la vi cua cum");
     }
 
     #[test]

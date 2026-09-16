@@ -4580,3 +4580,215 @@ ví Chủ tự điền, 66 ký tự hex — Chủ đã chuẩn bị trước l�
 - Contract `0xa739...` dormant trong cửa sổ quan sát (150k block) — CHƯA
   quét xa hơn (vd 1-2 triệu block) để tìm mốc "lần cuối hoạt động" cụ thể
   (ngoài ngân sách thời gian phiên này).
+
+## `bugfix-presign-and-contract-plan` (BAOCAO42, 2026-09-16)
+
+Lệnh Grok sau `competitor-recon-and-strategy` (BAOCAO41). PHẦN A: sửa hết bug
+đã biết để đường ký chạy được. PHẦN B: tài liệu thiết kế contract executor
+(`docs/CONTRACT_DESIGN.md`) — CHƯA viết Solidity, CHƯA deploy. Máy: WSL. HEAD
+bắt đầu `63c2d43`. Không subagent ghi file (luật #4). VPS (paper 24h port
+18910) KHÔNG đụng. **2 lần BỔ SUNG GIỮA PHIÊN** (Chủ dán docs chính thức
+BlockRazor rồi 48 Club) — xem mục cuối.
+
+### A1 — NGUYÊN NHÂN GỐC của "econ quy đổi USDT→BNB sai chiều"
+
+Chủ chỉ ra dòng `sim.result` thật (VPS, port 18910) hash `0x9a248ea3…f47922`,
+`quote=usdt`, `profit_net_wei=219550516598821986047` (= 219.55 USDT ≈ 0.3 BNB)
+bị `/api/econ` hiển thị `best_net_bnb=55803`.
+
+**Không phải lỗi ở `/api/econ`, mà ở `transport::ReserveCache`.**
+`PoolReserves` KHÔNG tự mô tả chiều: field `reserve_wbnb` thực chất là
+"reserve của QUOTE ASSET mà caller đã hỏi", `reserve_token` là phía còn lại
+(`pool::order_reserves_by_quote`). Khoá cache trước bản sửa là `(pair, block)`
+— **thiếu `quote`**. Hệ quả trên pool WBNB/USDT `0x16b9a828…` (pool này vừa
+là candidate, vừa là pool dùng để quy đổi gas/`amount_in_bnb_equiv`):
+
+1. Victim MUA WBNB bằng USDT → `resolve_reserves_cached(token=WBNB, quote=USDT)`
+   nạp cache entry với `reserve_wbnb` = **reserve USDT** (38.17M).
+2. Ngay sau đó bước quy đổi gọi `resolve_reserves_cached(token=USDT, quote=WBNB)`
+   cho CÙNG pool, CÙNG block → **cache HIT**, nhận lại đúng entry chiều ngược.
+3. `convert_usdt_to_bnb_wei(amt, reserve_wbnb=USDT_res, reserve_usdt=WBNB_res)`
+   **nhân thay vì chia**: tỉ giá 720 thay vì 1/720.
+
+Bằng chứng ĐO ĐƯỢC trên `logs/bot.jsonl` (WSL, trước sửa): **68 dòng** có
+`amount_in_bnb_equiv / amount_in > 1.0`, tỉ giá lớn nhất **720.78** — đúng
+bằng nghịch đảo tỉ giá thật (~720 USDT/BNB đo từ chính các dòng USDT khác
+cùng khung giờ). 52/68 dòng nằm đúng trên pool `0x16b9a828…`, `token` =
+`0xbb4cdb9c…` (WBNB). Cùng lỗi đó làm `gas_cost_usdt_wei` bị **CHIA** cho 720
+(gas rẻ giả → profit USDT bị thổi lên).
+
+**Sửa 2 lớp:**
+
+- Lớp 1 (gốc): `ReserveCache` khoá `(pair, **quote**, block)`. Cập nhật 5 call
+  site + task Sync-event. Test `reserve_cache_same_pair_two_quotes_do_not_collide`.
+- Lớp 2 (phòng thủ, cho dòng log CŨ đã nhiễm): `compute_econ_from_rows` loại
+  mọi dòng có tỉ giá quote→BNB `> 1.0` khi quote khác WBNB (1 USDT không thể
+  đáng giá ≥ 1 BNB) — KHÔNG tự đảo ngược lại (không biết chắc chiều nào đúng
+  cho dòng cũ), đếm riêng field mới `rate_rejected`.
+
+Fixture test đúng dòng Chủ chỉ ra: `compute_econ_real_vps_usdt_row_converts_to_about_0_3_bnb`
+(kỳ vọng 0.3 BNB ± 0.005) + `compute_econ_inverted_usdt_rate_row_is_rejected_not_astronomical`.
+
+### A2 — cổng tỉnh táo `sanity_reject`
+
+`pipeline::sanity_check(front_in, profit_net, victim_amount_in, reserve_quote)`
+— THUẦN, chạy NGAY TRƯỚC `Simulated` ở CẢ `evaluate_candidate` (WBNB) lẫn
+`evaluate_candidate_quote` (WBNB/USDT). 3 bất đẳng thức, mọi đại lượng CÙNG
+đơn vị quote của chính pool (không quy đổi → không thể tự sai đơn vị):
+`front_in ≤ 10% reserve`, `profit_net ≤ 2% reserve`, `victim_in ≤ reserve`.
+Reason mới `sanity_reject` (`PipelineSkip` + `venues::SKIP_REASONS` +
+`FunnelCounters`).
+
+**Đối chiếu với dữ liệu THẬT trước khi chốt ngưỡng**: quét 106 dòng
+`sim.result` thật trong `logs/bot.jsonl` → **106/106 ĐỀU QUA** (front lớn nhất
+6.76% reserve, profit lớn nhất 0.302% reserve). Cổng này vì vậy không cắt cơ
+hội thật nào, chỉ chặn số vô lý.
+
+**Phát hiện kèm theo (quan trọng cho mọi phiên sau)**: 15 test cũ FAIL sau khi
+thêm cổng — vì fixture `fixture_reserves()` (pool **1 WBNB**) + victim 0.05
+BNB + trần `max_front_bnb=1.5` nghĩa là "mua 150% pool". Nguyên nhân sâu hơn:
+**lợi nhuận sandwich V2 TĂNG ĐƠN ĐIỆU theo `front_in`** (không có cực trị nội
+như arbitrage thuần — đã verify bằng bảng số), nên `search_max_front_in` LUÔN
+chạm trần cấu hình. Trần front vì thế là tham số kinh tế quan trọng nhất, và
+pool phải đủ sâu so với trần. Thêm `fixture_reserves_sanity_ok()` (20 WBNB) +
+`VICTIM_1_BNB_WEI`, nâng `usdt_deep_reserves()` 20.000 → 60.000 USDT
+(`max_front_usdt=3000` ship = 5% pool, khớp dải thật 5.7%).
+
+### A3 — nhận diện CỤM ĐỐI THỦ (`src/competitor.rs`, module mới)
+
+3 địa chỉ seed (đã verify on-chain BAOCAO41): `0xB406…d07eF` (EOA kho),
+`0xa739Dfab…69758c` (contract dispatcher), `0x8180aD6A…6c54` (ví trung tâm).
+Vì ví thực sự swap là ví "burner" dùng-một-lần (không liệt kê tĩnh được),
+nhận diện phải ĐỘNG: `ClusterIndex` + task WS `subscribe_competitor_funding`
+lọc log `Transfer` của WBNB/USDT có `topic1 ∈ seed` → ghi ví nhận (`topic2`)
+vào block đó; `contains(addr, block)` đúng cho block hiện tại + block liền
+trước (`FUNDED_WINDOW_BLOCKS=2`).
+
+Cờ `victim_in_competitor_cluster` vào `sim.result`; `/api/econ` đếm riêng;
+config `allow_competitor_victims` (ship `false`) → **chỉ chặn khi
+`live_mode != "off"`** (đã có khả năng ký thật), reason `competitor_victim`.
+Ở `live_mode="off"` KHÔNG chặn — chặn ngay ở paper sẽ mất số liệu để Chủ
+quyết định.
+
+Test dùng ĐÚNG victim Chủ nêu ở A1: `0xaaBae02D…3eaf7` tại block `122076185`
+(`funded_wallet_from_real_block_122076185_is_in_cluster`).
+
+Đo thật: **184 lần `competitor.funded` trong ~13 phút** — cụm này cấp vốn cho
+ví mới liên tục, xác nhận lại kết luận BAOCAO41 (bot đa-ví đang hoạt động
+mạnh).
+
+### A4 — PRE-SIGN KHÔNG FORK (nguyên nhân 0/36 của BAOCAO41)
+
+Bỏ `measure_tax_evm` + `eth_getTransactionReceipt` khỏi đường ký. 4 cổng mới,
+đọc TOÀN BỘ từ bộ nhớ, **0 RPC**:
+
+| Cổng | Nguồn dữ liệu | Abort reason |
+|---|---|---|
+| (a) token vetted + `last_vet ≤ pairs_vet_interval_sec × 2` | `PairBook::is_tax_ok` + `vet_result` | `vet_stale` |
+| (b) reserve ≥ `thin_liq` VÀ cache đúng block hiện tại | `ReserveCache` (Sync-event) | `reserve_stale` |
+| (c) victim chưa thấy trong block nào | `transport::MinedTxIndex` (3 block) | `victim_already_mined` / `mined_index_cold` |
+| (d) nonce ví bot | `transport::SelfNonceCache` (prefetch mỗi block) | `nonce_not_prefetched` |
+
+`shadow::pre_sign_revet_fast` THUẦN (không `async`, không `provider`) — test
+đo 100.000 lần gọi < 20 ms. 2 cache do task nền `mined_and_nonce_prefetch_task`
+nạp: 1 `eth_getBlockByNumber` KHÔNG-full + 1 `eth_getTransactionCount` mỗi
+block (~1 lần/3 s), trên RPC NỀN. Gas lấy từ `GasOracle::cached_price_any_block`
+(CHỈ cache, không RPC), rơi về `victim.gas_price` khi chưa có số đo.
+
+Vet task: chu kỳ **300 s** cho pool "nóng" (có candidate đi tới bước sim trong
+900 s gần nhất), `pairs_vet_interval_sec` (600 s) cho phần còn lại; nhịp quét
+30 s, log `pair.vet_cycle{due, hot_pools}`.
+
+**Kết quả đo thật (WSL, 30 phút)**: `presign_ms.total_before_sign` =
+**0.007–0.009 ms** (4 cổng), tổng tới lúc ký xong ~**0.34 ms** — so mục tiêu
+p95 < 20 ms. Xem BAOCAO42 ô 5 cho số cuối cùng.
+
+### A5 — RPC nền tách khỏi đường nóng (`BSC_HTTP_BG`)
+
+`bg_http_pool` + `app_state.bg_provider` + `bg_pool_health_check`. Mặc định =
+**3 URL CUỐI** của `BSC_HTTP` (không bao giờ lấy URL đầu khi danh sách có ≥2
+URL); `BSC_HTTP_BG` trong `.env` ghi đè. Consumer: `spawn_shadow_sign_task`,
+`spawn_post_simulated_tracker` (`compete.check` + `decision_vs_mined`),
+`spawn_victim_validator`. `BSC_HTTP_SIM` (revm fork) mặc định = danh sách NỀN
+**nối thêm** các URL còn lại làm dự phòng. Log `rpc.bg_pool` lúc boot ghi rõ
+có tách được thật không (`separated`).
+
+**Bug THẬT phát hiện khi chạy lần đầu**: `bsc-rpc.publicnode.com` trả
+`-32602 "Archive requests require a personal token"` cho MỌI lần revm đọc
+storage → `pairs_vet_task` lặp lỗi vô hạn trên đúng 1 URL hỏng (126 dòng
+`pair.vet_error`, 0 pool được vet, kéo theo đường ký abort `vet_stale` 100%).
+`is_unsupported_method_error` chỉ nhận `-32000`/`-32601`/"not supported" nên
+không đổi URL. Đã thêm 2 pattern `archive request`/`personal token` + test.
+
+### A6 — `/api/econ` mở rộng
+
+- `buckets_front_in_bnb`: bucket theo **VỐN CẦN** (`front_in` quy về BNB), song
+  song `buckets_bnb` (theo `victim_in`).
+- `capital_for_80pct_profit` (theo quote, **đơn vị quote gốc** — không quy đổi,
+  đúng bài học A1): sắp cơ hội có lãi theo `front_in` tăng dần, cộng dồn lãi
+  tới ≥80% tổng → `capital_needed_native` là `front_in` của cơ hội cuối phải
+  lấy.
+- `competitor`: `candidate`/`simulated`/`sum_net_bnb`/`pools_touched`/`pct_of_candidate`.
+- `top_pools[].competitor_touched`: 2 nguồn — victim CHÍNH LÀ ví của cụm, hoặc
+  `compete.result` thấy tx liền kề chạm đúng pool.
+- `rate_rejected` (A1).
+
+### A7 — shadow 30 phút: LẦN ĐẦU KÝ ĐƯỢC
+
+BAOCAO41: 0/36. Sau A1–A5: xem BAOCAO42 ô 5. `shadow.sim` (mô phỏng bundle 3
+chân bằng `sim_evm::simulate_sandwich` NỀN sau khi ký, không chặn đường ký) —
+**chỉ chạy cho quote WBNB**: `simulate_sandwich` dựng chân front bằng
+`swapExactETHForTokens*` (native BNB), nhánh USDT ghi
+`skipped:"usdt_not_supported_by_simulate_sandwich"` thay vì bịa số.
+
+### BỔ SUNG GIỮA PHIÊN (1) — BlockRazor Block Builder
+
+Chủ dán docs chính thức. Thay đổi:
+
+- `relay.rs`: `BLOCKRAZOR_BUILDER_URL_VIRGINIA`/`_GLOBAL`,
+  `build_blockrazor_builder_send_bundle_request` (method `eth_sendBundle`,
+  header `Authorization: $BLOCKRAZOR_AUTH`, thêm `noMerge`/`positionFirst`).
+  Auth rỗng → trả `None` = **relay disabled, log rõ, KHÔNG panic**.
+- Đường 2 (`https://bsc.blockrazor.xyz`, `eth_sendMevBundle`, không auth) GIỮ
+  làm fallback.
+- `eth_callBundle` chỉ có ở gói trả phí → shadow vẫn tự mô phỏng bằng revm nền.
+
+### BỔ SUNG GIỮA PHIÊN (2) — 48 Club Puissant + mô hình bribe ĐÚNG
+
+**Phát hiện quan trọng nhất của 2 lần bổ sung**: trên BSC, bribe **KHÔNG đi
+tới `block.coinbase`** (mô hình Flashbots/Ethereum mà cụm
+`competitor-recon-and-strategy` đã giả định) — bribe là **transfer BNB tới VÍ
+EOA của builder**, đặt trong **chân BACK**.
+
+- `bribe_mode`: `"coinbase"` → `"builder_transfer"`. Giá trị `"coinbase"` cũ =
+  **FAIL LOAD** với thông báo chỉ rõ tên mới (ngữ nghĩa đã khác hẳn, không
+  nhận âm thầm).
+- 2 field config mới: `blockrazor_builder_eoa`
+  (`0x1266C6bE…dD9c5F20`), `club48_builder_eoa` (`0x4848489f…D7484848`) —
+  validate là address 20 byte hex, pin kèm `source_url` + ngày + `eth_getCode`
+  trong `DEX_REGISTRY.md`.
+- Verify on-chain 2 ví (WSL, `bsc-dataseed1`, `eth_chainId=0x38`): cả 2
+  `getCode = 0 byte` (**EOA — đúng kỳ vọng**, luật "pin = getCode > 0" của
+  CLAUDE.md áp cho CONTRACT), nonce **40.158.171** / **62.749.823**, 48 Club
+  còn giữ **62.62 BNB**.
+- 48 Club xếp hạng bundle = `0.9 × gas fee tx unique + BNB tới EOA`
+  (`relay::CLUB48_GAS_FEE_WEIGHT`) → 1 BNB qua **gas** chỉ được tính 0.9,
+  qua **transfer** được tính đủ 1.0 ⇒ `"builder_transfer"` luôn tốt hơn
+  `"gaspriority"` ở relay này; gas giữ mức tối thiểu 0.05 gwei
+  (`BLOCKRAZOR_MIN_GAS_PRICE_WEI`).
+- `revertingTxHashes` để **RỖNG** (front/back không được revert; victim là tx
+  public). `backrunTarget` = hash victim, điền ở tầng gửi thật.
+- Tra trạng thái bundle 48 Club → `bundle.result` → `RiskGuard::record_result`:
+  **CHƯA implement** (cần tầng gửi HTTP thật, cụm 6) — ghi ở
+  `docs/CONTRACT_DESIGN.md` B3 như yêu cầu bắt buộc của cụm đó.
+
+### PHẦN B — `docs/CONTRACT_DESIGN.md` (thiết kế, KHÔNG code)
+
+7 mục B1–B7: kiến trúc 3 loại ví (kho / 2–3 ví tay / owner, khóa ở 3 nơi),
+contract `frontRun`/`backRun` swap cấp pair + bảng 12 revert reason, luồng
+bundle 3 chân + bribe transfer **ở CUỐI chân back sau khi kiểm lãi** (back
+revert thì KHÔNG mất bribe), bảo mật (reentrancy/token lạ/approve có hạn
+mức/trần `maxFrontPerTx` on-chain/pause/ví tay lộ khóa mất gì), gas ước lượng
+so mốc ĐO THẬT BAOCAO38 (front 121.916 / back 105.539) + 12 test foundry +
+kế hoạch deploy, ~850 dòng Rust cần đổi, và **điều kiện go/no-go**: chỉ deploy
+khi shadow ký kịp ≥ 50% VÀ có pool WBNB không bị cụm đối thủ phủ.

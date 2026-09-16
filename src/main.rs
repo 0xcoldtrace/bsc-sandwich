@@ -140,8 +140,60 @@ async fn main() -> anyhow::Result<()> {
     // BSC_HTTP_SIM (vd node ho tro getStorageAt/state day du hon, tranh loi
     // "-32000 not supported" quan sat that tu bloXroute tren mot so RPC
     // public/private khong ho tro het state can cho revm fork).
+    // Cum `bugfix-presign-and-contract-plan` (A5) - RPC NEN tach rieng khoi
+    // duong nong: moi viec NEN (shadow pre-sign/ky, vet dinh ky, compete.check,
+    // validator, recon) dung `BSC_HTTP_BG`; neu Chu khong dat bien do thi mac
+    // dinh = 3 URL CUOI cua `BSC_HTTP` (danh sach da loc URL private). Duong
+    // nong (`http_pool`) van bat dau tu URL DAU danh sach va chi doi URL khi
+    // URL do chet (`RpcPool` luon connect tu index hien tai) - nen viec nen
+    // khong con tranh chap cung ket noi voi `handle_paper_tx` (BAOCAO41: p95
+    // seen_to_decision TANG 321->356ms sau khi them shadow task nen).
+    let bg_urls_raw = transport::collect_rpc_urls_from_env("BSC_HTTP_BG");
+    let bg_urls_raw_present = !bg_urls_raw.is_empty();
+    let bg_urls = if !bg_urls_raw.is_empty() {
+        transport::filter_read_urls(bg_urls_raw)
+    } else if http_urls_filtered.len() >= 2 {
+        // 3 URL cuoi (hoac it hon neu danh sach ngan) - KHONG bao gio lay URL
+        // dau tien (duong nong giu rieng no) khi con >= 2 URL.
+        let start = http_urls_filtered.len().saturating_sub(3).max(1);
+        http_urls_filtered[start..].to_vec()
+    } else {
+        // Chi co 1 URL: khong the tach that su - dung chung, ghi ro trong log
+        // boot ben duoi (khong bia "da tach").
+        http_urls_filtered.clone()
+    };
+    let bg_http_pool = Arc::new(transport::RpcPool::new(bg_urls.clone()));
+    logger.log(
+        "rpc.bg_pool",
+        serde_json::json!({
+            "bg_url_count": bg_urls.len(),
+            "hot_url_count": http_urls_filtered.len(),
+            "separated": http_urls_filtered.len() >= 2,
+            "source": if bg_urls_raw_present { "BSC_HTTP_BG" } else { "3 URL cuoi cua BSC_HTTP (mac dinh)" },
+            "bg_urls": bg_urls.iter().map(|u| transport::redact_rpc_url(u)).collect::<Vec<_>>(),
+        }),
+    );
     let sim_urls_raw = transport::collect_rpc_urls_from_env("BSC_HTTP_SIM");
-    let sim_urls = if sim_urls_raw.is_empty() { http_urls_filtered } else { transport::filter_read_urls(sim_urls_raw) };
+    // `BSC_HTTP_SIM` (revm fork) mac dinh dung LAI danh sach NEN (khong phai
+    // toan bo BSC_HTTP nhu truoc A5) - cung ly do tach tren.
+    // `revm` fork doi node co state cu (archive-ish). Danh sach NEN dung
+    // TRUOC, nhung PHAI noi them cac URL con lai lam DU PHONG - quan sat that
+    // (A5): `bsc-rpc.publicnode.com` trong nhom NEN tra `-32602 Archive
+    // requests require a personal token` cho MOI lan doc storage, neu pool
+    // sim chi co 3 URL nen thi co the khong con URL nao fork duoc, vet chet
+    // hoan toan. `RpcPool` luon bat dau tu index 0 va chi di tiep khi loi ->
+    // truong hop binh thuong van dung URL NEN, khong dung duong nong.
+    let sim_urls = if sim_urls_raw.is_empty() {
+        let mut v = bg_urls.clone();
+        for u in &http_urls_filtered {
+            if !v.contains(u) {
+                v.push(u.clone());
+            }
+        }
+        v
+    } else {
+        transport::filter_read_urls(sim_urls_raw)
+    };
     let sim_http_pool = Arc::new(transport::RpcPool::new(sim_urls));
     let initial_gas_units = (cfg.gas_units_front, cfg.gas_units_back);
 
@@ -190,6 +242,11 @@ async fn main() -> anyhow::Result<()> {
         reserve_cache: RwLock::new(transport::ReserveCache::new()),
         pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
         sim_provider: RwLock::new(None),
+        bg_provider: RwLock::new(None),
+        mined_index: RwLock::new(transport::MinedTxIndex::new()),
+        self_nonce: RwLock::new(transport::SelfNonceCache::new()),
+        competitor_cluster: RwLock::new(bsc_sandwich::competitor::ClusterIndex::new()),
+        candidate_seen: RwLock::new(HashMap::new()),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
         shadow_wallet,
@@ -330,6 +387,9 @@ async fn main() -> anyhow::Result<()> {
     // Cum `econ-truth-latency-vps` (0.d) - giu sim_http_pool song (provider
     // RIENG cho revm/vet/validator, tach khoi duong nong).
     tokio::spawn(sim_pool_health_check(app_state.clone(), sim_http_pool.clone(), Duration::from_secs(5)));
+    // Cum `bugfix-presign-and-contract-plan` (A5) - giu `bg_provider` song
+    // (RPC NEN: shadow/vet/compete/validator), doc lap voi duong nong.
+    tokio::spawn(bg_pool_health_check(app_state.clone(), bg_http_pool.clone(), Duration::from_secs(5)));
 
     // Cum `strategy-lock-mode2` - vet NEN dinh ky (revm that, KHONG chan
     // duong nong) cho moi entry `pairs.txt` da co `vetted` - xem
@@ -454,6 +514,16 @@ async fn connect_rpc(app_state: AppState, http_pool: Arc<transport::RpcPool>, pe
     // toi (giam do tre so voi cho eth_call getReserves tren duong nong).
     tokio::spawn(subscribe_sync_events(app_state.clone(), ws_urls.clone()));
 
+    // Cum `bugfix-presign-and-contract-plan` (A4) - nap "mempool view" (hash
+    // tx cua 3 block gan nhat) + prefetch nonce vi shadow moi block, tren RPC
+    // NEN - de duong ky KHONG con goi RPC nao.
+    tokio::spawn(mined_and_nonce_prefetch_task(app_state.clone()));
+
+    // Cum `bugfix-presign-and-contract-plan` (A3) - theo doi Transfer quote
+    // asset TU 3 dia chi seed cua cum doi thu -> nhan dien vi "burner" duoc
+    // cap von tuc thi (co che THAT da verify on-chain, xem src/competitor.rs).
+    tokio::spawn(subscribe_competitor_funding(app_state.clone(), ws_urls.clone()));
+
     // Cum 5.2+5.3 - fallback chain WSS (nhieu URL, lag/rot thi thu WSS KE
     // trong danh sach truoc) -> txpool_content (qua http_pool, failover URL
     // HTTP ke khi loi) -> chi con inject_only. Khong halt bot o bat ky nhanh
@@ -541,7 +611,11 @@ async fn subscribe_sync_events(app_state: AppState, ws_urls: Vec<String>) {
                             },
                         };
                         let (reserve_quote, reserve_token) = bsc_sandwich::pool::order_reserves_by_quote(token0, quote, r0, r1);
-                        app_state.reserve_cache.write().await.insert(pair_addr, block, PoolReserves { reserve_wbnb: reserve_quote, reserve_token });
+                        // Cum `bugfix-presign-and-contract-plan` (A1) - key cache
+                        // PHAI kem `quote` (chinh quote cua entry PairBook dung de
+                        // sap chieu ngay tren), neu khong 1 pool 2 chieu se de len
+                        // nhau (xem doc-comment `transport::ReserveCache`).
+                        app_state.reserve_cache.write().await.insert(pair_addr, quote, block, PoolReserves { reserve_wbnb: reserve_quote, reserve_token });
                     }
                     Ok(Err(_)) => break 'recv, // subscription roi - thu URL ke/resubscribe
                     Err(_) => continue,        // timeout doc, chi de kiem tra deadline
@@ -551,6 +625,135 @@ async fn subscribe_sync_events(app_state: AppState, ws_urls: Vec<String>) {
         }
         if !connected {
             tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    }
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (A4) — task NỀN nạp 2 cache mà
+/// đường ký shadow phụ thuộc, để đường ký đó **không gọi RPC nào**:
+///
+/// - `MinedTxIndex`: hash tx của block mới nhất (1 lời gọi
+///   `eth_getBlockByNumber` KHÔNG-full mỗi block, ~1 lần/3 s) — thay cho
+///   `eth_getTransactionReceipt(victim)` từng gọi trên đường ký.
+/// - `SelfNonceCache`: `eth_getTransactionCount(self, pending)` mỗi block —
+///   chỉ chạy khi `live_mode="shadow"` và đã load được ví.
+///
+/// Cả 2 đều đi qua **RPC NỀN** (`bg_provider`, cụm A5), không đụng kết nối
+/// đường nóng. Poll `last_block` mỗi 300 ms (rẻ, chỉ đọc RwLock) và chỉ gọi
+/// RPC khi số block ĐỔI.
+async fn mined_and_nonce_prefetch_task(app_state: AppState) {
+    let mut last_seen: u64 = 0;
+    loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let block = match *app_state.last_block.read().await {
+            Some(b) => b,
+            None => continue,
+        };
+        if block == last_seen {
+            continue;
+        }
+        let Some((provider, _src)) = bg_provider_or_hot(&app_state).await else { continue };
+
+        // (1) hash tx cua block moi nhat - KHONG lay full body (re hon nhieu).
+        match provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Number(block)).await {
+            Ok(Some(b)) => {
+                let hashes: std::collections::HashSet<alloy::primitives::B256> =
+                    b.transactions.hashes().collect();
+                let n = hashes.len();
+                app_state.mined_index.write().await.insert_block(block, hashes);
+                if last_seen == 0 {
+                    app_state
+                        .logger
+                        .log("mined_index.ready", serde_json::json!({ "block": block, "tx_count": n }));
+                }
+                last_seen = block;
+            }
+            Ok(None) => continue, // block chua thay duoc tren node nay - thu lai tick sau
+            Err(e) => {
+                app_state
+                    .logger
+                    .log("mined_index.error", serde_json::json!({ "block": block, "reason": e.to_string() }));
+                continue;
+            }
+        }
+
+        // (2) nonce vi shadow (chi khi co vi).
+        if let Some((self_addr, _)) = app_state.shadow_wallet.as_ref() {
+            match provider.get_transaction_count(*self_addr).block_id(alloy::eips::BlockId::pending()).await {
+                Ok(n) => app_state.self_nonce.write().await.insert(block, n),
+                Err(e) => app_state
+                    .logger
+                    .log("nonce_prefetch.error", serde_json::json!({ "block": block, "reason": e.to_string() })),
+            }
+        }
+    }
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (A3) — subscribe log `Transfer`
+/// của WBNB+USDT có `topic1` (from) là 1 trong 3 địa chỉ SEED của cụm đối thủ
+/// → ghi ví nhận (`topic2`) vào `ClusterIndex` tại đúng block đó.
+///
+/// Đây là cách DUY NHẤT nhận diện được các ví "burner" dùng-một-lần của cụm
+/// (không thể liệt kê tĩnh — xem doc-comment `src/competitor.rs`). Dùng WS
+/// filter theo `address` (2 token) + `topics` (Transfer + from ∈ seed) nên
+/// node chỉ đẩy về đúng các log liên quan, không quét toàn chain.
+async fn subscribe_competitor_funding(app_state: AppState, ws_urls: Vec<String>) {
+    use alloy::rpc::types::eth::Filter;
+    if ws_urls.is_empty() {
+        return;
+    }
+    let seeds: Vec<alloy::primitives::B256> = bsc_sandwich::competitor::SEED_ADDRESSES
+        .iter()
+        .filter_map(|s| Address::from_str(s).ok())
+        .map(|a| a.into_word())
+        .collect();
+    let quote_tokens = vec![venues::wbnb_addr(), venues::usdt_addr()];
+    let topic0 = bsc_sandwich::competitor::transfer_topic0();
+    loop {
+        let mut connected = false;
+        for url in &ws_urls {
+            let redacted = transport::redact_rpc_url(url);
+            let Ok(provider) = transport::connect_and_verify(url).await else { continue };
+            let filter = Filter::new().address(quote_tokens.clone()).event_signature(topic0).topic1(seeds.clone());
+            let mut sub = match provider.subscribe_logs(&filter).await {
+                Ok(s) => s,
+                Err(e) => {
+                    app_state.logger.log(
+                        "rpc.pending_unavailable",
+                        serde_json::json!({ "transport": "competitor_funding", "url": redacted, "reason": e.to_string() }),
+                    );
+                    continue;
+                }
+            };
+            connected = true;
+            app_state.logger.log(
+                "competitor.subscribed",
+                serde_json::json!({ "url": redacted, "seeds": bsc_sandwich::competitor::SEED_ADDRESSES }),
+            );
+            loop {
+                match tokio::time::timeout(Duration::from_secs(120), sub.recv()).await {
+                    Ok(Ok(log)) => {
+                        let (Some(block), Some(to_topic)) = (log.block_number, log.topics().get(2).copied()) else { continue };
+                        let wallet = bsc_sandwich::competitor::address_from_topic(to_topic);
+                        app_state.competitor_cluster.write().await.note_funded(block, wallet);
+                        app_state.logger.log(
+                            "competitor.funded",
+                            serde_json::json!({
+                                "block": block,
+                                "wallet": format!("{wallet:#x}"),
+                                "quote_token": format!("{:#x}", log.address()),
+                                "from_seed": format!("{:#x}", log.topics().get(1).map(|t| bsc_sandwich::competitor::address_from_topic(*t)).unwrap_or_default()),
+                            }),
+                        );
+                    }
+                    Ok(Err(_)) => break,   // subscription roi - thu URL ke
+                    Err(_) => continue,    // timeout doc (cum im lang la binh thuong)
+                }
+            }
+            break;
+        }
+        if !connected {
+            tokio::time::sleep(Duration::from_secs(30)).await;
         }
     }
 }
@@ -923,6 +1126,44 @@ async fn sim_pool_health_check(app_state: AppState, sim_http_pool: Arc<transport
     }
 }
 
+/// Cụm `bugfix-presign-and-contract-plan` (A5) — health-check cho pool RPC
+/// **NỀN** (`BSC_HTTP_BG`, mặc định 3 URL cuối của `BSC_HTTP`): mọi việc nền
+/// (`spawn_shadow_sign_task`, `spawn_post_simulated_tracker`/`compete.check`,
+/// `spawn_victim_validator`) dùng `app_state.bg_provider` thay vì
+/// `app_state.provider` — đường nóng `handle_paper_tx` giữ riêng kết nối đầu
+/// danh sách. Cùng khuôn `sim_pool_health_check` (không đụng `last_block`).
+async fn bg_pool_health_check(app_state: AppState, bg_http_pool: Arc<transport::RpcPool>, interval: Duration) {
+    let mut ticker = tokio::time::interval(interval);
+    loop {
+        ticker.tick().await;
+        let current = bg_http_pool.current().await;
+        let alive = match &current {
+            Some(p) => p.get_block_number().await.is_ok(),
+            None => false,
+        };
+        if alive {
+            continue;
+        }
+        let reconnected = if current.is_some() {
+            bg_http_pool.advance_and_reconnect(&app_state.logger, "bg").await
+        } else {
+            bg_http_pool.connect(&app_state.logger, "bg").await
+        };
+        *app_state.bg_provider.write().await = reconnected;
+    }
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (A5) — provider cho việc NỀN:
+/// `bg_provider` nếu có, nếu chưa kết nối được thì rơi về `provider` (đường
+/// nóng) để KHÔNG mất hẳn chức năng nền — trả kèm nhãn nguồn để log nói THẬT
+/// đang dùng cái nào (không giả vờ đã tách).
+async fn bg_provider_or_hot(app_state: &AppState) -> Option<(alloy::providers::DynProvider, &'static str)> {
+    if let Some(p) = app_state.bg_provider.read().await.clone() {
+        return Some((p, "bg"));
+    }
+    app_state.provider.read().await.clone().map(|p| (p, "hot_fallback"))
+}
+
 /// Cụm `5.1` — đọc `state/inject_tx.jsonl` (mỗi dòng `from,value_wei,input_hex`)
 /// để bơm tx giả lập vào ĐÚNG cùng `handle_paper_tx` như pending thật, dùng
 /// khi node không đẩy pending (không có `BSC_WS`, giống máy phiên này) hoặc
@@ -1077,6 +1318,10 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
             pipeline::PipelineSkip::NonceFuture => funnel.record_nonce_future(),
             // Cum `real-economics-mode2` (F-03)
             pipeline::PipelineSkip::GasCap => funnel.record_gas_cap(),
+            pipeline::PipelineSkip::SanityReject => funnel.record_sanity_reject(),
+            // A3 - da dem rieng o handle_paper_tx luc GHI DE outcome (truoc khi
+            // goi ham nay), khong dem lai lan 2.
+            pipeline::PipelineSkip::CompetitorVictim => {}
             // NotInList/NotPancakeRouter khong roi vao day (NotPancakeRouter
             // bi chan truoc khi co PipelineOutcome nao duoc tao; NotInList
             // khong co bucket rieng trong danh sach lenh goc A6).
@@ -1112,7 +1357,42 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
             // Cum `hotpath-fix-then-decoder-ur` (A1) - tokens_to_vet gio tra
             // THEM quote THAT cua tung entry (truoc day hardcode WBNB cho MOI
             // token, khien 7 pool USDT trong pairs.txt bi do sai pool/loi).
-            let targets = app_state.pairbook.read().await.tokens_to_vet();
+            let all_targets = app_state.pairbook.read().await.tokens_to_vet();
+            // Cum `bugfix-presign-and-contract-plan` (A4) - CHU KY VET KHAC
+            // NHAU theo do "nong" cua pool: pool vua co candidate di toi buoc
+            // sim trong HOT_CANDIDATE_WINDOW_SEC gan day duoc vet lai moi
+            // HOT_VET_INTERVAL_SEC (300s), cac pool con lai giu
+            // `pairs_vet_interval_sec` (600s ship). Ly do: ket qua vet TUOI la
+            // dieu kien (a) cua duong ky shadow (`pre_sign_revet_fast`) -
+            // pool dang co co hoi ma vet qua han se bi abort `vet_stale`.
+            const HOT_VET_INTERVAL_SEC: u64 = 300;
+            const HOT_CANDIDATE_WINDOW_SEC: u64 = 900;
+            let hot: std::collections::HashSet<Address> = {
+                let seen = app_state.candidate_seen.read().await;
+                seen.iter()
+                    .filter(|(_, t)| t.elapsed().as_secs() <= HOT_CANDIDATE_WINDOW_SEC)
+                    .map(|(a, _)| *a)
+                    .collect()
+            };
+            let targets: Vec<_> = {
+                let book = app_state.pairbook.read().await;
+                all_targets
+                    .into_iter()
+                    .filter(|(pair_addr, _, _)| {
+                        let due_after = if hot.contains(pair_addr) { HOT_VET_INTERVAL_SEC.min(interval_sec) } else { interval_sec };
+                        match book.vet_result(pair_addr) {
+                            None => true, // chua vet lan nao -> vet ngay
+                            Some((_, age_sec)) => age_sec >= due_after,
+                        }
+                    })
+                    .collect()
+            };
+            if !targets.is_empty() {
+                app_state.logger.log(
+                    "pair.vet_cycle",
+                    serde_json::json!({ "due": targets.len(), "hot_pools": hot.len(), "hot_interval_sec": HOT_VET_INTERVAL_SEC, "base_interval_sec": interval_sec }),
+                );
+            }
             let mut results = Vec::with_capacity(targets.len());
             for (pair_addr, token, quote) in targets {
                 let quote_asset =
@@ -1198,7 +1478,9 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
             }
         }
 
-        tokio::time::sleep(Duration::from_secs(interval_sec)).await;
+        // Nhip quet NGAN (30s) - viec vet that su co dien ra hay khong do
+        // dieu kien `due_after` o tren quyet dinh, khong con do nhip ngu nay.
+        tokio::time::sleep(Duration::from_secs(30)).await;
     }
 }
 
@@ -1399,6 +1681,7 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         gas_price_gwei: None,
         seen_to_decision_ms: None,
         amount_in_bnb_equiv: None,
+        victim_in_competitor_cluster: None,
         bribe_wei: None,
         net_pos_after_bribe_wei: None,
     }
@@ -1460,11 +1743,11 @@ async fn resolve_reserves_cached(
     current_block: u64,
 ) -> Result<(Address, PoolReserves), pipeline::PipelineSkip> {
     if let Some(pair_addr) = pairbook.known_pair(token, quote_addr) {
-        if let Some(reserves) = app_state.reserve_cache.read().await.cached(pair_addr, current_block) {
+        if let Some(reserves) = app_state.reserve_cache.read().await.cached(pair_addr, quote_addr, current_block) {
             return Ok((pair_addr, reserves));
         }
         let reserves = pipeline::resolve_v2_reserves_known_pair(provider, pair_addr, quote_addr).await?;
-        app_state.reserve_cache.write().await.insert(pair_addr, current_block, reserves);
+        app_state.reserve_cache.write().await.insert(pair_addr, quote_addr, current_block, reserves);
         return Ok((pair_addr, reserves));
     }
     let (pair_addr, reserves) = if quote_addr == venues::wbnb_addr() {
@@ -1472,7 +1755,7 @@ async fn resolve_reserves_cached(
     } else {
         pipeline::resolve_reserves_for_quote(provider, token, pipeline::QuoteAsset::Usdt).await?
     };
-    app_state.reserve_cache.write().await.insert(pair_addr, current_block, reserves);
+    app_state.reserve_cache.write().await.insert(pair_addr, quote_addr, current_block, reserves);
     Ok((pair_addr, reserves))
 }
 
@@ -1784,6 +2067,25 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
         (outcome, source)
     };
 
+    // Cụm `bugfix-presign-and-contract-plan` (A3) — `from` có thuộc CỤM ĐỐI
+    // THỦ không (3 seed tĩnh + ví vừa nhận quote-asset từ seed trong block
+    // hiện tại/trước, xem `src/competitor.rs`). Đọc THUẦN từ bộ nhớ (0 RPC).
+    let in_competitor_cluster = app_state.competitor_cluster.read().await.contains(raw.from, current_block);
+    meta.victim_in_competitor_cluster = Some(in_competitor_cluster);
+    // `allow_competitor_victims=false` (ship) + `live_mode != "off"` (đã có
+    // khả năng KÝ thật) -> KHÔNG cho nhóm này thành `Simulated`. Ở
+    // `live_mode="off"` (paper thuần) KHÔNG chặn — vẫn cần số liệu để Chủ
+    // quyết định (xem doc-comment `Config::allow_competitor_victims`).
+    let outcome = if in_competitor_cluster
+        && !cfg.allow_competitor_victims
+        && cfg.live_mode != "off"
+        && matches!(outcome, PipelineOutcome::Simulated(_))
+    {
+        app_state.funnel.record_competitor_victim();
+        PipelineOutcome::Skip(pipeline::PipelineSkip::CompetitorVictim)
+    } else {
+        outcome
+    };
     record_funnel_terminal(&app_state.funnel, &outcome);
     meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
     // Cum `competitor-recon-and-strategy` (F-02) - tinh lai bribe/net_pos_after_bribe
@@ -1795,6 +2097,19 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
         let bribe_wei = pipeline::compute_bribe_wei(q.profit_wei as u128, cfg.bribe_pct_of_profit, clamp);
         meta.bribe_wei = Some(bribe_wei.to_string());
         meta.net_pos_after_bribe_wei = Some((q.profit_wei - bribe_wei as i128).to_string());
+    }
+    // Cụm `bugfix-presign-and-contract-plan` (A4) — đánh dấu pool "đang nóng"
+    // (candidate ĐI TỚI bước sim thật, không phải skip rẻ ở đầu chuỗi) để
+    // `pairs_vet_task` rút chu kỳ vet xuống 300 s cho riêng pool đó.
+    if matches!(
+        outcome,
+        PipelineOutcome::Simulated(_)
+            | PipelineOutcome::Skip(pipeline::PipelineSkip::Unprofitable)
+            | PipelineOutcome::Skip(pipeline::PipelineSkip::SanityReject)
+    ) {
+        if let Some(pair_addr) = meta.pair.as_deref().and_then(|p| Address::from_str(p).ok()) {
+            app_state.candidate_seen.write().await.insert(pair_addr, Instant::now());
+        }
     }
     pipeline::log_outcome_v2(&app_state.logger, raw.from, token_hint, source, &meta, &outcome);
     if let PipelineOutcome::Skip(skip) = &outcome {
@@ -1819,7 +2134,18 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                     let quote_asset =
                         if source == "usdt" { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };
                     let victim_gas_price_wei: u128 = u128::try_from(raw.gas_price).unwrap_or(u128::MAX);
-                    spawn_shadow_sign_task(app_state.clone(), cfg.clone(), *q, token, pair_addr, quote_asset, raw.hash, victim_gas_price_wei, current_block);
+                    spawn_shadow_sign_task(
+                        app_state.clone(),
+                        cfg.clone(),
+                        *q,
+                        token,
+                        pair_addr,
+                        quote_asset,
+                        raw.clone(),
+                        victim_gas_price_wei,
+                        current_block,
+                        in_competitor_cluster,
+                    );
                 }
             }
         }
@@ -1829,8 +2155,20 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
 /// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — KÝ THẬT
 /// front-buy/back-sell (nếu pre-sign re-vet OK), log `bundle.shadow`. KHÔNG
 /// BAO GIỜ gửi/broadcast (xem `shadow.rs`, không có `send_raw_transaction`
-/// nào). Task NỀN — spawn từ `handle_paper_tx` khi `Simulated` + `live_mode=
-/// "shadow"`, không chặn đường nóng (cùng khuôn `spawn_post_simulated_tracker`).
+/// nào).
+///
+/// # Cụm `bugfix-presign-and-contract-plan` (A4) — đường ký giờ 0 RPC
+///
+/// Bản BAOCAO41 gọi trên đường ký: `eth_getTransactionCount` (nonce) +
+/// `eth_gasPrice` (có thể) + `eth_getTransactionReceipt` (victim còn pending?)
+/// + `measure_tax_evm` (fork revm, cold-fetch state). Đo thật 30 phút: **0/36
+/// lần ký kịp**, 34/36 vì victim ĐÃ lên block trước khi chuỗi đó chạy xong.
+///
+/// Bản này đọc TOÀN BỘ từ cache trong bộ nhớ đã được task nền nạp sẵn:
+/// nonce (`SelfNonceCache`), gas (`GasOracle::cached_price_any_block`, rơi về
+/// `victim.gas_price` nếu chưa có), reserve (`ReserveCache` từ Sync-event),
+/// victim còn pending (`MinedTxIndex`), tình trạng vet (`PairBook`). Mỗi bước
+/// được bấm giờ và ghi vào `presign_ms` của `bundle.shadow`/`tx.abort`.
 #[allow(clippy::too_many_arguments)]
 fn spawn_shadow_sign_task(
     app_state: AppState,
@@ -1839,73 +2177,85 @@ fn spawn_shadow_sign_task(
     token: Address,
     pair_addr: Address,
     quote_asset: pipeline::QuoteAsset,
-    victim_hash: alloy::primitives::B256,
+    victim: transport::PendingTxRaw,
     victim_gas_price_wei: u128,
     current_block: u64,
+    in_competitor_cluster: bool,
 ) {
     tokio::spawn(async move {
+        let t_start = std::time::Instant::now();
+        let victim_hash = victim.hash;
         let Some((self_addr, wallet)) = app_state.shadow_wallet.clone() else { return };
-        let Some(provider) = app_state.provider.read().await.clone() else { return };
         let quote_addr = if quote_asset == pipeline::QuoteAsset::Usdt { venues::usdt_addr() } else { venues::wbnb_addr() };
         let min_reserve_wei =
             if quote_asset == pipeline::QuoteAsset::Usdt { cfg.min_reserve_usdt_wei() } else { cfg.min_reserve_wei() };
 
-        let nonce = match provider.get_transaction_count(self_addr).block_id(alloy::eips::BlockId::pending()).await {
-            Ok(n) => n,
-            Err(e) => {
-                app_state.logger.log(
-                    "tx.abort",
-                    serde_json::json!({"reason": "nonce_fetch_failed", "detail": e.to_string(), "victim_hash": format!("{victim_hash:#x}")}),
-                );
-                return;
-            }
+        // ---- (a) tinh trang vet (doc PairBook trong bo nho) ----
+        let t0 = std::time::Instant::now();
+        let (vet_ok, vet_age_sec) = {
+            let book = app_state.pairbook.read().await;
+            (book.is_tax_ok(&pair_addr), book.vet_result(&pair_addr).map(|(_, age)| age))
         };
+        let ms_vet = t0.elapsed().as_secs_f64() * 1000.0;
 
-        let gas_price_wei = app_state.gas_oracle.gas_price_wei(&provider, current_block, &app_state.logger).await;
-        let (units_front, units_back) = *app_state.gas_units.read().await;
-        let effective_gas_price = gas_price_wei.max(victim_gas_price_wei);
-        // He so an toan x2 cho max_fee_per_gas (EIP-1559 tran, khong phai gia
-        // tra thuc - gia THUC = base_fee + priority, luon <= max_fee) - cung
-        // tinh than tran an toan nhu front_max_gas_bnb_wei/back_max_gas_bnb_wei.
-        let max_fee_per_gas = effective_gas_price.saturating_mul(2);
-        let bribe_wei =
-            pipeline::compute_bribe_wei(quote.profit_wei.max(0) as u128, cfg.bribe_pct_of_profit, Some((cfg.bribe_min_wei(), cfg.bribe_max_wei())));
-        let total_units = units_front as u128 + units_back as u128;
-        // bribe_mode="gaspriority": rai bribe qua maxPriorityFeePerGas (2 chan
-        // dung chung 1 don gia, chia deu theo tong gas unit). bribe_mode=
-        // "coinbase": leg chuyen thang BNB toi block.coinbase CHUA implement
-        // trong cum nay (can 1 tx/call rieng, xem docs/STATE.md muc no) ->
-        // priority=0, bribe_wei van duoc TINH+LOG nhung CHUA co co che gui.
-        let max_priority_fee_per_gas: u128 = if cfg.bribe_mode == "gaspriority" && total_units > 0 { bribe_wei / total_units } else { 0 };
+        // ---- (b) reserve tu cache Sync-event, PHAI dung block hien tai ----
+        let t1 = std::time::Instant::now();
+        let reserves = app_state.reserve_cache.read().await.cached(pair_addr, quote_addr, current_block);
+        let ms_reserve = t1.elapsed().as_secs_f64() * 1000.0;
 
-        let Some(reserves) = app_state.reserve_cache.read().await.cached(pair_addr, current_block) else {
-            return; // khong co reserve cache moi -> khong re-vet an toan duoc, bo qua (khong doan)
+        // ---- (c) victim con pending theo "mempool view" cua bot ----
+        let t2 = std::time::Instant::now();
+        let (victim_seen, blocks_loaded) = {
+            let idx = app_state.mined_index.read().await;
+            (idx.contains(victim_hash), idx.blocks_loaded())
         };
+        let ms_mined = t2.elapsed().as_secs_f64() * 1000.0;
 
-        let revet = bsc_sandwich::shadow::pre_sign_revet(
-            &provider,
-            victim_hash,
-            pair_addr,
-            reserves.reserve_wbnb,
-            min_reserve_wei,
-            token,
-            quote_addr,
-            quote.front_in,
-            cfg.max_roundtrip_tax_bps(),
+        // ---- (d) nonce vi bot tu cache prefetch ----
+        let t3 = std::time::Instant::now();
+        let nonce_cached = app_state.self_nonce.read().await.cached(current_block);
+        let ms_nonce = t3.elapsed().as_secs_f64() * 1000.0;
+
+        let revet = bsc_sandwich::shadow::pre_sign_revet_fast(
+            vet_ok,
+            vet_age_sec,
+            cfg.pairs_vet_interval_sec.saturating_mul(2),
+            reserves.map(|r| r.reserve_wbnb),
+            reserves.map(|_| current_block),
             current_block,
-        )
-        .await;
+            min_reserve_wei,
+            victim_seen,
+            blocks_loaded,
+            nonce_cached.map(|(_, age)| age),
+            transport::MINED_INDEX_DEPTH as u64,
+        );
+
+        // Gia gas: CHI doc cache (khong goi RPC tren duong ky) - chua co so do
+        // nao thi dung thang gas_price cua chinh victim (luon biet).
+        let oracle_price = app_state.gas_oracle.cached_price_any_block().await.map(|(_, p)| p).unwrap_or(0);
+        let effective_gas_price = oracle_price.max(victim_gas_price_wei);
+        let max_fee_per_gas = effective_gas_price.saturating_mul(2);
+        let (units_front, units_back) = *app_state.gas_units.read().await;
+        let bribe_clamp = if quote_asset == pipeline::QuoteAsset::Usdt { None } else { Some((cfg.bribe_min_wei(), cfg.bribe_max_wei())) };
+        let bribe_wei = pipeline::compute_bribe_wei(quote.profit_wei.max(0) as u128, cfg.bribe_pct_of_profit, bribe_clamp);
+        let total_units = units_front as u128 + units_back as u128;
+        // BO SUNG GIUA PHIEN 2026-09-16 (docs BlockRazor + 48 Club): bribe
+        // KHONG di toi block.coinbase. `bribe_mode="builder_transfer"` (ship)
+        // = 1 TRANSFER BNB toi VI EOA CUA BUILDER dat trong CHAN BACK - can
+        // contract executor de tra bribe SAU khi kiem lai (xem
+        // docs/CONTRACT_DESIGN.md B2/B3), CHUA implement o shadow mode ->
+        // priority = 0, bribe_wei van duoc TINH + LOG day du.
+        // `bribe_mode="gaspriority"` = rai bribe qua maxPriorityFeePerGas
+        // (2 chan chia deu theo tong gas unit). Luu y voi 48 Club: bribe tra
+        // qua GAS chi duoc tinh 0.9x khi xep hang (relay::CLUB48_GAS_FEE_WEIGHT),
+        // nen "gaspriority" luon kem hieu qua hon "builder_transfer" o relay do.
+        let max_priority_fee_per_gas: u128 = if cfg.bribe_mode == "gaspriority" && total_units > 0 { bribe_wei / total_units } else { 0 };
+        let nonce = nonce_cached.map(|(n, _)| n).unwrap_or(0);
 
         let deadline = bsc_sandwich::executor::compute_deadline(cfg.executor_deadline_buffer_sec);
         let front_out_min = bsc_sandwich::executor::apply_slippage(quote.front_out, cfg.front_slippage_bps);
         let back_out_min = bsc_sandwich::executor::apply_slippage(quote.back_out, cfg.back_slippage_bps);
         let router = Address::from_str(venues::V2_ROUTER_ADDRESS).expect("V2_ROUTER_ADDRESS da pin phai hop le");
-        // Cụm mục 4 (mở rộng USDT) — WBNB dùng đường native (`amountIn` nằm
-        // trong `msg.value`, KHÔNG trong calldata); USDT dùng
-        // `swapExactTokensForTokens` (đường token↔token, `amountIn` nằm
-        // TRONG calldata, `value=0` cả 2 chân — CHƯA approve USDT cho router
-        // trong shadow mode, không sao vì KHÔNG BAO GIỜ gửi đi, chỉ ký để đo
-        // cơ chế/latency, xem `calldata.rs` doc-comment).
         let (front_calldata, front_value, back_calldata) = if quote_asset == pipeline::QuoteAsset::Usdt {
             let front = bsc_sandwich::calldata::encode_front_buy_usdt(quote_addr, token, quote.front_in, front_out_min, self_addr, deadline);
             let back = bsc_sandwich::calldata::encode_back_sell_usdt(token, quote_addr, quote.front_out, back_out_min, self_addr, deadline);
@@ -1916,7 +2266,15 @@ fn spawn_shadow_sign_task(
             (front, quote.front_in, back)
         };
 
-        bsc_sandwich::shadow::build_and_log_shadow_bundle(
+        let presign_ms = serde_json::json!({
+            "vet": ms_vet,
+            "reserve": ms_reserve,
+            "mined_index": ms_mined,
+            "nonce": ms_nonce,
+            "total_before_sign": t_start.elapsed().as_secs_f64() * 1000.0,
+        });
+
+        let signed = bsc_sandwich::shadow::build_and_log_shadow_bundle(
             &app_state.logger,
             &wallet,
             self_addr,
@@ -1926,8 +2284,105 @@ fn spawn_shadow_sign_task(
             (router, alloy::primitives::U256::ZERO, back_calldata, nonce + 1, max_fee_per_gas, max_priority_fee_per_gas, units_back),
             victim_hash,
             token,
+            presign_ms,
         )
         .await;
+
+        if signed.is_none() {
+            return;
+        }
+        // Ky xong -> ghi them so lieu kinh te cua chinh bundle nay (bribe,
+        // net sau bribe, co doi thu) de doi chieu voi `shadow.sim` ben duoi.
+        app_state.logger.log(
+            "bundle.shadow_econ",
+            serde_json::json!({
+                "victim_hash": format!("{victim_hash:#x}"),
+                "quote": if quote_asset == pipeline::QuoteAsset::Usdt { "usdt" } else { "wbnb" },
+                "front_in_wei": quote.front_in.to_string(),
+                "profit_net_wei": quote.profit_wei.to_string(),
+                "bribe_wei": bribe_wei.to_string(),
+                "net_after_bribe_wei": (quote.profit_wei - bribe_wei as i128).to_string(),
+                // Ten field ghi ro DON VI theo quote asset cua chinh pool do
+                // (nhanh USDT thi day la USDT, KHONG phai BNB) - dung bai hoc
+                // A1: moi con so phai tu noi no dang o don vi nao.
+                "bribe_native": bribe_wei as f64 / 1e18,
+                "bribe_unit": if quote_asset == pipeline::QuoteAsset::Usdt { "usdt" } else { "bnb" },
+                "victim_in_competitor_cluster": in_competitor_cluster,
+                "decision_block": current_block,
+                "presign_total_ms": t_start.elapsed().as_secs_f64() * 1000.0,
+            }),
+        );
+
+        // ---- A7: mo phong bundle 3 chan bang revm NEN (khong chan duong ky) ----
+        spawn_shadow_bundle_sim(app_state.clone(), victim, token, quote.front_in, current_block, quote_asset);
+    });
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (A7) — 2 relay đã pin KHÔNG có
+/// `eth_callBundle` (xác nhận cURL thật, xem `shadow.rs`), nên bundle 3 chân
+/// được mô phỏng **tại chỗ** bằng `revm` (`sim_evm::simulate_sandwich`:
+/// front-buy → victim replay THẬT → back-sell) trong 1 task NỀN chạy SAU khi
+/// đã ký — không nằm trên đường ký, không ảnh hưởng `presign_ms`.
+///
+/// Chỉ chạy cho quote WBNB: `simulate_sandwich` dựng chân front bằng
+/// `swapExactETHForTokens*` (native BNB). Nhánh USDT ghi
+/// `shadow.sim{skipped:"usdt_not_supported_by_simulate_sandwich"}` — KHÔNG
+/// bịa số cho nhánh chưa hỗ trợ.
+fn spawn_shadow_bundle_sim(
+    app_state: AppState,
+    victim: transport::PendingTxRaw,
+    token: Address,
+    front_in: alloy::primitives::U256,
+    fork_block: u64,
+    quote_asset: pipeline::QuoteAsset,
+) {
+    tokio::spawn(async move {
+        let victim_hash = victim.hash;
+        if quote_asset == pipeline::QuoteAsset::Usdt {
+            app_state.logger.log(
+                "shadow.sim",
+                serde_json::json!({
+                    "victim_hash": format!("{victim_hash:#x}"),
+                    "skipped": "usdt_not_supported_by_simulate_sandwich",
+                }),
+            );
+            return;
+        }
+        // RPC rieng cho revm fork (BSC_HTTP_SIM/BSC_HTTP_BG) - khong dung
+        // duong nong.
+        let provider = match app_state.sim_provider.read().await.clone() {
+            Some(p) => p,
+            None => match bg_provider_or_hot(&app_state).await {
+                Some((p, _)) => p,
+                None => return,
+            },
+        };
+        let t0 = std::time::Instant::now();
+        match bsc_sandwich::sim_evm::simulate_sandwich(provider, fork_block, front_in, token, &victim).await {
+            Ok(o) => app_state.logger.log(
+                "shadow.sim",
+                serde_json::json!({
+                    "victim_hash": format!("{victim_hash:#x}"),
+                    "token": format!("{token:#x}"),
+                    "fork_block": fork_block,
+                    "front_in_wei": o.front_in.to_string(),
+                    "profit_sim_wei": o.profit_wei.to_string(),
+                    "profit_sim_bnb": o.profit_wei as f64 / 1e18,
+                    "victim_ok": o.victim_success,
+                    "buy_tax_bps": o.buy_tax_bps,
+                    "sell_tax_bps": o.sell_tax_bps,
+                    "sim_ms": t0.elapsed().as_secs_f64() * 1000.0,
+                }),
+            ),
+            Err(e) => app_state.logger.log(
+                "shadow.sim",
+                serde_json::json!({
+                    "victim_hash": format!("{victim_hash:#x}"),
+                    "error": e.to_string(),
+                    "sim_ms": t0.elapsed().as_secs_f64() * 1000.0,
+                }),
+            ),
+        }
     });
 }
 
@@ -1956,8 +2411,9 @@ fn spawn_shadow_sign_task(
 /// cũng đang giao dịch NGAY quanh victim, trả gas cao hơn hay không".
 fn spawn_post_simulated_tracker(app_state: AppState, hash: alloy::primitives::B256, pair: Option<String>, decision_block: u64) {
     tokio::spawn(async move {
-        let provider = match app_state.provider.read().await.as_ref() {
-            Some(p) => p.clone(),
+        // Cum A5 - viec NEN (compete.check + decision_vs_mined): RPC nen.
+        let provider = match bg_provider_or_hot(&app_state).await {
+            Some((p, _)) => p,
             None => return,
         };
         let mut receipt = None;
@@ -2182,8 +2638,10 @@ async fn run_evm_decision(
 fn spawn_victim_validator(app_state: AppState, victim: PendingTxRaw, token: Address) {
     tokio::spawn(async move {
         use bsc_sandwich::sim_evm::{decode_v2_swap_amount_out, predict_victim_swap_out, swap_topic0};
-        let provider = match app_state.provider.read().await.as_ref() {
-            Some(p) => p.clone(),
+        // Cum A5 - viec NEN: dung RPC nen (BSC_HTTP_BG), khong tranh chap
+        // ket noi voi duong nong.
+        let provider = match bg_provider_or_hot(&app_state).await {
+            Some((p, _)) => p,
             None => return,
         };
         let factory = match Address::from_str(V2_FACTORY_ADDRESS) {
@@ -2402,6 +2860,11 @@ mod tests {
             reserve_cache: RwLock::new(transport::ReserveCache::new()),
         pairs_first_reload_done: Arc::new(tokio::sync::Notify::new()),
         sim_provider: RwLock::new(None),
+        bg_provider: RwLock::new(None),
+        mined_index: RwLock::new(transport::MinedTxIndex::new()),
+        self_nonce: RwLock::new(transport::SelfNonceCache::new()),
+        competitor_cluster: RwLock::new(bsc_sandwich::competitor::ClusterIndex::new()),
+        candidate_seen: RwLock::new(HashMap::new()),
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
         shadow_wallet: None,

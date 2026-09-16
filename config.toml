@@ -164,7 +164,16 @@ back_slippage_bps = 50
 bribe_pct_of_profit = 40.0
 bribe_min_bnb = 0.0005
 bribe_max_bnb = 0.01
-bribe_mode = "coinbase"
+# BO SUNG GIUA PHIEN 2026-09-16 (docs chinh thuc BlockRazor + 48 Club Chu dan):
+# bribe KHONG di toi block.coinbase (mo hinh Flashbots/Ethereum) ma toi VI EOA
+# CUA BUILDER bang 1 transfer BNB dat trong CHAN BACK cua bundle. Gia tri cu
+# "coinbase" = FAIL LOAD (ngu nghia da khac han, khong nhan am tham).
+bribe_mode = "builder_transfer"
+# Vi EOA builder theo tung relay (pin + source_url + ngay trong DEX_REGISTRY.md).
+blockrazor_builder_eoa = "0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20"
+# 48 Club xep hang bundle = 0.9 x gas fee tx unique + BNB chuyen toi EOA nay
+# -> uu tien nhet bribe vao TRANSFER, giu gas o muc toi thieu 0.05 gwei.
+club48_builder_eoa = "0x4848489f0b2BEdd788c696e2D79b6b69D7484848"
 
 # Cum competitor-recon-and-strategy (muc 4, shadow mode): "off" (ship - KHONG
 # load signer, hanh vi 100% giong truoc cum nay), "shadow" (KY THAT bang
@@ -172,3 +181,12 @@ bribe_mode = "coinbase"
 # "live" (CHUA lam trong cum nay, van can cum strategy-exec + lenh rieng cua
 # Chu - doc field nay KHONG tu mo khoa gui that, xem executor::can_send_live).
 live_mode = "off"
+
+# Cum `bugfix-presign-and-contract-plan` (A3) - tx cua CUM DOI THU da nhan
+# dien (3 dia chi seed da verify on-chain + moi vi vua nhan quote-asset tu 1
+# trong 3 dia chi do trong block hien tai/truoc - xem src/competitor.rs) co
+# duoc coi la nan nhan hop le khong. false (ship): khi live_mode != "off"
+# (da co kha nang KY that), candidate nhom nay bi skip `competitor_victim`.
+# O live_mode="off" (paper thuan) co nay KHONG chan gi - van Simulated va van
+# ghi co `victim_in_competitor_cluster` vao sim.result de /api/econ dem duoc.
+allow_competitor_victims = false

@@ -160,6 +160,49 @@ function renderEcon(data) {
       )
       .join("");
   }
+  // Cụm bugfix-presign-and-contract-plan (A6) — bucket theo VỐN CẦN.
+  const frontBody = document.getElementById("econ-front-buckets-body");
+  if (frontBody) {
+    frontBody.innerHTML = (data.buckets_front_in_bnb || [])
+      .map(
+        (b) =>
+          `<tr><td>${b.bucket}</td><td>${b.count}</td><td>${b.net_pos}</td><td>${fmtBnbMaybe(b.sum_net_pos_bnb)}</td><td>${fmtBnbMaybe(b.best_net_bnb)}</td></tr>`
+      )
+      .join("");
+  }
+  const capEl = document.getElementById("econ-capital80");
+  if (capEl) {
+    const parts = Object.entries(data.capital_for_80pct_profit || {}).map(
+      ([q, v]) =>
+        `${q}: cần ${Number(v.capital_needed_native).toFixed(4)} ${q} vốn để lấy 80% lãi ` +
+        `(${v.taken_for_80pct}/${v.opportunities} cơ hội, ${Number(v.captured_native).toFixed(4)}/${Number(v.total_net_native).toFixed(4)})`
+    );
+    capEl.textContent = parts.length ? `Vốn cho 80% lãi — ${parts.join(" | ")}` : "Vốn cho 80% lãi: (chưa có cơ hội nào có lãi)";
+  }
+  const compEl = document.getElementById("econ-competitor");
+  if (compEl) {
+    const c = data.competitor || {};
+    compEl.textContent =
+      `Cụm đối thủ: candidate=${c.candidate || 0} (${Number(c.pct_of_candidate || 0).toFixed(2)}% tổng) ` +
+      `simulated=${c.simulated || 0} sum_net_bnb=${fmtBnbMaybe(c.sum_net_bnb)} pool chạm=${c.pools_touched || 0}`;
+  }
+  const rateEl = document.getElementById("econ-rate-health");
+  if (rateEl) {
+    const inv = data.rate_inverted_rejected || 0;
+    rateEl.innerHTML =
+      `Sức khoẻ tỉ giá: <span class="${inv === 0 ? "ok" : "bad"}">rate_inverted_rejected=${inv}</span> ` +
+      `(phải = 0 sau bản sửa A1) | rate_unavailable=${data.rate_unavailable || 0} (không quy đổi được, bình thường)`;
+  }
+  const poolsBody = document.getElementById("econ-top-pools-body");
+  if (poolsBody) {
+    poolsBody.innerHTML = (data.top_pools || [])
+      .map(
+        (p) =>
+          `<tr><td>${p.pair}</td><td>${p.symbol || "-"}</td><td>${p.count}</td><td>${p.net_pos}</td><td>${fmtBnbMaybe(p.sum_net_bnb)}</td>` +
+          `<td class="${p.competitor_touched ? "bad" : "ok"}">${p.competitor_touched ? "CÓ" : "không"}</td></tr>`
+      )
+      .join("");
+  }
   const decodeFailEl = document.getElementById("econ-decode-fail");
   if (decodeFailEl) {
     const byRouter = data.decode_fail_by_router || {};
@@ -199,6 +242,29 @@ function renderValidate(data) {
         (r) =>
           `<tr><td>${r.hash}</td><td>${r.block}</td><td>${r.lech_pct}%</td><td class="${r.isolated ? "ok" : "bad"}">${r.isolated ? "iso" : "multi"}</td></tr>`
       )
+      .join("");
+  }
+}
+
+// Cụm bugfix-presign-and-contract-plan (A4/A7) — GET /api/shadow.
+function renderShadow(data) {
+  const meta = document.getElementById("shadow-meta");
+  if (meta) {
+    meta.textContent =
+      `live_mode=${data.live_mode || "-"} armed=${data.shadow_armed ? "CÓ" : "không"} ` +
+      `ví=${data.shadow_self_address || "-"} | bundle đã ký=${data.bundle_shadow_count || 0} ` +
+      `abort=${data.abort_count || 0} (ký kịp ${Number(data.sign_rate_pct || 0).toFixed(1)}%) | ` +
+      `abort theo lý do: ${Object.entries(data.abort_by_reason || {}).map(([k, v]) => `${k}=${v}`).join(", ") || "(không có)"}`;
+  }
+  const body = document.getElementById("shadow-body");
+  if (body) {
+    body.innerHTML = (data.recent_bundles || [])
+      .slice()
+      .reverse()
+      .map((b) => {
+        const ms = b.presign_ms && b.presign_ms.total_before_sign;
+        return `<tr><td>${b.victim_hash || "-"}</td><td>${(b.front && b.front.hash) || "-"}</td><td>${(b.back && b.back.hash) || "-"}</td><td>${ms === undefined ? "-" : Number(ms).toFixed(3)}</td></tr>`;
+      })
       .join("");
   }
 }
@@ -256,6 +322,11 @@ async function refresh() {
     renderValidate(await getJSON("/api/validate"));
   } catch (e) {
     console.error("validate fetch failed", e);
+  }
+  try {
+    renderShadow(await getJSON("/api/shadow"));
+  } catch (e) {
+    console.error("shadow fetch failed", e);
   }
 }
 

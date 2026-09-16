@@ -110,3 +110,49 @@ phạm vi `scan_v4` khi decoder `2.x` đụng tới):
   factory/pool contract, nên không thêm hàng vào bảng V2/V3/V4 phía trên,
   đứng riêng ở mục Core cùng WBNB. `scan_quote_usdt=false` ship mặc định
   (`config.toml`) — pin ở đây chỉ mở đường, chưa bật quét mặc định.
+
+## Relay bundle-builder — ví EOA nhận BRIBE (cụm `bugfix-presign-and-contract-plan`, BỔ SUNG GIỮA PHIÊN 2026-09-16)
+
+Chủ dán docs chính thức của **cả 2 relay** giữa phiên. Phát hiện quan trọng:
+trên BSC, **bribe KHÔNG đi tới `block.coinbase`** (mô hình Flashbots/Ethereum
+mà cụm `competitor-recon-and-strategy` đã giả định với `bribe_mode="coinbase"`)
+— bribe là **1 lệnh chuyển BNB thường tới VÍ EOA của builder**, đặt trong
+**chân BACK** của bundle. `bribe_mode` vì vậy đổi thành `"builder_transfer"`
+(giá trị `"coinbase"` cũ = FAIL LOAD, xem `src/config.rs`).
+
+| Relay | Ví EOA nhận bribe | source_url | Ngày đọc docs | `eth_getCode` (len byte) | nonce (lúc pin) | balance (lúc pin) |
+|---|---|---|---|---|---|---|
+| BlockRazor (Block Builder) | `0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20` | docs.blockrazor.io (Block Builder — bundle submission), Chủ dán nguyên văn | 2026-09-16 | **0** (EOA — đúng như docs mô tả, KHÔNG phải contract) | 40.158.171 | 0.0000 BNB |
+| 48 Club (Puissant Builder) | `0x4848489f0b2BEdd788c696e2D79b6b69D7484848` | docs.48.club/puissant-builder (Builder Control EOA) | 2026-09-16 | **0** (EOA) | 62.749.823 | 62.6169 BNB |
+
+Verify THẬT (WSL, `https://bsc-dataseed1.bnbchain.org`, `eth_chainId` xác nhận
+`0x38` trước khi gọi — xem BAOCAO42 ô 6). **Lưu ý cách đọc cột `getCode`**:
+luật "pin = getCode > 0" của CLAUDE.md áp cho **contract** (router/factory/
+pool). 2 địa chỉ này là **ví EOA**, `getCode = 0` là ĐÚNG KỲ VỌNG, không phải
+pin hỏng — bằng chứng thay thế là `nonce` cực lớn (40 triệu / 62 triệu tx đã
+gửi, chỉ hạ tầng builder mới có con số đó) + balance thật của 48 Club.
+
+Endpoint đã pin kèm theo (hằng số trong `src/relay.rs`, KHÔNG gọi HTTP trong
+module đó — xem test `no_http_network_calls_anywhere_in_relay_rs`):
+
+| Đường | URL | Method | Auth |
+|---|---|---|---|
+| BlockRazor builder (ưu tiên, VPS ở NJ/US) | `https://virginia.builder.blockrazor.io` | `eth_sendBundle` | **BẮT BUỘC** header `Authorization: $BLOCKRAZOR_AUTH` (`.env`) |
+| BlockRazor builder (global, dự phòng) | `https://rpc.blockrazor.builders` | `eth_sendBundle` | như trên |
+| BlockRazor đường 2 (fallback) | `https://bsc.blockrazor.xyz` | `eth_sendMevBundle` | không cần |
+| 48 Club Puissant | `https://puissant-builder.48.club/` | `eth_sendBundle` | không cần (`48spSign` bỏ qua — chưa là member) |
+
+Quy tắc bribe theo từng relay (từ docs, KHÔNG suy diễn):
+
+- **BlockRazor**: gas ≥ `0.05` gwei (`relay::BLOCKRAZOR_MIN_GAS_PRICE_WEI`).
+  Đường 2 cho phép tx 0 gwei miễn TRUNG BÌNH bundle ≥ 0.05 gwei.
+- **48 Club**: xếp hạng bundle = `0.9 × gas fee của tx unique + BNB chuyển tới
+  Builder Control EOA`. Hệ số `0.9` (`relay::CLUB48_GAS_FEE_WEIGHT`) nghĩa là
+  1 BNB trả qua **gas** chỉ được tính 0.9 BNB, còn 1 BNB **chuyển thẳng** được
+  tính đủ 1.0 → **luôn ưu tiên nhét bribe vào transfer**, giữ gas ở mức tối
+  thiểu 0.05 gwei. Đây là lý do kỹ thuật `bribe_mode="gaspriority"` kém hiệu
+  quả hơn `"builder_transfer"` ở relay này.
+- `revertingTxHashes`: để **RỖNG** cho cả 2 relay — front/back đều KHÔNG được
+  phép revert, và victim là tx public nên cũng không nằm trong danh sách.
+- `backrunTarget` (48 Club): hash của chính victim, điền khi tầng gửi thật
+  (`7.3`) có hash trong tay.

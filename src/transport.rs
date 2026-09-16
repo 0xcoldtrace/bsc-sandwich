@@ -185,7 +185,21 @@ pub fn filter_read_urls(urls: Vec<String>) -> Vec<String> {
 /// resolve_fail thông thường.
 pub fn is_unsupported_method_error(err: &str) -> bool {
     let lower = err.to_lowercase();
-    lower.contains("-32000") || lower.contains("-32601") || lower.contains("not supported") || lower.contains("method not found")
+    lower.contains("-32000")
+        || lower.contains("-32601")
+        || lower.contains("not supported")
+        || lower.contains("method not found")
+        // Cụm `bugfix-presign-and-contract-plan` (A5) — quan sát THẬT khi chạy
+        // shadow lần đầu với pool RPC NỀN: `bsc-rpc.publicnode.com` trả
+        // `-32602 "Archive requests require a personal token. Get one at:
+        // https://www.allnodes.com/publicnode"` cho MỌI lần `revm`/`AlloyDB`
+        // đọc storage slot ở block cũ hơn vài block. Đây cũng là "node này
+        // không kham được việc này" — phải đánh dấu URL và chuyển URL kế,
+        // nếu không `pairs_vet_task` lặp lỗi vô hạn trên đúng 1 URL hỏng
+        // (đã thấy: 126 dòng `pair.vet_error` liên tiếp, 0 pool nào được vet,
+        // kéo theo đường ký shadow abort `vet_stale` 100%).
+        || lower.contains("archive request")
+        || lower.contains("personal token")
 }
 
 #[derive(Debug, Default)]
@@ -543,18 +557,33 @@ impl SeenHashSet {
     }
 }
 
-/// Cụm `hotpath-fix-then-decoder-ur` (A4b) — cache `(pair, block) -> reserves`
-/// để KHÔNG gọi lặp lại `token0()`/`getReserves()` (2 `eth_call`) cho CÙNG 1
-/// pool trong CÙNG 1 block — nhiều tx chạm cùng pool nóng (vd CAKE/WBNB)
-/// trong 1 block là bình thường ở mempool BSC thật (BAOCAO38: 12657 candidate/
-/// phút qua đúng ~44 pool). Cùng khuôn `NonceCache` (không tự khoá, caller tự
-/// `RwLock`). `block` đổi -> entry cũ (block khác) đơn giản là cache-miss (key
-/// gồm cả block), KHÔNG cần dọn dẹp chủ động — `HashMap` không bao giờ được
-/// xoá entry cũ (chấp nhận được: số pool trong `pairs.txt` cố định ~90, không
-/// tăng vô hạn theo thời gian, khác nếu cache theo TỪNG token thấy trên chain).
+/// Cụm `hotpath-fix-then-decoder-ur` (A4b) — cache `(pair, quote, block) ->
+/// reserves` để KHÔNG gọi lặp lại `token0()`/`getReserves()` (2 `eth_call`)
+/// cho CÙNG 1 pool trong CÙNG 1 block — nhiều tx chạm cùng pool nóng (vd
+/// CAKE/WBNB) trong 1 block là bình thường ở mempool BSC thật (BAOCAO38:
+/// 12657 candidate/phút qua đúng ~44 pool). Cùng khuôn `NonceCache` (không tự
+/// khoá, caller tự `RwLock`). `block` đổi -> entry cũ đơn giản là cache-miss
+/// (key gồm cả block), KHÔNG cần dọn dẹp chủ động.
+///
+/// # Vì sao key PHẢI có `quote` (cụm `bugfix-presign-and-contract-plan`, A1)
+///
+/// `PoolReserves` KHÔNG tự mô tả chiều: field `reserve_wbnb` thực chất là
+/// "reserve của QUOTE ASSET mà caller đã hỏi", `reserve_token` là phía còn
+/// lại (xem `pool::order_reserves_by_quote`). Trước bản sửa này key chỉ là
+/// `(pair, block)` — cùng 1 pool hỏi bằng 2 quote asset khác nhau dùng CHUNG
+/// 1 entry, nên chiều bị ĐẢO im lặng. Bug THẬT quan sát được trên
+/// `logs/bot.jsonl` (68 dòng, pool WBNB/USDT `0x16b9a828…`): victim MUA WBNB
+/// bằng USDT khiến pool đó được cache với `quote=USDT`
+/// (`reserve_wbnb`=reserve USDT thật); ngay sau đó bước quy đổi gas/
+/// `amount_in_bnb_equiv` hỏi CÙNG pool với `quote=WBNB` và nhận lại entry
+/// USDT-ordered → `convert_usdt_to_bnb_wei` nhân thay vì chia (tỉ giá 720
+/// thay vì 1/720) → `amount_in_bnb_equiv` phồng ~518.000 lần, `/api/econ`
+/// báo `best_net_bnb` hàng chục nghìn BNB, và `gas_cost_usdt_wei` bị CHIA
+/// cho 720 (gas rẻ giả → profit USDT bị thổi lên). Key có `quote` làm 2 chiều
+/// thành 2 entry riêng, không thể lẫn.
 #[derive(Debug, Default)]
 pub struct ReserveCache {
-    entries: std::collections::HashMap<(Address, u64), crate::sim_v2::PoolReserves>,
+    entries: std::collections::HashMap<(Address, Address, u64), crate::sim_v2::PoolReserves>,
 }
 
 impl ReserveCache {
@@ -562,12 +591,102 @@ impl ReserveCache {
         Self::default()
     }
 
-    pub fn cached(&self, pair: Address, block: u64) -> Option<crate::sim_v2::PoolReserves> {
-        self.entries.get(&(pair, block)).copied()
+    pub fn cached(&self, pair: Address, quote: Address, block: u64) -> Option<crate::sim_v2::PoolReserves> {
+        self.entries.get(&(pair, quote, block)).copied()
     }
 
-    pub fn insert(&mut self, pair: Address, block: u64, reserves: crate::sim_v2::PoolReserves) {
-        self.entries.insert((pair, block), reserves);
+    pub fn insert(&mut self, pair: Address, quote: Address, block: u64, reserves: crate::sim_v2::PoolReserves) {
+        self.entries.insert((pair, quote, block), reserves);
+    }
+}
+
+// ============================================================================
+// Cụm `bugfix-presign-and-contract-plan` (A4) — 2 cache "đường ký KHÔNG gọi
+// RPC": chỉ số tx ĐÃ LÊN BLOCK gần nhất + nonce ví shadow prefetch theo block.
+// ============================================================================
+
+/// Số block gần nhất giữ lại trong `MinedTxIndex`. 3 block BSC ≈ 9 giây —
+/// thừa sức phủ khoảng thời gian từ lúc bot thấy tx pending tới lúc nó quyết
+/// định (p95 ~350 ms, xem BAOCAO41), nhưng vẫn đủ ngắn để bộ nhớ không phình.
+pub const MINED_INDEX_DEPTH: usize = 3;
+
+/// Cụm `bugfix-presign-and-contract-plan` (A4) — "mempool view" của bot: tập
+/// hash tx đã xuất hiện trong `MINED_INDEX_DEPTH` block gần nhất, nạp bởi 1
+/// task nền (1 lời gọi `eth_getBlockByNumber` KHÔNG-full cho MỖI block mới,
+/// trên RPC NỀN) — KHÔNG phải mỗi tx.
+///
+/// Thay cho `eth_getTransactionReceipt(victim)` ở đường ký (BAOCAO41:
+/// `pre_sign_revet` gọi receipt + fork revm, 0/36 lần ký kịp). Câu hỏi cần
+/// trả lời trước khi ký là "victim CÒN pending không" — nếu hash đã nằm
+/// trong 1 block đã biết thì chắc chắn KHÔNG còn; nếu chưa thấy thì theo
+/// hiểu biết hiện có của bot nó vẫn pending (ghi rõ: đây là *hiểu biết của
+/// bot*, không phải bằng chứng tuyệt đối từ node — đúng tinh thần "KHÔNG gọi
+/// RPC receipt" của lệnh A4).
+#[derive(Debug, Default)]
+pub struct MinedTxIndex {
+    /// `(block, hash tập)` theo thứ tự block tăng dần, tối đa `MINED_INDEX_DEPTH`.
+    blocks: std::collections::VecDeque<(u64, std::collections::HashSet<B256>)>,
+}
+
+impl MinedTxIndex {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Nạp danh sách hash của 1 block. Block đã có -> ghi đè (reorg/đọc lại).
+    pub fn insert_block(&mut self, block: u64, hashes: std::collections::HashSet<B256>) {
+        self.blocks.retain(|(b, _)| *b != block);
+        self.blocks.push_back((block, hashes));
+        // Giữ đúng N block MỚI NHẤT (sắp theo số block, không theo thứ tự nạp).
+        let mut sorted: Vec<_> = self.blocks.drain(..).collect();
+        sorted.sort_by_key(|(b, _)| *b);
+        while sorted.len() > MINED_INDEX_DEPTH {
+            sorted.remove(0);
+        }
+        self.blocks = sorted.into();
+    }
+
+    /// `true` khi hash ĐÃ thấy trong 1 block gần đây (victim KHÔNG còn pending).
+    pub fn contains(&self, hash: B256) -> bool {
+        self.blocks.iter().any(|(_, set)| set.contains(&hash))
+    }
+
+    /// Block mới nhất đã nạp (`None` khi chưa nạp block nào — caller PHẢI coi
+    /// đây là "chưa biết gì", không được suy ra "victim còn pending").
+    pub fn newest_block(&self) -> Option<u64> {
+        self.blocks.iter().map(|(b, _)| *b).max()
+    }
+
+    pub fn blocks_loaded(&self) -> usize {
+        self.blocks.len()
+    }
+}
+
+/// Cụm `bugfix-presign-and-contract-plan` (A4) — nonce ví SHADOW (ví của
+/// chính bot) prefetch mỗi block bởi task nền, để đường ký không phải gọi
+/// `eth_getTransactionCount` (BAOCAO41 đo: lời gọi đó + fork tax là nguyên
+/// nhân ký trễ). KHÁC `NonceCache` (nonce của VICTIM, khoá theo địa chỉ bất
+/// kỳ) — đây chỉ 1 địa chỉ, nên lưu thẳng `(block, nonce)`.
+#[derive(Debug, Default)]
+pub struct SelfNonceCache {
+    cached: Option<(u64, u64)>,
+}
+
+impl SelfNonceCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, block: u64, nonce: u64) {
+        self.cached = Some((block, nonce));
+    }
+
+    /// Nonce prefetch + số block đã "cũ" so với `current_block`. `None` khi
+    /// chưa từng prefetch. Caller tự quyết định độ cũ chấp nhận được (đường
+    /// ký hiện chấp nhận ≤ `MINED_INDEX_DEPTH` block để không bỏ lỡ cơ hội
+    /// khi 1 nhịp prefetch bị trượt).
+    pub fn cached(&self, current_block: u64) -> Option<(u64, u64)> {
+        self.cached.map(|(b, n)| (n, current_block.saturating_sub(b)))
     }
 }
 
@@ -621,6 +740,14 @@ impl GasOracle {
     /// lệch). Chưa từng đo lần nào -> `0` (an toàn theo hướng khác: caller
     /// dùng `max(oracle, victim.gas_price)` nên `victim.gas_price` vẫn chặn
     /// được, `0` chỉ là "không có thông tin thêm từ oracle").
+    /// Cụm `bugfix-presign-and-contract-plan` (A4) — đọc CHỈ cache, KHÔNG
+    /// bao giờ gọi RPC: dùng trên đường ký shadow (yêu cầu "0 RPC trên đường
+    /// ký"). `None` khi chưa có số đo nào (caller rơi về `victim.gas_price`,
+    /// luôn biết từ chính tx quan sát được).
+    pub async fn cached_price_any_block(&self) -> Option<(u64, u128)> {
+        *self.cached.read().await
+    }
+
     pub async fn gas_price_wei(&self, provider: &dyn Provider, block: u64, logger: &BotLogger) -> u128 {
         if let Some((b, price)) = *self.cached.read().await {
             if b == block {
@@ -747,17 +874,63 @@ mod tests {
     }
 
     /// Cụm `hotpath-fix-then-decoder-ur` (A4b) — ĐẠT CẦN DÁN: cùng `(pair,
-    /// block)` -> hit cache; đổi `block` -> miss (khác `(pair, block)` là entry
+    /// quote, block)` -> hit cache; đổi `block` -> miss (khác key là entry
     /// khác trong `HashMap`, không phải "invalidate theo block" chủ động).
     #[test]
     fn reserve_cache_hits_same_pair_and_block_misses_different_block() {
         let pair = Address::from_str("0x111111111111111111111111111111111111beef").unwrap();
+        let quote = Address::from_str("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c").unwrap();
         let reserves = crate::sim_v2::PoolReserves { reserve_wbnb: U256::from(20u64), reserve_token: U256::from(1000u64) };
         let mut cache = ReserveCache::new();
-        assert_eq!(cache.cached(pair, 100), None);
-        cache.insert(pair, 100, reserves);
-        assert_eq!(cache.cached(pair, 100), Some(reserves));
-        assert_eq!(cache.cached(pair, 101), None, "block khac -> cache miss, khong dung reserve cu");
+        assert_eq!(cache.cached(pair, quote, 100), None);
+        cache.insert(pair, quote, 100, reserves);
+        assert_eq!(cache.cached(pair, quote, 100), Some(reserves));
+        assert_eq!(cache.cached(pair, quote, 101), None, "block khac -> cache miss, khong dung reserve cu");
+    }
+
+    /// Cụm `bugfix-presign-and-contract-plan` (A1) — ĐẠT CẦN DÁN: CÙNG pool,
+    /// CÙNG block, 2 quote asset khác nhau KHÔNG ĐƯỢC dùng chung entry.
+    ///
+    /// Đây chính là bug gốc khiến `/api/econ` báo `best_net_bnb` hàng chục
+    /// nghìn BNB: pool WBNB/USDT `0x16b9a828…` được cache với `quote=USDT`
+    /// (`reserve_wbnb` = 38.2M USDT) bởi 1 candidate victim-mua-WBNB-bằng-USDT,
+    /// rồi bước quy đổi `amount_in_bnb_equiv`/gas hỏi CÙNG pool với
+    /// `quote=WBNB` và nhận lại ĐÚNG entry đó (chiều ĐẢO) — tỉ giá 720 thay
+    /// vì 1/720.
+    #[test]
+    fn reserve_cache_same_pair_two_quotes_do_not_collide() {
+        let pair = Address::from_str("0x16b9a828e9d35a1e6df7d9f65b3e3e7b3e0b0dae").unwrap();
+        let wbnb = Address::from_str("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c").unwrap();
+        let usdt = Address::from_str("0x55d398326f99059fF775485246999027B3197955").unwrap();
+        // Hoi voi quote=WBNB: reserve_wbnb = 52_000 BNB, phia con lai 37.4M USDT.
+        let as_wbnb_quote =
+            crate::sim_v2::PoolReserves { reserve_wbnb: U256::from(52_000u64), reserve_token: U256::from(37_440_000u64) };
+        // Hoi voi quote=USDT: 2 field DAO NGUOC (reserve_wbnb = reserve cua QUOTE = USDT).
+        let as_usdt_quote =
+            crate::sim_v2::PoolReserves { reserve_wbnb: U256::from(37_440_000u64), reserve_token: U256::from(52_000u64) };
+        let mut cache = ReserveCache::new();
+        cache.insert(pair, usdt, 100, as_usdt_quote);
+        assert_eq!(cache.cached(pair, usdt, 100), Some(as_usdt_quote));
+        assert_eq!(
+            cache.cached(pair, wbnb, 100),
+            None,
+            "quote khac -> PHAI cache miss (de caller tu resolve dung chieu), KHONG duoc tra entry chieu nguoc"
+        );
+        cache.insert(pair, wbnb, 100, as_wbnb_quote);
+        assert_eq!(cache.cached(pair, wbnb, 100), Some(as_wbnb_quote));
+        assert_eq!(cache.cached(pair, usdt, 100), Some(as_usdt_quote), "2 entry song song, khong de len nhau");
+    }
+
+    /// ĐẠT CẦN DÁN (cụm `bugfix-presign-and-contract-plan`, A5) — lỗi THẬT
+    /// quan sát được khi chạy shadow lần đầu qua pool RPC nền.
+    #[test]
+    fn is_unsupported_method_error_catches_real_archive_token_error() {
+        let real = "sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { \
+                    code: -32602, message: \"Archive requests require a personal token. Get one at: \
+                    https://www.allnodes.com/publicnode\", data: None })))";
+        assert!(is_unsupported_method_error(real), "phai nhan dien de doi URL, khong lap lo vo han tren 1 node hong");
+        assert!(is_unsupported_method_error("-32601 method not found"));
+        assert!(!is_unsupported_method_error("execution reverted"), "revert THAT cua token khong phai loi node");
     }
 
     #[test]
