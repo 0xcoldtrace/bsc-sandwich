@@ -1,0 +1,21 @@
+arb_crosscheck chain_ok block=122220217 fork=122220216
+token	dir	borrow_bnb	math_token_out	revm_buy_gas	revm_sell_gas	pct_diff	ok
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82	buy=0x0ed7e52944161450477ee417de9cd3a859b14fd0	100000000000000000	99424533522006378	399366783278107419	339808	301.6783	false
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82	buy=0x0ed7e52944161450477ee417de9cd3a859b14fd0	500000000000000000	496793322196505090	1996505017521634551	339808	301.8784	false
+0xe9e7cea3dedca5984780bafc599bd69add087d56	buy=0x58f876857a02d6762e0101bb5c46a8c1ed44dc16	100000000000000000	99439537237390384	399407261975273920	339824	301.6584	false
+0xe9e7cea3dedca5984780bafc599bd69add087d56	buy=0x58f876857a02d6762e0101bb5c46a8c1ed44dc16	500000000000000000	497066689840200625	1996905419470283903	339836	301.7379	false
+0x2170ed0880ac9a755fd29b2688956bd959f933f8	buy=0x74e4716e431f45807dcf19f284c7aa99f18a4fbc	100000000000000000	99609946402246002	399353714347620150	339812	300.9175	false
+0x2170ed0880ac9a755fd29b2688956bd959f933f8	buy=0x74e4716e431f45807dcf19f284c7aa99f18a4fbc	500000000000000000	497609650229745948	1996330109906113369	339824	301.1840	false
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c	buy=0x61eb789d75a95caa3ff50ed7e47b96c132fec082	100000000000000000	99146627594363871	399366714394648039	339862	302.8041	false
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c	buy=0x61eb789d75a95caa3ff50ed7e47b96c132fec082	500000000000000000	495245690280014940	1996344661788954035	339862	303.1019	false
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d	buy=0xd99c7f6c65857ac913a8f880a4cb84032ab2fc5b	100000000000000000	99339079366689582	399073972389324584	347747	301.7291	false
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d	buy=0xd99c7f6c65857ac913a8f880a4cb84032ab2fc5b	500000000000000000	495883455955247442	1994561628742986001	347747	302.2239	false
+0xba2ae424d960c26247dd6c32edc70b295c744c43	FAIL	100000000000000000	sim_evm thuc thi loi: swap 0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c->0xba2ae424d960c26247dd6c32edc70b295c744c43: Database(Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None }))))
+0xba2ae424d960c26247dd6c32edc70b295c744c43	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0xe6df05ce8c8301223373cf5b969afcb1498c5528	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0xe6df05ce8c8301223373cf5b969afcb1498c5528	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0xc9882def23bc42d53895b8361d0b1edc7570bc6a	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0xc9882def23bc42d53895b8361d0b1edc7570bc6a	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x28ba6ef35f27f1ed3873cc788698d2ddb28d2a82	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x28ba6ef35f27f1ed3873cc788698d2ddb28d2a82	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+SUMMARY n_ok=0 n_fail=18 n_skip=0 fork=122220216

@@ -1,0 +1,23 @@
+arb_crosscheck chain_ok block=122219938 fork=122219937
+token	dir	borrow_bnb	math_token_out	revm_buy_gas	revm_sell_gas	pct_diff	ok
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82	buy=0x0ed7e52944161450477ee417de9cd3a859b14fd0	100000000000000000	99424533522006378	399379069714176977	339808	301.6907	false
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82	buy=0x0ed7e52944161450477ee417de9cd3a859b14fd0	500000000000000000	496793322196505090	1996566408898500064	339808	301.8908	false
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82	buy=0xa39af17ce4a8eb807e076805da1e2b8ea7d0755b	100000000000000000	99063069175759745	399108401161044875	339798	302.8831	false
+0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82	buy=0xa39af17ce4a8eb807e076805da1e2b8ea7d0755b	500000000000000000	495314885631465949	1995541545340530115	339822	302.8834	false
+0xe9e7cea3dedca5984780bafc599bd69add087d56	buy=0x58f876857a02d6762e0101bb5c46a8c1ed44dc16	100000000000000000	99439537237390384	399417132977328045	339836	301.6683	false
+0xe9e7cea3dedca5984780bafc599bd69add087d56	buy=0x58f876857a02d6762e0101bb5c46a8c1ed44dc16	500000000000000000	497066689840200625	1996954762509961573	339836	301.7479	false
+0xe9e7cea3dedca5984780bafc599bd69add087d56	buy=0x7efaef62fddcca950418312c6c91aef321375a00	100000000000000000	99058027824479940	399080354371164395	339838	302.8753	false
+0xe9e7cea3dedca5984780bafc599bd69add087d56	buy=0x7efaef62fddcca950418312c6c91aef321375a00	500000000000000000	495289956389793900	1995401589069756753	339850	302.8754	false
+0x2170ed0880ac9a755fd29b2688956bd959f933f8	buy=0x74e4716e431f45807dcf19f284c7aa99f18a4fbc	100000000000000000	99609946402246002	399359230370602875	339812	300.9230	false
+0x2170ed0880ac9a755fd29b2688956bd959f933f8	buy=0x74e4716e431f45807dcf19f284c7aa99f18a4fbc	500000000000000000	497609650229745948	1996357677371482000	339824	301.1895	false
+0x2170ed0880ac9a755fd29b2688956bd959f933f8	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x2170ed0880ac9a755fd29b2688956bd959f933f8	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d	FAIL	100000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d	FAIL	500000000000000000	sim_evm thuc thi loi: doc storage slot 0 that bai: Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: "not supported", data: None })))
+SUMMARY n_ok=0 n_fail=20 n_skip=0 fork=122219937

@@ -1504,6 +1504,165 @@ pub async fn measure_gas_units(
     Ok((front_gas_units, back_gas_units))
 }
 
+/// Cụm `planB-B0-complete` — đo gas 2 swap V2 (quote→token rồi token→quote)
+/// trên fork. Đây là phần LỚN của route arb; lock/take/sync/settle cộng thêm.
+pub async fn measure_arb_two_swap_gas(
+    provider: DynProvider,
+    fork_block: u64,
+    quote: Address,
+    token: Address,
+    borrow: U256,
+) -> Result<(u64, u64), SimEvmError> {
+    let (mut db, ts) = open_fork(provider, fork_block).await?;
+    db.insert_account_info(attacker_address(), AccountInfo::from_balance(U256::from(FUND_BNB_WEI)));
+    let mut evm = build_evm(db, fork_block, ts);
+    let attacker = attacker_address();
+    let slot = probe_erc20_balance_slot(&mut evm, quote, attacker)?;
+    set_erc20_balance(&mut evm, quote, attacker, slot, borrow.saturating_mul(U256::from(2u64)))?;
+
+    let approve = IERC20Min::approveCall { spender: router(), amount: U256::MAX }.abi_encode();
+    let approve_tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(quote))
+        .gas_limit(200_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(approve))
+        .build_fill();
+    let _ = evm.transact_commit(approve_tx).map_err(|e| SimEvmError::Exec(format!("approve quote: {e:?}")))?;
+
+    let buy_data = IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+        amountIn: borrow,
+        amountOutMin: U256::ZERO,
+        path: vec![quote, token],
+        to: attacker,
+        deadline: U256::from(DEADLINE_MAX),
+    }
+    .abi_encode();
+    let buy_tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(router()))
+        .gas_limit(3_000_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(buy_data))
+        .build_fill();
+    let buy_r = evm.transact_commit(buy_tx).map_err(|e| SimEvmError::Exec(format!("arb buy: {e:?}")))?;
+    if !buy_r.is_success() {
+        return Err(SimEvmError::Revert(format!("arb buy revert: {buy_r:?}")));
+    }
+    let buy_gas = buy_r.tx_gas_used();
+    let tok = read_balance(&mut evm, token, attacker)?;
+    if tok.is_zero() {
+        return Err(SimEvmError::Exec("arb buy ra 0 token".into()));
+    }
+    let approve_tok = IERC20Min::approveCall { spender: router(), amount: U256::MAX }.abi_encode();
+    let atx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(token))
+        .gas_limit(200_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(approve_tok))
+        .build_fill();
+    let _ = evm.transact_commit(atx).map_err(|e| SimEvmError::Exec(format!("approve token: {e:?}")))?;
+
+    let sell_data = IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+        amountIn: tok,
+        amountOutMin: U256::ZERO,
+        path: vec![token, quote],
+        to: attacker,
+        deadline: U256::from(DEADLINE_MAX),
+    }
+    .abi_encode();
+    let sell_tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(router()))
+        .gas_limit(3_000_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(sell_data))
+        .build_fill();
+    let sell_r = evm.transact_commit(sell_tx).map_err(|e| SimEvmError::Exec(format!("arb sell: {e:?}")))?;
+    if !sell_r.is_success() {
+        return Err(SimEvmError::Revert(format!("arb sell revert: {sell_r:?}")));
+    }
+    Ok((buy_gas, sell_r.tx_gas_used()))
+}
+
+/// Cụm `planB-B0-complete` — chạy route arb 2–3 hop trên fork, trả
+/// `(final_out cùng đơn vị quote_buy, tổng gas 2/3 swap)`. Dùng để đối chiếu
+/// `sim_arb::route_out`.
+pub async fn simulate_arb_hops_evm(
+    provider: DynProvider,
+    fork_block: u64,
+    quote_buy: Address,
+    token: Address,
+    quote_sell: Address,
+    borrow: U256,
+) -> Result<(U256, u64), SimEvmError> {
+    let (mut db, ts) = open_fork(provider, fork_block).await?;
+    db.insert_account_info(attacker_address(), AccountInfo::from_balance(U256::from(FUND_BNB_WEI)));
+    let mut evm = build_evm(db, fork_block, ts);
+    let attacker = attacker_address();
+    let slot = probe_erc20_balance_slot(&mut evm, quote_buy, attacker)?;
+    set_erc20_balance(&mut evm, quote_buy, attacker, slot, borrow.saturating_mul(U256::from(4u64)))?;
+
+    let mut total_gas = 0u64;
+    let mut run_swap = |evm: &mut ForkEvm, token_in: Address, token_out: Address, amount: U256| -> Result<U256, SimEvmError> {
+        let approve = IERC20Min::approveCall { spender: router(), amount: U256::MAX }.abi_encode();
+        let atx = TxEnv::builder()
+            .caller(attacker)
+            .kind(TxKind::Call(token_in))
+            .gas_limit(200_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(56))
+            .data(Bytes::from(approve))
+            .build_fill();
+        let _ = evm.transact_commit(atx).map_err(|e| SimEvmError::Exec(format!("approve: {e:?}")))?;
+        let data = IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+            amountIn: amount,
+            amountOutMin: U256::ZERO,
+            path: vec![token_in, token_out],
+            to: attacker,
+            deadline: U256::from(DEADLINE_MAX),
+        }
+        .abi_encode();
+        let tx = TxEnv::builder()
+            .caller(attacker)
+            .kind(TxKind::Call(router()))
+            .gas_limit(3_000_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(56))
+            .data(Bytes::from(data))
+            .build_fill();
+        let r = evm.transact_commit(tx).map_err(|e| SimEvmError::Exec(format!("swap {token_in:#x}->{token_out:#x}: {e:?}")))?;
+        if !r.is_success() {
+            return Err(SimEvmError::Revert(format!("swap revert: {r:?}")));
+        }
+        total_gas = total_gas.saturating_add(r.tx_gas_used());
+        read_balance(evm, token_out, attacker)
+    };
+
+    let tok = run_swap(&mut evm, quote_buy, token, borrow)?;
+    if tok.is_zero() {
+        return Err(SimEvmError::Exec("hop1 ra 0".into()));
+    }
+    let sell_out = run_swap(&mut evm, token, quote_sell, tok)?;
+    let final_out = if quote_sell == quote_buy {
+        sell_out
+    } else {
+        run_swap(&mut evm, quote_sell, quote_buy, sell_out)?
+    };
+    Ok((final_out, total_gas))
+}
+
 /// C1 — bản độc lập (tự fork) cho test/đường gọi không có `BlockForkCache`.
 pub async fn measure_tax_evm(
     provider: DynProvider,

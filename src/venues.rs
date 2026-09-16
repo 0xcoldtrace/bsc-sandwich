@@ -55,6 +55,9 @@ pub const V2_FACTORY_ADDRESS: &str = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73
 pub const V2_ROUTER_ADDRESS: &str = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
 pub const V3_FACTORY_ADDRESS: &str = "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865";
 pub const V3_QUOTER_V2_ADDRESS: &str = "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997";
+/// Infinity pool managers — đã pin `DEX_REGISTRY.md` mục V4 (getCode > 0).
+pub const CL_POOL_MANAGER_ADDRESS: &str = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b";
+pub const BIN_POOL_MANAGER_ADDRESS: &str = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9";
 
 /// Cụm `foundation-fix-then-real-sim` (A2) — router `to` mà bot chấp nhận xử
 /// lý TIẾP (gate rẻ tiền, 0 RPC, chạy TRƯỚC decode). Đây là phân loại theo
@@ -137,8 +140,8 @@ pub fn registry_snapshot(scan_v2: bool, scan_v3: bool, scan_v4: bool, live_v2: b
             status: "PINNED",
             contracts: vec![
                 ContractPin { name: "Vault", address: "0x238a358808379702088667322f80aC48bAd5e6c4", source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(8347) },
-                ContractPin { name: "CLPoolManager", address: "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b", source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(20885) },
-                ContractPin { name: "BinPoolManager", address: "0xC697d2898e0D09264376196696c51D7aBbbAA4a9", source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(23821) },
+                ContractPin { name: "CLPoolManager", address: CL_POOL_MANAGER_ADDRESS, source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(20885) },
+                ContractPin { name: "BinPoolManager", address: BIN_POOL_MANAGER_ADDRESS, source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(23821) },
                 ContractPin { name: "CLQuoter", address: "0xd0737C9762912dD34c3271197E362Aa736Df0926", source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(6998) },
                 ContractPin { name: "BinQuoter", address: "0xC631f4B0Fc2Dd68AD45f74B2942628db117dD359", source_url: INFINITY_SRC, pinned_date: PINNED_DATE, get_code_len: Some(6839) },
                 ContractPin { name: "UniversalRouter (Infinity)", address: "0xd9C500DfF816a1Da21A48A732d3498Bf09dc9AEB", source_url: UR_SRC, pinned_date: PINNED_DATE, get_code_len: Some(24350) },
@@ -195,6 +198,10 @@ pub const SKIP_REASONS: &[&str] = &[
     // Cum `bugfix-presign-and-contract-plan` (A3) - tx.from thuoc cum doi thu
     // da nhan dien + allow_competitor_victims=false + live_mode != "off".
     "competitor_victim",
+    // Cum `planB-B0-complete` — backrun-arb: token khong co >=2 pool V2 du
+    // sau trong multi_venue.json, hoac khong nguon flash nao du sau.
+    "arb_no_second_venue",
+    "arb_no_flash_source",
 ];
 
 #[cfg(test)]
@@ -265,6 +272,8 @@ mod tests {
     fn skip_reasons_contains_not_pancake_router_and_sell_direction() {
         assert!(SKIP_REASONS.contains(&"not_pancake_router"));
         assert!(SKIP_REASONS.contains(&"sell_direction"));
+        assert!(SKIP_REASONS.contains(&"arb_no_second_venue"));
+        assert!(SKIP_REASONS.contains(&"arb_no_flash_source"));
     }
 
     /// ĐẠT CẦN DÁN: tx tới router giả (Biswap/ApeSwap-style, không nằm trong

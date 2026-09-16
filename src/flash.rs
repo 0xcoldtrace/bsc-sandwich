@@ -66,6 +66,10 @@ pub const BALANCER_V2_VAULT_ADDRESS: &str = "0xBA12222222228d8Ba445958a75a0704d5
 pub const BALANCER_PROTOCOL_FEES_COLLECTOR_ADDRESS: &str = "0xce88686553686DA562CE7Cea497CE749DA109f9F";
 /// Aave V3 `Pool` trên BSC — pin phiên `planB-backrun-opportunity`.
 pub const AAVE_V3_POOL_ADDRESS: &str = "0x6807dc923806fE8Fd134338EABCA509979a7e0cB";
+/// ETH (Binance-Peg) trên BSC — chỉ dùng để đọc chiều sâu vault, không phải quote path.
+pub const ETH_BSC_ADDRESS: &str = "0x2170Ed0880ac9A755fd29B2688956BD959F933F8";
+/// BTCB trên BSC — chỉ dùng để đọc chiều sâu vault.
+pub const BTCB_ADDRESS: &str = "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c";
 
 /// Phí flash swap Pancake V2 tính theo bps DANH NGHĨA (0,25 %). Số thật dùng
 /// để tính tiền là `flash_fee_wei` (làm tròn LÊN theo đúng ràng buộc `k`),
@@ -421,6 +425,8 @@ mod tests {
             BALANCER_V2_VAULT_ADDRESS,
             BALANCER_PROTOCOL_FEES_COLLECTOR_ADDRESS,
             AAVE_V3_POOL_ADDRESS,
+            ETH_BSC_ADDRESS,
+            BTCB_ADDRESS,
         ] {
             assert!(Address::from_str(s).is_ok(), "dia chi pin phai parse duoc: {s}");
         }

@@ -44,6 +44,24 @@ function renderGate(status) {
     .join("");
 }
 
+function renderFlash(data) {
+  const meta = document.getElementById("flash-meta");
+  if (!meta) return;
+  meta.textContent =
+    `block=${data.block || 0} measured_at=${data.measured_at_unix || 0} ` +
+    `multi_venue tokens=${data.multi_venue_tokens || 0} arb_ready=${data.multi_venue_arb_ready || 0}`;
+  const body = document.getElementById("flash-body");
+  if (!body) return;
+  body.innerHTML = (data.sources || [])
+    .map((s) => {
+      const avail = (s.available || [])
+        .map((a) => `${(a.token || "").slice(0, 10)}…=${a.wei}`)
+        .join("; ");
+      return `<tr><td>${s.source}</td><td>${s.fee_bps === null || s.fee_bps === undefined ? "-" : s.fee_bps}</td><td>${avail || "-"}</td><td>${s.error || ""}</td></tr>`;
+    })
+    .join("");
+}
+
 function renderVenues(data) {
   const body = document.getElementById("venues-body");
   body.innerHTML = data.venues
@@ -286,6 +304,11 @@ async function refresh() {
     renderGate(status);
   } catch (e) {
     console.error("status fetch failed", e);
+  }
+  try {
+    renderFlash(await getJSON("/api/flash"));
+  } catch (e) {
+    console.error("flash fetch failed", e);
   }
   try {
     renderVenues(await getJSON("/api/venues"));

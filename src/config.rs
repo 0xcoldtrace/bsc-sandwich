@@ -317,7 +317,7 @@ pub struct Config {
     pub flash_source_interval_sec: u64,
 
     /// Cụm `planB-backrun-opportunity` (mục 1) — đường dẫn bản đồ venue
-    /// (`state/multi_venue.json`, sinh bởi `cargo run --bin venue_map`).
+    /// (`state/multi_venue.json`, sinh bởi `cargo run --bin build_multi_venue`).
     /// Thiếu file = không có token nào có venue thứ 2 → mọi tx `arb_no_second_venue`,
     /// bot KHÔNG crash (đúng luật "thiếu dữ liệu thì skip, không đoán").
     pub multi_venue_path: String,
@@ -501,6 +501,15 @@ impl Config {
     /// trong production path (cùng quy ước `sim_engine_is_evm`).
     pub fn strategy_is_backrun(&self) -> bool {
         self.strategy == "backrun"
+    }
+
+    /// Trần vay flash (wei) theo quote asset.
+    pub fn arb_max_borrow_wei_for(&self, quote: alloy::primitives::Address) -> alloy::primitives::U256 {
+        if quote == crate::venues::wbnb_addr() {
+            bnb_f64_to_wei(self.arb_max_borrow_bnb)
+        } else {
+            bnb_f64_to_wei(self.arb_max_borrow_usdt)
+        }
     }
 
     /// F-02/mục 4 — `true` chỉ khi `live_mode="shadow"` — điểm đọc DUY NHẤT
@@ -861,7 +870,7 @@ arb_max_borrow_usdt = 12000
 flash_source_interval_sec = 300
 multi_venue_path = "state/multi_venue.json"
 gas_units_arb_infinity = 420000
-gas_units_arb_v2flash = 330000
+gas_units_arb_v2flash = 380000
 allow_competitor_victims = false
 "#
         .to_string()

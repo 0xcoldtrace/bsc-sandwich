@@ -387,3 +387,96 @@ làm TRƯỚC khi xét lại:
    tranh trực tiếp trên pool USDT (đặt `allow_competitor_victims=true`, có ý
    thức), hoặc chuyển hướng chiến lược — 3 lựa chọn này là quyết định của Chủ,
    không phải của Code.
+
+---
+
+## ArbExecutor (cụm `planB-B0-complete`, 2026-09-16) — THIẾT KẾ, CHƯA CODE
+
+> **Không viết Solidity, không deploy.** Chỉ khi B0 Go (ô 10 BAOCAO47) mới
+> sang cụm B1. Thiết kế này THAY THẾ `frontRun`/`backRun` sandwich ở B2 cho
+> chiến lược backrun-arb; sandwich giữ trong tài liệu lịch sử, không xoá.
+
+### Vai trò
+
+1 contract, **không proxy**, Solidity 0.8.24+. Ví tay chỉ giữ BNB gas+bribe.
+Contract **không giữ vốn**: vay flash → arb → trả nợ → gửi lãi về ví kho →
+bribe builder, tất cả trong 1 tx. Không lãi → revert (mất gas, không mất
+bribe nếu bundle không được chọn).
+
+### 4 entry flash → 1 `_route`
+
+Bốn hàm `external` chỉ khác nguồn vay; đều gọi `_route` nội bộ:
+
+| Entry | Nguồn | Cơ chế |
+|---|---|---|
+| `flashInfinity(bytes route, uint256 minProfit)` | Infinity Vault `lock` | `lock` → `lockAcquired` → `take` → `_route` → `sync` + trả → `settle` |
+| `flashAave(address asset, uint256 amount, bytes route, uint256 minProfit)` | Aave V3 Pool | `flashLoanSimple` / `executeOperation` |
+| `flashBalancer(address[] tokens, uint256[] amounts, bytes route, uint256 minProfit)` | Balancer V2 Vault | `flashLoan` / `receiveFlashLoan` — trên BSC gần rỗng, giữ entry để nếu vault được nạp lại |
+| `flashV2Pair(address pair, uint256 amount0Out, uint256 amount1Out, bytes route, uint256 minProfit)` | Pancake V2 `pancakeCall` | `pair.swap(..., data)` |
+
+`route` encode: `(address token, address buyPair, address sellPair, address borrowQuote, uint256 borrow, bool needBridge, address bridgePair)`.
+`_route` thực hiện: swap V2 mua pool rẻ → swap V2 bán pool đắt → (nếu khác quote) swap WBNB↔USDT qua `bridgePair`.
+
+### `minProfit` revert
+
+Sau khi trả nợ flash + phí, số quote còn lại phải `>= minProfit` (đơn vị
+`borrowQuote`). Thấp hơn → `revert ProfitBelowMin()`. Đây là cổng duy nhất
+quyết định tx thành công; bot tính `minProfit` = `max(min_profit_*, 1 wei)`
+từ sim.
+
+### Bribe khi thành công
+
+Cuối `_route`, **chỉ khi** lãi ≥ `minProfit`:
+
+```solidity
+if (bribeAmount > 0 && bribeTo != address(0)) {
+    (bool ok, ) = bribeTo.call{value: bribeAmount}("");
+    if (!ok) revert BribeFailed();
+}
+```
+
+`bribeTo` = EOA builder đã pin (`DEX_REGISTRY.md`: BlockRazor /
+48 Club). Bribe nằm TRONG cùng tx nên chỉ chuyển khi tx thành công (bundle
+không chọn → không mất bribe). Lãi còn lại `transfer` thẳng về `treasury`
+(ví kho, immutables lúc deploy). Contract không `receive` vốn kinh doanh.
+
+### Không giữ vốn
+
+- Không `deposit`/`withdraw` vốn swap. Owner chỉ `withdraw` BNB/token **mắc
+  kẹt** (dust / airdrop), `pause`, `setExecutor`.
+- `onlyExecutor`: ví tay trên VPS. Owner ở ví cứng của Chủ.
+- Approve router/pair được set 1 lần lúc deploy (`type(uint256).max`) cho
+  WBNB/USDT/V2 Router — không approve token lạ.
+
+### Bẫy `sync` / `settle` (Infinity)
+
+Đọc `Vault.sol` 2026-09-16: `_settle` tính `paid = balanceOfSelf() -
+reservesBefore`, mà `reservesBefore` chỉ được đặt bởi `sync()`. **Quên
+`sync` trước khi chuyển token về Vault → `paid` sai → `lock` revert
+`CurrencyNotSettled` → mất gas.**
+
+Trình tự bắt buộc trong `lockAcquired`:
+
+1. `take(currency, address(this), amount)`
+2. `_route(...)` (2–3 swap V2)
+3. `sync(currency)`
+4. `IERC20(currency).transfer(vault, repay)`  // repay = amount (+ 0 phí)
+5. `settle()`
+6. kiểm `minProfit`, bribe, gửi lãi về treasury
+
+Không `mint`/`burn` surplus token. Không `clear` (đốt dư dương). Delta phải
+về 0 trước khi `lock` return.
+
+Callback Aave/Balancer/V2: trả nợ TRƯỚC khi kiểm `minProfit` (nguồn flash
+đòi repay trong cùng callback). Thứ tự: nhận flash → `_route` → trả nợ+phí
+→ `minProfit` → bribe → treasury.
+
+### Foundry fork test (B1, chưa làm)
+
+- Fork BSC, pin block. Gọi từng entry với route 2 pool V2 đã vet.
+- Case lãi: `minProfit` thấp → success, treasury tăng, vault/aToken/pair
+  cân bằng.
+- Case lỗ: `minProfit` cao / pool cân bằng → revert, 0 chuyển bribe.
+- Case quên `sync` (test âm): phải `CurrencyNotSettled`.
+- Case `onlyExecutor` / `pause`.
+- Audit độc lập vòng 2 trước deploy (AGENTS.md B1).

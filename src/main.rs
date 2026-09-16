@@ -211,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let sim_http_pool = Arc::new(transport::RpcPool::new(sim_urls));
     let initial_gas_units = (cfg.gas_units_front, cfg.gas_units_back);
+    let multi_venue_path_boot = cfg.multi_venue_path.clone();
 
     // Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — load
     // `PRIVATE_KEY` THẬT CHỈ khi `live_mode="shadow"` (ship `"off"` — nhánh
@@ -266,6 +267,26 @@ async fn main() -> anyhow::Result<()> {
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
         shadow_wallet,
+        flash_snapshot: RwLock::new(bsc_sandwich::flash::FlashSnapshot::default()),
+        multi_venue: RwLock::new({
+            let p = std::path::Path::new(&multi_venue_path_boot);
+            match bsc_sandwich::multivenue::MultiVenueMap::load_from_path(p) {
+                Ok(m) => {
+                    logger.log(
+                        "multi_venue.loaded",
+                        serde_json::json!({ "tokens": m.len(), "arb_ready": m.arb_ready_count(), "block": m.block, "path": multi_venue_path_boot }),
+                    );
+                    m
+                }
+                Err(e) => {
+                    logger.log(
+                        "multi_venue.missing",
+                        serde_json::json!({ "path": multi_venue_path_boot, "error": e, "note": "moi tx arb_no_second_venue cho toi khi co file" }),
+                    );
+                    bsc_sandwich::multivenue::MultiVenueMap::default()
+                }
+            }
+        }),
     });
 
     {
@@ -455,6 +476,8 @@ async fn main() -> anyhow::Result<()> {
     // Cụm `verify-cluster-as-victim` (mục 5) — cảnh báo khi cụm đối thủ
     // biến mất khỏi tầm nhìn (kiểm mỗi 5 phút, cửa sổ so là 60 phút).
     tokio::spawn(cluster_rate_watch_task(app_state.clone(), Duration::from_secs(300)));
+    // Cum `planB-B0-complete` — doc 4 nguon flash dinh ky, log `flash.source`.
+    tokio::spawn(flash_source_task(app_state.clone(), bg_http_pool.clone()));
 
     // Cum `real-economics-mode2` (F-03) - do gas UNIT that 1 lan luc boot
     // bang revm tren 1 pair da vet trong pairs.txt (fallback config
@@ -1432,6 +1455,7 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
             // bi chan truoc khi co PipelineOutcome nao duoc tao; NotInList
             // khong co bucket rieng trong danh sach lenh goc A6).
             pipeline::PipelineSkip::NotInList | pipeline::PipelineSkip::NotPancakeRouter => {}
+            pipeline::PipelineSkip::ArbNoSecondVenue | pipeline::PipelineSkip::ArbNoFlashSource => {}
         },
     }
 }
@@ -2172,6 +2196,454 @@ async fn resolve_reserves_cached(
     Ok((pair_addr, reserves))
 }
 
+/// Cụm `planB-B0-complete` — đọc 4 nguồn flash mỗi `flash_source_interval_sec`.
+/// Log `flash.source` mỗi lần (kể cả lần đầu ngay khi boot).
+async fn flash_source_task(app_state: AppState, _bg_pool: Arc<transport::RpcPool>) {
+    let tokens = [
+        venues::wbnb_addr(),
+        venues::usdt_addr(),
+        Address::from_str(bsc_sandwich::flash::ETH_BSC_ADDRESS).expect("ETH pin"),
+        Address::from_str(bsc_sandwich::flash::BTCB_ADDRESS).expect("BTCB pin"),
+    ];
+    let interval_sec = app_state.config.read().await.flash_source_interval_sec.max(30);
+    // Cho provider san sang roi CHUP NGAY (tick dau cua tokio::interval dung
+    // luc boot, luc do connect_rpc chua xong -> bo qua = tre 1 chu ky).
+    loop {
+        let provider = {
+            let p = app_state.bg_provider.read().await.clone();
+            if p.is_some() {
+                p
+            } else {
+                app_state.provider.read().await.clone()
+            }
+        };
+        if provider.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_sec));
+    loop {
+        interval.tick().await;
+        let provider = {
+            let p = app_state.bg_provider.read().await.clone();
+            if p.is_some() {
+                p
+            } else {
+                app_state.provider.read().await.clone()
+            }
+        };
+        let Some(provider) = provider else {
+            continue;
+        };
+        let block = app_state.last_block.read().await.unwrap_or(0);
+        let snap = bsc_sandwich::flash::read_flash_snapshot(&provider, block, &tokens).await;
+        let mut sources_json = Vec::new();
+        for st in &snap.states {
+            let avail: Vec<serde_json::Value> = st
+                .available
+                .iter()
+                .map(|(t, v)| serde_json::json!({ "token": format!("{t:#x}"), "wei": v.to_string() }))
+                .collect();
+            sources_json.push(serde_json::json!({
+                "source": st.source.as_str(),
+                "fee_bps": st.fee_bps,
+                "error": st.error,
+                "available": avail,
+            }));
+        }
+        app_state.logger.log(
+            "flash.source",
+            serde_json::json!({
+                "block": snap.block,
+                "measured_at_unix": snap.measured_at_unix,
+                "sources": sources_json,
+            }),
+        );
+        *app_state.flash_snapshot.write().await = snap;
+        // Tai nap multi_venue neu file doi (bin build_multi_venue chay ngoai).
+        let path = app_state.config.read().await.multi_venue_path.clone();
+        if let Ok(m) = bsc_sandwich::multivenue::MultiVenueMap::load_from_path(std::path::Path::new(&path)) {
+            *app_state.multi_venue.write().await = m;
+        }
+    }
+}
+
+/// Ngưỡng swap lớn cho backrun-arb (AGENTS.md: ≥ 0,5 BNB quy đổi).
+const ARB_MIN_SWAP_BNB_WEI: u128 = 500_000_000_000_000_000;
+
+async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, handle_started: Instant) {
+    let current_block = app_state.last_block.read().await.unwrap_or(0);
+    let mut meta = build_tx_log_meta(&raw);
+
+    if raw.to.and_then(venues::venue_for_router).is_none() && raw.to.is_some() {
+        app_state.funnel.record_not_pancake_router();
+        let skip = pipeline::PipelineSkip::NotPancakeRouter;
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            None,
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        let mut counts = app_state.skip_counts.write().await;
+        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+        return;
+    }
+
+    let decoded = match pipeline::decode_for_backrun(&raw.input, raw.value, cfg.scan_quote_usdt) {
+        Ok(d) => d,
+        Err(skip) => {
+            meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+            pipeline::log_outcome_v2(
+                &app_state.logger,
+                raw.from,
+                None,
+                "backrun",
+                &meta,
+                &PipelineOutcome::Skip(skip),
+            );
+            let mut counts = app_state.skip_counts.write().await;
+            *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+            return;
+        }
+    };
+
+    if matches!(decoded.venue, SwapVenue::V3 { .. }) {
+        let skip = pipeline::PipelineSkip::VenueUnpinned;
+        meta.fee = match decoded.venue {
+            SwapVenue::V3 { fee } => Some(fee),
+            _ => None,
+        };
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            Some(decoded.token),
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        let mut counts = app_state.skip_counts.write().await;
+        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+        return;
+    }
+
+    meta.quote = Some(if decoded.quote == venues::wbnb_addr() { "wbnb".into() } else { "usdt".into() });
+    meta.amount_in = Some(decoded.amount_in.to_string());
+    let token_hint = Some(decoded.token);
+
+    let pairbook = app_state.pairbook.read().await;
+    if can_skip_not_in_list_without_rpc(&cfg, &pairbook, decoded.token, decoded.quote) {
+        drop(pairbook);
+        let skip = pipeline::PipelineSkip::NotInList;
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            token_hint,
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        let mut counts = app_state.skip_counts.write().await;
+        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+        return;
+    }
+    drop(pairbook);
+
+    let provider_guard = app_state.provider.read().await;
+    let Some(provider) = provider_guard.as_ref() else {
+        let skip = pipeline::PipelineSkip::NoPool;
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            token_hint,
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        return;
+    };
+
+    let pairbook = app_state.pairbook.read().await;
+    let resolve = resolve_reserves_cached(&app_state, provider, decoded.token, decoded.quote, &pairbook, current_block).await;
+    drop(pairbook);
+    let (pair_addr, reserves) = match resolve {
+        Ok(v) => v,
+        Err(skip) => {
+            meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+            pipeline::log_outcome_v2(
+                &app_state.logger,
+                raw.from,
+                token_hint,
+                "backrun",
+                &meta,
+                &PipelineOutcome::Skip(skip),
+            );
+            let mut counts = app_state.skip_counts.write().await;
+            *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+            return;
+        }
+    };
+    meta.pair = Some(format!("{pair_addr:#x}"));
+    meta.reserve_quote = Some(reserves.reserve_wbnb.to_string());
+
+    // Quy doi amount_in sang BNB de so 0.5.
+    let amount_bnb = if decoded.quote == venues::wbnb_addr() {
+        u128::try_from(decoded.amount_in).unwrap_or(u128::MAX)
+    } else {
+        let pairbook = app_state.pairbook.read().await;
+        match resolve_reserves_cached(&app_state, provider, venues::usdt_addr(), venues::wbnb_addr(), &pairbook, current_block).await {
+            Ok((_, br)) => pipeline::convert_usdt_to_bnb_wei(
+                u128::try_from(decoded.amount_in).unwrap_or(0),
+                br.reserve_wbnb,
+                br.reserve_token,
+            ),
+            Err(_) => u128::MAX,
+        }
+    };
+    meta.amount_in_bnb_equiv = Some(amount_bnb.to_string());
+    if amount_bnb < ARB_MIN_SWAP_BNB_WEI {
+        let skip = pipeline::PipelineSkip::BelowMin;
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            token_hint,
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        let mut counts = app_state.skip_counts.write().await;
+        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+        return;
+    }
+
+    let mv = app_state.multi_venue.read().await;
+    let Some(mut pools) = mv.arb_v2_pools(decoded.token) else {
+        let skip = pipeline::PipelineSkip::ArbNoSecondVenue;
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            token_hint,
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        let mut counts = app_state.skip_counts.write().await;
+        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+        return;
+    };
+    // Cap nhat reserve pool victim bang so VUA DOC (khong dung so cu trong file).
+    for p in &mut pools {
+        if p.pair == pair_addr {
+            p.reserve_quote = reserves.reserve_wbnb;
+            p.reserve_token = reserves.reserve_token;
+        }
+    }
+    // Pool con lai: neu chua co reserve tuoi, resolve.
+    for p in &mut pools {
+        if p.pair == pair_addr {
+            continue;
+        }
+        let pairbook = app_state.pairbook.read().await;
+        if let Ok((_, r)) = resolve_reserves_cached(&app_state, provider, decoded.token, p.quote, &pairbook, current_block).await {
+            p.reserve_quote = r.reserve_wbnb;
+            p.reserve_token = r.reserve_token;
+        }
+    }
+    if pools.len() < 2 {
+        let skip = pipeline::PipelineSkip::ArbNoSecondVenue;
+        meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+        pipeline::log_outcome_v2(
+            &app_state.logger,
+            raw.from,
+            token_hint,
+            "backrun",
+            &meta,
+            &PipelineOutcome::Skip(skip),
+        );
+        return;
+    }
+    let victim_pool = *pools.iter().find(|p| p.pair == pair_addr).unwrap_or(&pools[0]);
+    let other_pool = *pools.iter().find(|p| p.pair != pair_addr).unwrap_or(&pools[1]);
+    let after = match bsc_sandwich::sim_arb::apply_victim_to_pool(victim_pool, decoded.amount_in, decoded.victim_buys_token)
+    {
+        Some(p) => p,
+        None => {
+            let skip = pipeline::PipelineSkip::SimError;
+            meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+            pipeline::log_outcome_v2(
+                &app_state.logger,
+                raw.from,
+                token_hint,
+                "backrun",
+                &meta,
+                &PipelineOutcome::Skip(skip),
+            );
+            return;
+        }
+    };
+
+    let gas_price_wei = app_state.gas_oracle.gas_price_wei(provider, current_block, &app_state.logger).await;
+    let victim_gp: u128 = u128::try_from(raw.gas_price).unwrap_or(u128::MAX);
+    let units = cfg.gas_units_arb_infinity;
+    let gas_bnb = pipeline::compute_gas_cost_wei(units, 0, gas_price_wei, victim_gp, cfg.gas_price_max_wei());
+    let gas_in_quote = if decoded.quote == venues::wbnb_addr() {
+        gas_bnb
+    } else {
+        pipeline::convert_gas_cost_bnb_to_usdt(gas_bnb, mv.bridge_reserve_wbnb, mv.bridge_reserve_usdt)
+    };
+    meta.gas_cost_wei = Some(gas_in_quote.to_string());
+    meta.gas_price_gwei = Some(gas_price_wei as f64 / 1e9);
+
+    let snap = app_state.flash_snapshot.read().await.clone();
+    let wbnb = venues::wbnb_addr();
+    let clamp = if decoded.quote == wbnb {
+        Some((cfg.bribe_min_wei(), cfg.bribe_max_wei()))
+    } else {
+        None
+    };
+    let max_borrow_for = |q: Address| cfg.arb_max_borrow_wei_for(q);
+    let gas_for = |_q: Address| gas_in_quote;
+    let best = bsc_sandwich::sim_arb::best_arb_for_pools(
+        decoded.token,
+        after,
+        other_pool,
+        mv.bridge_pair,
+        mv.bridge_reserve_wbnb,
+        mv.bridge_reserve_usdt,
+        wbnb,
+        &max_borrow_for,
+        &snap,
+        &gas_for,
+        cfg.bribe_pct_of_profit,
+        clamp,
+    );
+    drop(mv);
+    drop(snap);
+    drop(provider_guard);
+
+    let in_cluster = app_state.competitor_cluster.read().await.contains(raw.from, current_block);
+    meta.victim_in_competitor_cluster = Some(in_cluster);
+    app_state
+        .cluster_rate
+        .write()
+        .await
+        .note((chrono::Utc::now().timestamp().max(0) as u64) / 60, in_cluster);
+
+    meta.seen_to_decision_ms = Some(handle_started.elapsed().as_secs_f64() * 1000.0);
+
+    match best {
+        None => {
+            let skip = pipeline::PipelineSkip::ArbNoFlashSource;
+            pipeline::log_outcome_v2(
+                &app_state.logger,
+                raw.from,
+                token_hint,
+                "backrun",
+                &meta,
+                &PipelineOutcome::Skip(skip),
+            );
+            let mut counts = app_state.skip_counts.write().await;
+            *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+        }
+        Some((route, q)) => {
+            if !bsc_sandwich::sim_arb::arb_sanity_ok(&route, &q) {
+                let skip = pipeline::PipelineSkip::SanityReject;
+                pipeline::log_outcome_v2(
+                    &app_state.logger,
+                    raw.from,
+                    token_hint,
+                    "backrun",
+                    &meta,
+                    &PipelineOutcome::Skip(skip),
+                );
+                let mut counts = app_state.skip_counts.write().await;
+                *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+                return;
+            }
+            let min_profit = if route.borrow_quote == venues::wbnb_addr() {
+                i128::try_from(u128::try_from(cfg.min_profit_wei()).unwrap_or(0)).unwrap_or(0)
+            } else {
+                i128::try_from(u128::try_from(cfg.min_profit_usdt_wei()).unwrap_or(0)).unwrap_or(0)
+            };
+            if q.net_wei <= 0 || q.net_wei < min_profit {
+                let skip = pipeline::PipelineSkip::Unprofitable;
+                app_state.logger.log(
+                    "sim.arb",
+                    serde_json::json!({
+                        "hash": meta.hash,
+                        "from": format!("{:#x}", raw.from),
+                        "token": format!("{:#x}", decoded.token),
+                        "quote": meta.quote,
+                        "pair_victim": format!("{:#x}", pair_addr),
+                        "pair_buy": format!("{:#x}", route.buy.pair),
+                        "pair_sell": format!("{:#x}", route.sell.pair),
+                        "borrow": q.borrow.to_string(),
+                        "net_wei": q.net_wei.to_string(),
+                        "gross_wei": q.gross_wei.to_string(),
+                        "flash_source": q.flash_source.as_str(),
+                        "flash_fee_wei": q.flash_fee_wei.to_string(),
+                        "bribe_wei": q.bribe_wei.to_string(),
+                        "gas_wei": q.gas_wei.to_string(),
+                        "decision": "unprofitable",
+                        "victim_buys_token": decoded.victim_buys_token,
+                        "amount_in": decoded.amount_in.to_string(),
+                        "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
+                        "victim_in_competitor_cluster": in_cluster,
+                        "seen_to_decision_ms": meta.seen_to_decision_ms,
+                    }),
+                );
+                pipeline::log_outcome_v2(
+                    &app_state.logger,
+                    raw.from,
+                    token_hint,
+                    "backrun",
+                    &meta,
+                    &PipelineOutcome::Skip(skip),
+                );
+                let mut counts = app_state.skip_counts.write().await;
+                *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+                return;
+            }
+            app_state.logger.log(
+                "sim.arb",
+                serde_json::json!({
+                    "hash": meta.hash,
+                    "from": format!("{:#x}", raw.from),
+                    "token": format!("{:#x}", decoded.token),
+                    "quote": meta.quote,
+                    "pair_victim": format!("{:#x}", pair_addr),
+                    "pair_buy": format!("{:#x}", route.buy.pair),
+                    "pair_sell": format!("{:#x}", route.sell.pair),
+                    "borrow": q.borrow.to_string(),
+                    "net_wei": q.net_wei.to_string(),
+                    "gross_wei": q.gross_wei.to_string(),
+                    "profit_before_bribe_wei": q.profit_before_bribe_wei.to_string(),
+                    "flash_source": q.flash_source.as_str(),
+                    "flash_fee_bps": q.flash_fee_bps,
+                    "flash_fee_wei": q.flash_fee_wei.to_string(),
+                    "bribe_wei": q.bribe_wei.to_string(),
+                    "gas_wei": q.gas_wei.to_string(),
+                    "decision": "simulated",
+                    "victim_buys_token": decoded.victim_buys_token,
+                    "amount_in": decoded.amount_in.to_string(),
+                    "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
+                    "victim_in_competitor_cluster": in_cluster,
+                    "seen_to_decision_ms": meta.seen_to_decision_ms,
+                    "borrow_quote": format!("{:#x}", route.borrow_quote),
+                }),
+            );
+        }
+    }
+}
+
 async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // Cum `real-economics-mode2` (muc 2) - moc thoi gian NHAN tx (proxy cho
     // luc "tx.seen" duoc log - do lech giua 2 moc nay la chi phi tokio::spawn,
@@ -2198,6 +2670,13 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // truoc khi spawn ham nay, xem subscribe_pending_txs/poll_txpool_pending/
     // watch_inject_file) - phong truong hop mot nguon tx tuong lai quen kiem.
     if app_state.state_files.is_halted() {
+        return;
+    }
+    // Cum `planB-B0-complete` — strategy="backrun": KHONG di duong sandwich
+    // (khong victim_ok, khong front). Duong sandwich giu nguyen khi
+    // strategy="sandwich".
+    if cfg.strategy_is_backrun() {
+        handle_backrun_tx(app_state, raw, cfg, handle_started).await;
         return;
     }
     let current_block = app_state.last_block.read().await.unwrap_or(0);
@@ -3461,6 +3940,8 @@ mod tests {
         seen_hashes: RwLock::new(transport::SeenHashSet::new()),
         compete_stats: bsc_sandwich::web::CompeteStats::new(),
         shadow_wallet: None,
+        flash_snapshot: RwLock::new(bsc_sandwich::flash::FlashSnapshot::default()),
+        multi_venue: RwLock::new(bsc_sandwich::multivenue::MultiVenueMap::default()),
         });
 
         let task_state = app_state.clone();

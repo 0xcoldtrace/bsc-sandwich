@@ -5642,3 +5642,34 @@ dải; `rpc-bsc.48.club` chặn cứng **5 000 block/lần**; `bsc-rpc.publicnod
 bằng cửa sổ block CÓ GIỚI HẠN và ghi rõ cửa sổ đó, hoặc bằng nguồn index
 ngoài chain. "Không tìm thấy trong cửa sổ X" ≠ "không có pool" — phiên sau
 không được viết ngược lại.
+
+## `planB-B0-complete` (BAOCAO47, 2026-09-16)
+
+Hoàn tất B0 (BAOCAO46 dừng dở). Chiến lược backrun-arb đã nối vào đường nóng
+(`strategy="backrun"`): không `victim_ok`, không front, nhận cả chiều bán.
+
+### 4 kịch bản rủi ro còn thiếu (lệnh mục 8)
+
+1. **Infinity Vault cạn token.** Trần vay = `balanceOf(vault)` (đo B0: ~185
+   WBNB / ~35M USDT). Nếu LP rút / app khác `take` hết trong cùng block, nguồn
+   0 phí biến mất. `choose_flash_source` tự rơi xuống Aave (5 bps, đo B0:
+   **116 725 WBNB** — sâu hơn Infinity) rồi V2 flash swap (25 bps). Bot không
+   halt. Cần log `flash.source` khi Infinity WBNB < `arb_max_borrow_bnb`.
+2. **Bribe war ở vị trí backrun.** Bundle = `[victim_raw, backrun]`. Đối thủ
+   (cụm `0xB406` hoặc bot khác) cũng đứng ngay sau cùng victim → builder chọn
+   bribe cao hơn. `bribe_pct_of_profit` ship 40% có thể thua. Không lãi thì
+   revert nên không mất bribe, nhưng **mất gas** nếu gửi public. Giảm: chỉ gửi
+   qua builder, `minProfit` chặt, không đua gas-price.
+3. **Pool thứ 2 quá mỏng.** 87/128 token có 2 địa chỉ pair V2 (BAOCAO46) nhưng
+   chỉ **9/129** đủ `min_reserve` cả hai phía (BAOCAO47). Arb vào pool mỏng
+   trượt giá / không đủ `k` để hoàn flash. `arb_ready` yêu cầu CẢ HAI pool ≥
+   ngưỡng; `arb_sanity_ok` chặn vay > 50% reserve. Không nới ngưỡng im lặng.
+4. **Cụm `0xB406` biến mất.** 96,8 % lãi sandwich cũ là kẹp ví burner của cụm
+   này. Backrun-arb **không cần** họ (mọi swap lớn ≥ 0,5 BNB trên token 2
+   venue đều là ứng viên), nhưng nếu họ chiếm phần lớn volume trên 9 token
+   `arb_ready` thì số cơ hội/ngày tụt khi họ chuyển private/đổi pool.
+   `ClusterRateWatch` + `competitor.alert` vẫn chạy. Không phụ thuộc cụm để
+   Go/No-Go — chỉ ghi `% do cụm tạo` trong bảng đo.
+
+Balancer V2 trên BSC vẫn ~rỗng (0,000435 WBNB) + wind-down vote 25–29/09/2026
+— không chờ, đã ghi ở BAOCAO46.

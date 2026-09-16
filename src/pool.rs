@@ -234,6 +234,27 @@ pub async fn resolve_v3_pool(
     Ok(Err(PoolSkipReason::NoPool))
 }
 
+/// Cụm `planB-B0-complete` — mọi fee tier V3 đã pin có pool `token/quote`
+/// (không dừng ở tier đầu). Dùng để ghi nhận venue thứ 2, chưa sim.
+pub async fn resolve_v3_pools_for_quote(
+    provider: &dyn Provider,
+    factory: Address,
+    token: Address,
+    quote: Address,
+) -> Result<Vec<(Address, u32)>, String> {
+    let mut out = Vec::new();
+    for fee in V3_FEE_TIERS {
+        let calldata = build_get_pool_calldata(token, quote, fee);
+        let tx = TransactionRequest::default().to(factory).input(calldata.into());
+        let ret = provider.call(tx).await.map_err(|e| format!("eth_call getPool(fee={fee}) that bai: {e}"))?;
+        let pool = decode_address_return(&ret).ok_or_else(|| "getPool tra ve du lieu qua ngan".to_string())?;
+        if !is_zero_address(pool) {
+            out.push((pool, fee));
+        }
+    }
+    Ok(out)
+}
+
 /// `PancakeV2Pair.getReserves()` — trả `(reserveWBNB, reserveToken)` đã sắp
 /// đúng chiều. V2 pair sort `token0/token1` theo address tăng dần khi tạo
 /// pair (CREATE2 factory), không cố định WBNB ở vị trí nào -> gọi `token0()`
@@ -482,6 +503,49 @@ pub async fn resolve_infinity_pool(
     } else {
         Ok(Ok(matches))
     }
+}
+
+/// Cụm `planB-B0-complete` — quét TOÀN BỘ `Initialize` trong `[from, to]`
+/// (1 lời gọi/manager, cửa sổ ≤ `LOG_SCAN_CHUNK_BLOCKS` = 5000). Không lọc
+/// token: caller tự khớp với `pairs.txt`. Dùng để ghi nhận Infinity CL/Bin
+/// trong `multi_venue.json` — KHÔNG sim.
+pub async fn scan_infinity_initializes_window(
+    provider: &dyn Provider,
+    from_block: u64,
+    to_block: u64,
+) -> Result<Vec<InfinityPoolMatch>, String> {
+    if from_block > to_block {
+        return Err("from_block > to_block".into());
+    }
+    if to_block.saturating_sub(from_block) + 1 > LOG_SCAN_CHUNK_BLOCKS {
+        return Err(format!(
+            "cua so {} block vuot gioi han {LOG_SCAN_CHUNK_BLOCKS} (RPC free-tier)",
+            to_block.saturating_sub(from_block) + 1
+        ));
+    }
+    let cl = Address::from_str(crate::venues::CL_POOL_MANAGER_ADDRESS).expect("CL pin");
+    let bin = Address::from_str(crate::venues::BIN_POOL_MANAGER_ADDRESS).expect("Bin pin");
+    let mut out = Vec::new();
+    for (manager, topic0, family) in [
+        (cl, *CL_INITIALIZE_TOPIC0, InfinityPoolFamily::Cl),
+        (bin, *BIN_INITIALIZE_TOPIC0, InfinityPoolFamily::Bin),
+    ] {
+        let filter = Filter::new()
+            .address(manager)
+            .event_signature(topic0)
+            .from_block(from_block)
+            .to_block(to_block);
+        let logs = provider
+            .get_logs(&filter)
+            .await
+            .map_err(|e| format!("eth_getLogs Initialize {family:?} block {from_block}-{to_block}: {e}"))?;
+        for log in logs {
+            if let Some(m) = decode_initialize_log(&log, family, manager) {
+                out.push(m);
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

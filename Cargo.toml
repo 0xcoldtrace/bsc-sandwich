@@ -19,6 +19,18 @@ path = "src/bin/rpc_probe.rs"
 name = "competitor_recon"
 path = "src/bin/competitor_recon.rs"
 
+[[bin]]
+name = "build_multi_venue"
+path = "src/bin/build_multi_venue.rs"
+
+[[bin]]
+name = "arb_measure"
+path = "src/bin/arb_measure.rs"
+
+[[bin]]
+name = "arb_crosscheck"
+path = "src/bin/arb_crosscheck.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal", "net"] }
 serde = { version = "1", features = ["derive"] }

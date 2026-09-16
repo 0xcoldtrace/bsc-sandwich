@@ -1,0 +1,5 @@
+VPS large_swaps on arb_ready tokens: 14 mined receipts
+same-pool Swap in tx_index+1..+3 after victim: 4/14 = 28.6%
+0 FAIL RPC
+hashes sampled from baocao47_arb_measure / large_swaps_b0 (token in 9 arb_ready)
+machine=WSL (eth_getTransactionReceipt + eth_getBlockByNumber, RPC .env, KHONG in URL)

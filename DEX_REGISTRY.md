@@ -62,7 +62,7 @@ Trang địa chỉ chính thức: `https://developer.pancakeswap.finance/contrac
 
 | Contract | Address | source_url | pinned_date | getCode (len byte) | Trạng thái |
 |---|---|---|---|---|---|
-| Vault (accounting layer) | `0x238a358808379702088667322f80aC48bAd5e6c4` | https://developer.pancakeswap.finance/contracts/infinity/resources/addresses | 2026-09-14 | 8347 | PINNED |
+| Vault (accounting layer) | `0x238a358808379702088667322f80aC48bAd5e6c4` | https://developer.pancakeswap.finance/contracts/infinity/resources/addresses | 2026-09-14 | 8347 | PINNED — **cũng là nguồn flash 0 phí** (cụm `planB-B0-complete`, 2026-09-16): `lock` → `ILockCallback.lockAcquired` → `take` → arb → `sync` + trả token → `settle`. Trần vay = `IERC20.balanceOf(vault)`, KHÔNG phải `reservesOfApp`. Interface IVault: xem mục "Nguồn flash" dưới. |
 | CLPoolManager (concentrated liquidity) | `0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b` | https://developer.pancakeswap.finance/contracts/infinity/resources/addresses | 2026-09-14 | 20885 | PINNED |
 | BinPoolManager (liquidity book / LB) | `0xC697d2898e0D09264376196696c51D7aBbbAA4a9` | https://developer.pancakeswap.finance/contracts/infinity/resources/addresses | 2026-09-14 | 23821 | PINNED |
 | CLQuoter | `0xd0737C9762912dD34c3271197E362Aa736Df0926` | https://developer.pancakeswap.finance/contracts/infinity/resources/addresses | 2026-09-14 | 6998 | PINNED |
@@ -156,3 +156,54 @@ Quy tắc bribe theo từng relay (từ docs, KHÔNG suy diễn):
   phép revert, và victim là tx public nên cũng không nằm trong danh sách.
 - `backrunTarget` (48 Club): hash của chính victim, điền khi tầng gửi thật
   (`7.3`) có hash trong tay.
+
+## Nguồn flash loan (cụm `planB-B0-complete`, pinned_date `2026-09-16`)
+
+Pin phục vụ chiến lược backrun-arb (AGENTS.md "Chiến lược đã chốt" 2026-09-16).
+`eth_chainId=0x38` + `eth_getCode` thật: `baocao/evidence/baocao46_flash_sources.txt`
+(WSL, RPC công khai `bsc-dataseed1.bnbchain.org`, block `122212446`). Chiều sâu
+đo lại lúc chạy bởi `flash_source_task` — số dưới đây là ảnh chụp lúc pin.
+
+| Contract | Address | source_url | pinned_date | getCode (len byte) | Phí / chiều sâu lúc pin | Trạng thái |
+|---|---|---|---|---|---|---|
+| Pancake Infinity Vault (nguồn flash 0 phí) | `0x238a358808379702088667322f80aC48bAd5e6c4` | https://developer.pancakeswap.finance/contracts/infinity/resources/addresses + https://github.com/pancakeswap/infinity-core/blob/main/src/interfaces/IVault.sol | 2026-09-16 (flash) / 2026-09-14 (venue) | 8347 | phí **0** (đọc mã nguồn `take`/`_settle`); WBNB `188.93`, USDT `35_597_526`, ETH `74.29`, BTCB `2.29` | PINNED — nguồn chính |
+| Balancer V2 Vault | `0xBA12222222228d8Ba445958a75a0704d566BF2C8` | https://docs.balancer.fi/reference/contracts/deployment-addresses/bsc.html (cùng địa chỉ canonical mọi chain Balancer V2) | 2026-09-16 | 24512 | phí **0** (`ProtocolFeesCollector.getFlashLoanFeePercentage()=0`); WBNB **0.000435**, USDT ~5e-13 | PINNED nhưng **BSC ~RỖNG** — không dùng được, độc lập với wind-down vote 25–29/09/2026 |
+| Balancer V2 ProtocolFeesCollector | `0xce88686553686DA562CE7Cea497CE749DA109f9F` | https://docs.balancer.fi/reference/contracts/deployment-addresses/bsc.html (canonical `getProtocolFeesCollector()` của Vault) | 2026-09-16 | 2880 | chỉ để đọc phí | PINNED |
+| Aave V3 Pool (BSC, proxy) | `0x6807dc923806fE8Fd134338EABCA509979a7e0cB` | https://github.com/bgd-labs/aave-address-book (`src/ts/AaveV3BNB.ts`, `POOL`) | 2026-09-16 | 1933 | phí **5 bps** (`FLASHLOAN_PREMIUM_TOTAL()=5`); chiều sâu = `balanceOf(aToken)` | PINNED |
+
+Quote token dùng khi đọc `balanceOf(vault)` (đã pin Core, xác nhận lại 2026-09-16):
+
+| Token | Address | Ghi chú |
+|---|---|---|
+| WBNB | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` | đã pin Core |
+| USDT | `0x55d398326f99059fF775485246999027B3197955` | đã pin Core |
+| ETH (Binance-Peg) | `0x2170Ed0880ac9A755fd29B2688956BD959F933F8` | chỉ để đọc chiều sâu vault, không phải quote path |
+| BTCB | `0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c` | chỉ để đọc chiều sâu vault, không phải quote path |
+
+Pancake V2 flash swap (`pancakeCall`) không có contract riêng: chiều sâu = reserve của chính pool đang arb, phí ~25,06 bps (`ceil(amount*10000/9975)-amount`).
+
+### Interface IVault (Infinity) — nguồn flash
+
+Đọc trực tiếp `pancakeswap/infinity-core` ngày **2026-09-16**:
+
+- `src/interfaces/IVault.sol` — https://github.com/pancakeswap/infinity-core/blob/main/src/interfaces/IVault.sol
+- `src/interfaces/ILockCallback.sol` — https://github.com/pancakeswap/infinity-core/blob/main/src/interfaces/ILockCallback.sol
+- `src/Vault.sol` — triển khai thật (`lock` gọi `ILockCallback(msg.sender).lockAcquired(data)`, không phải `lockCallback` dù comment IVault ghi nhầm tên đó)
+
+Hàm bắt buộc cho flash 0 phí (trích chữ ký, không phải toàn bộ file):
+
+```solidity
+interface ILockCallback {
+    function lockAcquired(bytes calldata data) external returns (bytes memory);
+}
+
+interface IVault {
+    function lock(bytes calldata data) external returns (bytes memory);
+    function take(Currency currency, address to, uint256 amount) external;
+    function sync(Currency token) external;
+    function settle() external payable returns (uint256 paid);
+    error CurrencyNotSettled(); // lock revert nếu getUnsettledDeltasCount() != 0
+}
+```
+
+Trình tự bắt buộc: `lock` → (callback) `take` → arb → `sync(currency)` → chuyển token về Vault → `settle`. Quên `sync` trước khi trả → `paid` sai → `CurrencyNotSettled` → mất gas. Trần vay = `IERC20(token).balanceOf(VAULT)` (đo thật: `balanceOf` 188.93 WBNB vs `reservesOfApp` 132.89 WBNB, chênh 29.7%).

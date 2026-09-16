@@ -44,6 +44,8 @@
 | `docs/TASKS.md` | Bảng cụm/BAOCAO/commit/trạng thái + nợ còn thật + mục "Hoãn, lý do". |
 | `docs/DOC_MAP.md` | Chính file này. |
 | `docs/RUN.md` | Vận hành chi tiết: chạy paper (WSL/VPS) + checklist deploy VPS đầy đủ. |
+| `docs/CONTRACT_DESIGN.md` | Thiết kế executor (sandwich B2 + **ArbExecutor** B0, chưa code). |
+| `docs/GHICHU_VET.md` | Ghi chú vet tay `pairs.txt` (nếu có). |
 
 ### `baocao/`
 
@@ -80,6 +82,11 @@
 | `src/web.rs` | Axum server + toàn bộ route `/api/*` (kể cả `/api/shadow`), serve static `web/`. |
 | `src/bin/rpc_probe.rs` | Binary phụ đo RTT/`chain_ok` từng URL RPC (không gửi tx), dùng qua `scripts/run_rpc_probe.sh`. |
 | `src/bin/competitor_recon.rs` | Binary phụ trinh sát đối thủ MEV thật qua `eth_getLogs`/`eth_getTransactionByHash` (chỉ đọc, không gửi tx) — cụm `competitor-recon-and-strategy`. |
+| `src/bin/build_multi_venue.rs` | Sinh `state/multi_venue.json` từ `pairs.txt` + `getPair`/`getReserves`/`getPool` + `Initialize` Infinity (cửa sổ 5000 block). |
+| `src/bin/arb_measure.rs` | Replay `sim_arb` trên mẫu swap lớn (log VPS) × `multi_venue.json`. |
+| `src/bin/arb_crosscheck.rs` | Đối chiếu `sim_arb::route_out` với revm 2–3 hop trên fork. |
+| `src/multivenue.rs` | Load/tra `multi_venue.json` (token → pool V2 đủ sâu). |
+| `src/flash.rs` / `src/sim_arb.rs` | Nguồn flash + math backrun-arb (cụm B0). |
 
 ### `web/` (dashboard tĩnh, serve qua `axum`)
 

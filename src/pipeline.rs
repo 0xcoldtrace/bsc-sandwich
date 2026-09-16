@@ -137,6 +137,11 @@ pub enum PipelineSkip {
     /// bundle riêng. Ở `live_mode="off"` (paper thuần) reason này KHÔNG bao
     /// giờ phát sinh (vẫn `Simulated` + ghi cờ, để còn số liệu).
     CompetitorVictim,
+    /// Cụm `planB-B0-complete` — token không có ≥2 pool V2 đủ sâu trong
+    /// `state/multi_venue.json` (thiếu file, chưa sinh, hoặc chỉ 1 venue).
+    ArbNoSecondVenue,
+    /// Không nguồn flash nào đủ sâu cho cỡ vay tại snapshot hiện tại.
+    ArbNoFlashSource,
 }
 
 impl PipelineSkip {
@@ -163,6 +168,8 @@ impl PipelineSkip {
             PipelineSkip::GasCap => "gas_cap",
             PipelineSkip::SanityReject => "sanity_reject",
             PipelineSkip::CompetitorVictim => "competitor_victim",
+            PipelineSkip::ArbNoSecondVenue => "arb_no_second_venue",
+            PipelineSkip::ArbNoFlashSource => "arb_no_flash_source",
         }
     }
 }
@@ -817,6 +824,63 @@ fn decode_and_classify_quote(
 /// candidate (decode_fail/not_quote_pair).
 pub fn precheck_quote_only(calldata: &[u8], tx_value: U256, scan_quote_usdt: bool) -> Result<(Address, QuoteAsset), PipelineSkip> {
     decode_and_classify_quote(calldata, tx_value, scan_quote_usdt).map(|(_, token, quote)| (token, quote))
+}
+
+/// Cụm `planB-B0-complete` — decode swap cho backrun-arb: nhận CẢ chiều mua
+/// lẫn bán (khác sandwich, victim bán cũng làm lệch 2 pool). V3 vẫn trả
+/// venue V3 để caller skip `venue_unpinned` (B0 chỉ sim V2).
+#[derive(Debug, Clone, Copy)]
+pub struct BackrunSwap {
+    pub token: Address,
+    pub quote: Address,
+    pub amount_in: U256,
+    pub victim_buys_token: bool,
+    pub venue: decoder::SwapVenue,
+    pub selector_name: &'static str,
+}
+
+pub fn decode_for_backrun(
+    calldata: &[u8],
+    tx_value: U256,
+    scan_quote_usdt: bool,
+) -> Result<BackrunSwap, PipelineSkip> {
+    let decoded = match decoder::decode_swap_calldata(calldata, tx_value) {
+        Ok(d) => d,
+        Err(DecodeSkip::DecodeFail) => return Err(PipelineSkip::DecodeFail),
+        Err(DecodeSkip::NotWbnbPair) => return Err(PipelineSkip::NotQuotePair),
+    };
+    let quotes: &[Address] = if scan_quote_usdt {
+        &[wbnb(), usdt()]
+    } else {
+        &[wbnb()]
+    };
+    for &q in quotes {
+        if decoded.path.token_a == q {
+            if let Some(token) = decoded.path.token_vs(q) {
+                return Ok(BackrunSwap {
+                    token,
+                    quote: q,
+                    amount_in: decoded.amount_in,
+                    victim_buys_token: true,
+                    venue: decoded.venue,
+                    selector_name: decoded.selector_name,
+                });
+            }
+        }
+        if decoded.path.token_b == q {
+            if let Some(token) = decoded.path.token_vs(q) {
+                return Ok(BackrunSwap {
+                    token,
+                    quote: q,
+                    amount_in: decoded.amount_in,
+                    victim_buys_token: false,
+                    venue: decoded.venue,
+                    selector_name: decoded.selector_name,
+                });
+            }
+        }
+    }
+    Err(PipelineSkip::NotQuotePair)
 }
 
 /// Cụm `usdt-quote-asset` — resolve pool V2 (factory đã pin) + reserve THẬT
@@ -3378,6 +3442,22 @@ mod tests {
         let calldata = build_tokens_for_tokens(50_000_000_000_000_000, 0, usdt(), token);
         assert_eq!(precheck_quote_only(&calldata, U256::ZERO, false), Err(PipelineSkip::NotQuotePair));
         assert_eq!(precheck_quote_only(&calldata, U256::ZERO, true), Ok((token, QuoteAsset::Usdt)));
+    }
+
+    #[test]
+    fn decode_for_backrun_nhan_ca_mua_va_ban() {
+        let token = addr("0xcccccccccccccccccccccccccccccccccccccccc");
+        let buy = build_eth_for_tokens(token, 0);
+        let d = decode_for_backrun(&buy, U256::from(10u64).pow(U256::from(17u64)), false).unwrap();
+        assert!(d.victim_buys_token);
+        assert_eq!(d.token, token);
+        assert_eq!(d.quote, wbnb());
+        // path [token, WBNB] = victim BAN token lay quote
+        let sell = build_tokens_for_tokens(50_000_000_000_000_000, 0, token, wbnb());
+        let d = decode_for_backrun(&sell, U256::ZERO, false).unwrap();
+        assert!(!d.victim_buys_token);
+        assert_eq!(d.token, token);
+        assert_eq!(d.quote, wbnb());
     }
 
     // ===== Cụm `quote-live-wiring-funnel-diagnostics` — 2 test bắt buộc theo

@@ -355,3 +355,13 @@ chép, mà là giới hạn lịch sử git thật của repo).
   cho cụm 6 `strategy-exec`, không trả lời được bằng sim.
 - **Mục 4 chỉ xét ±3 vị trí và chỉ `Swap` V2** — kết luận đúng là "không thấy",
   không phải "không có".
+
+## KẾ HOẠCH B — `planB-B0-complete` (BAOCAO47)
+
+| Cụm | BAOCAO | Trạng thái |
+|---|---|---|
+| B0 `planB-backrun-opportunity` + `planB-B0-complete` | 46 (CHƯA XONG) + 47 | XONG đo. **No-Go B1** (1,27 cơ hội/ngày VPS 18,85 h; WSL 63,6 phút = 0 lãi). Xem BAOCAO47 ô 10. |
+| B1 `arb-executor-contract` | — | CHỜ Go B0. Thiết kế `ArbExecutor` đã viết (`docs/CONTRACT_DESIGN.md`). |
+| B2 `arb-exec-wiring` | — | chờ B1 |
+| B3 `live-small` | — | chờ B2 |
+| B4 `venue-infinity-v3` | — | mở venue thứ 2/3 nếu B0 No-Go vì thiếu pair V2 đủ sâu (78 token có 2 địa chỉ V2 nhưng 1 phía mỏng; 107 token có V3). |

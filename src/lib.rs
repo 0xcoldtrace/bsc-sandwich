@@ -12,6 +12,7 @@ pub mod executor;
 pub mod flash;
 pub mod logger;
 pub mod mem;
+pub mod multivenue;
 pub mod pairbook;
 pub mod pipeline;
 pub mod pool;

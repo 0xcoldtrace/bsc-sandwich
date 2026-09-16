@@ -1,0 +1,11 @@
+build_multi_venue chain=56 block=122217770 rpc_ok
+pairs.txt tokens_parsed=129
+  progress 20/129 last=0xd41fdb03ba84762dd66a0af1a6c8540ff1ba5dfb v2=2 arb_ready=false
+  progress 40/129 last=0x6894cde390a3f51155ea41ed24a33a4827d3063d v2=2 arb_ready=false
+  progress 60/129 last=0x73b84f7e3901f39fc29f3704a03126d317ab4444 v2=1 arb_ready=false
+  progress 80/129 last=0x01fbed06a70eb1b4a0b43dbc6a94f99944cd7777 v2=1 arb_ready=false
+  progress 100/129 last=0x4b8285ab433d8f69cb48d5ad62b415ed1a221e4f v2=2 arb_ready=false
+  progress 120/129 last=0x63d9b8830255ba8ceaf3958e6f2906e52b424444 v2=1 arb_ready=false
+  progress 129/129 last=0xdd325c38b12903b727d16961e61333f4871a70e0 v2=2 arb_ready=false
+infinity Initialize logs in 122212771-122217770: 16
+WROTE state/multi_venue.json tokens=129 arb_ready=9 infinity_err=None machine=WSL

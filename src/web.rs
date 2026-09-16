@@ -175,6 +175,10 @@ pub struct AppStateInner {
     /// thủ theo từng phút để phát hiện họ chuyển private/đổi ví/đổi pool
     /// (xem `competitor::ClusterRateWatch` + `docs/STATE.md`).
     pub cluster_rate: RwLock<crate::competitor::ClusterRateWatch>,
+    /// Cụm `planB-B0-complete` — ảnh chụp 4 nguồn flash, task nền ghi.
+    pub flash_snapshot: RwLock<crate::flash::FlashSnapshot>,
+    /// Cụm `planB-B0-complete` — bản đồ venue thứ 2 (`state/multi_venue.json`).
+    pub multi_venue: RwLock<crate::multivenue::MultiVenueMap>,
 }
 
 /// Cụm `evm-validate-fixed-then-wire` (B3.4) — VALIDATOR NHÚNG, chỉ số SỐNG.
@@ -868,6 +872,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/compete", get(compete))
         .route("/api/mem", get(mem_status))
         .route("/api/shadow", get(shadow_status))
+        .route("/api/flash", get(flash_status))
         .route("/api/tax", get(tax_cache_list).post(tax_inject))
         .route("/api/control", post(control))
         .with_state(state)
@@ -876,6 +881,35 @@ pub fn build_router(state: AppState) -> Router {
 
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+/// Cụm `planB-B0-complete` — `GET /api/flash`: chiều sâu + phí 4 nguồn tại block đã chụp.
+async fn flash_status(State(state): State<AppState>) -> Json<Value> {
+    let snap = state.flash_snapshot.read().await;
+    let mut sources = Vec::new();
+    for st in &snap.states {
+        let avail: Vec<Value> = st
+            .available
+            .iter()
+            .map(|(t, v)| json!({ "token": format!("{t:#x}"), "wei": v.to_string() }))
+            .collect();
+        sources.push(json!({
+            "source": st.source.as_str(),
+            "fee_bps": st.fee_bps,
+            "error": st.error,
+            "available": avail,
+        }));
+    }
+    let mv = state.multi_venue.read().await;
+    Json(json!({
+        "block": snap.block,
+        "measured_at_unix": snap.measured_at_unix,
+        "sources": sources,
+        "multi_venue_tokens": mv.len(),
+        "multi_venue_arb_ready": mv.arb_ready_count(),
+        "multi_venue_block": mv.block,
+        "infinity_window": [mv.infinity_from_block, mv.infinity_to_block],
+    }))
 }
 
 async fn status(State(state): State<AppState>) -> Json<Value> {

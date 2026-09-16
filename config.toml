@@ -208,11 +208,13 @@ arb_max_borrow_usdt = 12000
 # Vault / Balancer V2 / Aave V3). Duong nong CHI doc snapshot da chup.
 flash_source_interval_sec = 300
 
-# Ban do venue thu 2 (sinh boi `cargo run --release --bin venue_map`).
+# Ban do venue thu 2 (sinh boi `cargo run --release --bin build_multi_venue`).
 # Thieu file = moi tx `arb_no_second_venue`, bot KHONG crash.
 multi_venue_path = "state/multi_venue.json"
 
-# Gas UNIT do that cho 2 kieu route arb (muc 5). Fallback khi chua do duoc
-# bang revm luc boot, cung khuon gas_units_front/gas_units_back.
+# Gas UNIT do that cho 2 kieu route arb (BAOCAO47): 2-3 hop V2 revm = 339808..347747
+# (p50 339836). Infinity lock/take/sync/settle chua chen bytecode callback duoc
+# (cong ~80k theo kich thuoc lock tx on-chain) -> 420000. V2 pancakeCall ~40k
+# overhead -> 380000. Chua phai toan bo lock path trong 1 tx revm.
 gas_units_arb_infinity = 420000
-gas_units_arb_v2flash = 330000
+gas_units_arb_v2flash = 380000
