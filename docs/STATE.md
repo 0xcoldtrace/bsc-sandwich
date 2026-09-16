@@ -5332,3 +5332,59 @@ quét tuyến tính một lượt sẽ luôn "chưa biết".
 
 `unknown` KHÔNG được đọc thành `true`. Số tiền DUY NHẤT được phép dùng để kết
 luận kinh tế là `sum_net_bnb_ca_hai_cong_ok`.
+
+### 9. BỔ SUNG GIỮA PHIÊN — câu trả lời cho mục 1 KHÁC NHAU theo từng đường
+
+Chính công cụ của mục 1 (`shadow.victim_diag`, chạy thật trong shadow mode)
+lật lại một phần kết luận ở mục 1 ở trên. Ghi cả hai, vì chúng đúng ở 2 chỗ
+khác nhau:
+
+| đường | mẫu | `victim_ok` ở `front_in=0` | lý do revert | verdict |
+|---|---|---|---|---|
+| ladder, fork tại `mined_block − 1` | 14 victim WBNB | **SỐNG 14/14** | `INSUFFICIENT_OUTPUT_AMOUNT` (ở `front_in` V2) | `front_giet_victim` |
+| shadow thật, fork tại `current_block` | 2 victim USDT | **CHẾT 2/2** | `TransferHelper: TRANSFER_FROM_FAILED` | `state_fork_sai` |
+
+Đối chiếu on-chain cho 2 mẫu shadow:
+
+```
+victim 0x98bb4913… : bot fork tai block dao +4   status=0x1  allowance(->V2Router)=VO HAN
+victim 0xc9bac861… : bot fork tai block dao +15  status=0x1  allowance(->V2Router)=VO HAN
+```
+
+Allowance VÔ HẠN ⇒ không phải thiếu allowance. Victim `status=0x1` ⇒ tx của họ
+thành công thật. Nguyên nhân duy nhất còn lại: **bot fork ở block mà victim ĐÃ
+THỰC THI rồi**, nên USDT đã tiêu và `transferFrom` của lần replay thất bại.
+
+Đây là 2 bug riêng biệt, cả hai đều sửa trong cụm này:
+
+**BUG #4 — fork tại `current_block` là SAI khi victim được đào ngay trong
+block đó.** `AlloyDB` đọc state ở CUỐI block, nên `decision_vs_mined = 0` (đo
+thật **8/22 mẫu**) đã đủ để state bao gồm chính giao dịch của victim. Sửa:
+`spawn_shadow_bundle_sim` fork tại `current_block − 1` — victim còn pending
+lúc bot nhìn thấy nó nên chỉ có thể được đào ở `current_block` trở đi, do đó
+`current_block − 1` LUÔN là state trước victim. Giá phải trả: reserve già hơn
+đúng 1 block (~3 giây). Log tách `fork_block` và `decision_block` thành 2
+field để không lẫn.
+
+**BUG #5 — `MINED_INDEX_DEPTH = 3` quá nông.** Phân bố thật của
+`latency.decision_vs_mined` (22 mẫu):
+
+```
+-3:1   -2:1   -1:8   +0:8   +3:1   +4:1   +15:1   +19:1
+-> 4/22 (18%) quyet dinh SAU khi victim da len block
+```
+
+`+15` và `+19` nằm NGOÀI cửa sổ 3 block ⇒ cổng pre-sign "victim còn pending
+không" không thấy hash trong index ⇒ tưởng còn pending ⇒ **bot ký bundle cho
+một tx đã nằm trên chain**. Nâng lên 32 block (~70 giây, phủ được `+19`), vẫn
+là trần CỐ ĐỊNH (~10k hash, dưới 1 MB) nên không mâu thuẫn mục 3. Test hồi
+quy `mined_index_phai_phu_duoc_do_tre_19_block_da_do_that` khoá đúng con số
+`+19` đã đo.
+
+**Chưa verify sống 2 bản sửa này** (phiên hết trước khi có mẫu shadow mới sau
+khi sửa) — ghi CÒN NỢ, không tự nhận đã chứng minh.
+
+Bài học: `victim_ok=false` không phải MỘT nguyên nhân. Bảng 3 biến thể của
+mục 1 phân định được là vì nó hỏi câu hỏi đúng (`front_in=0` thì sao?) chứ
+không phải vì nó đoán trúng giả thuyết — và nó trả lời khác nhau ở 2 đường
+khác nhau của cùng một bot.

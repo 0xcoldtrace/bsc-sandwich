@@ -1,0 +1,66 @@
+warning: duplicated attribute
+    --> src/web.rs:1874:5
+     |
+1874 |     #[test]
+     |     ^^^^^^^
+     |
+     = note: `#[warn(duplicate_macro_attributes)]` on by default
+
+warning: function `transport_pending_tx_from_alloy` is never used
+    --> src/sim_evm.rs:2257:8
+     |
+2257 |     fn transport_pending_tx_from_alloy(tx: &alloy::rpc::types::eth::Transaction) -> PendingTxRaw {
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `bsc_sandwich` (lib test) generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.31s
+     Running unittests src/lib.rs (target/release/deps/bsc_sandwich-5f7b7a6715ae894d)
+
+running 1 test
+real_rpc_victim_ok_verdict_ladder: 2 URL ung vien, muc tieu 14 case
+  node GIU state head-3: https://bsc.blockrazor.xyz/*** (head=122180836)
+== dung node https://bsc.blockrazor.xyz/*** , head=122180836 ==
+
+victim_hash          quote   amountOutMin      front_in_v2     impact_%    mined |   a:0  b:v2   c50   c25   c10  d:gated |      front_gated profit_gated verdict/reason
+0x885fbd9b4f301f25   wbnb  53387132862.3767           5.0000      64.4075 122180851 |    OK   ERR   ERR   ERR   ERR      ERR |         2.429249     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1054
+0x47c4b3fd97b6405f   wbnb     148298.2404           5.0000      24.7567 122180918 |    OK   ERR   ERR   ERR   ERR      ERR |         5.000000     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1055
+test sim_evm::tests::real_rpc_victim_ok_verdict_ladder has been running for over 60 seconds
+0x82ca10d5a1f8598d   wbnb  545635927.6880           5.0000       6.0529 122180973 |    OK   ERR   ERR   ERR   ERR      ERR |         5.000000     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1024
+0xf9cc9efa926e2263   wbnb   26058620.1561           5.0000       1.8552 122181037 |    OK    OK    OK    OK    OK       OK |         5.000000     0.015152 khong_tai_hien | -
+0xf65e911269b658a9   wbnb          0.0000           5.0000      31.2303 122181078 |    OK   ERR   ERR   ERR   ERR      ERR |         5.000000     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 6115
+0x4f591d18ed3d3687   wbnb  420809841.4462           5.0000      68.9596 122181152 |    OK     X     X     X     X       OK |         0.000368     0.000018 front_giet_victim | PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT
+0x4a937bbb64856c31   wbnb  349086310.8248           5.0000       5.9639 122181191 |    OK   ERR   ERR   ERR   ERR      ERR |         5.000000     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1024
+0x80fcffdaa52a2d35   wbnb          0.0000           5.0000      13.6963 122181191 |    OK   ERR   ERR   ERR   ERR      ERR |         5.000000     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 6115
+0xd321781c6a429ee3   wbnb          0.0001           5.0000      32.7440 122181308 |    OK     X     X     X     X       OK |         0.000769     0.000016 front_giet_victim | PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT
+0x50596970f207f4d6   wbnb          0.0007           5.0000      15.0710 122181352 |    OK     X     X     X     X       OK |         0.001668     0.000021 front_giet_victim | PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT
+0xddc52f99e4491e1a   wbnb          0.0062           5.0000      10.3430 122181400 |    OK     X     X     X     X      ERR |         0.000000     0.000000 front_giet_victim | PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT
+0x3a45a8311588c342   wbnb  981003912.8721           5.0000      18.7970 122181468 |    OK   ERR   ERR   ERR   ERR      ERR |         0.693743     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1025
+0x31bdb0e9c2927deb   wbnb          0.0000           5.0000      13.0801 122181468 |    OK   ERR   ERR   ERR   ERR      ERR |         5.000000     0.000000 front_giet_victim | SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 6115
+0x4b8049f6e0213c40   wbnb   24157887.1468           5.0000       7.7733 122181590 |    OK     X     X     X     X       OK |         0.032271     0.000019 front_giet_victim | PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT
+
+== TONG KET 14 case / 90 block (node https://bsc.blockrazor.xyz/*** , tu block 122180835 toi 122181590) ==
+   verdict front_giet_victim    = 13
+   verdict khong_tai_hien       = 1
+   ly do revert (b:front=v2) -                                                  = 1
+   ly do revert (b:front=v2) PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT          = 5
+   ly do revert (b:front=v2) SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1024 = 2
+   ly do revert (b:front=v2) SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1025 = 1
+   ly do revert (b:front=v2) SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1054 = 1
+   ly do revert (b:front=v2) SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1055 = 1
+   ly do revert (b:front=v2) SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 6115 = 3
+
+== MUC 2: front_in DA RANG BUOC victim-ok (d:front=v2_gated) ==
+   so case co front_gated > 0      = 14
+   trong do victim SONG trong EVM  = 5
+   ly do revert con lai SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1024 = 2
+   ly do revert con lai SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1025 = 1
+   ly do revert con lai SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1054 = 1
+   ly do revert con lai SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 1055 = 1
+   ly do revert con lai SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): back-sell revert/halt: Revert { gas: ResultGas { total_gas_spent: 6115 = 3
+   ly do revert con lai SIM_ERR: sim_evm revert EVM (honeypot/anti-bot): front-buy revert/halt: Revert { gas: ResultGas { total_gas_spent: 1943 = 1
+test sim_evm::tests::real_rpc_victim_ok_verdict_ladder ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 408 filtered out; finished in 326.14s
+
