@@ -4792,3 +4792,295 @@ mức/trần `maxFrontPerTx` on-chain/pause/ví tay lộ khóa mất gì), gas �
 so mốc ĐO THẬT BAOCAO38 (front 121.916 / back 105.539) + 12 test foundry +
 kế hoạch deploy, ~850 dòng Rust cần đổi, và **điều kiện go/no-go**: chỉ deploy
 khi shadow ký kịp ≥ 50% VÀ có pool WBNB không bị cụm đối thủ phủ.
+
+---
+
+## `decision-data-24h` — số liệu 10.92 h THẬT trên VPS để Chủ chốt hướng + 4 nợ nhỏ (BAOCAO43, 2026-09-16)
+
+### 0. Việc đầu tiên phát hiện: bot paper 24h trên VPS **ĐÃ CHẾT vì OOM**, không chạy đủ 24 h
+
+Lệnh cụm này giả định "bot paper 24h port 18910 ĐANG CHẠY (PID 377294)". Thực
+tế khi phiên này ssh vào kiểm tra:
+
+```
+scripts/paper_run.sh: line 191: 377294 Killed   ./target/release/bsc_sandwich "$CFG"
+BOT DA CHET sau 656 phut
+```
+
+`dmesg -T` trên VPS (bằng chứng, không suy diễn):
+
+```
+[Wed Sep 16 04:40:50 2026] tokio-rt-worker invoked oom-killer: ...
+Out of memory: Killed process 377294 (bsc_sandwich) total-vm:9532056kB,
+anon-rss:7627256kB, ... oom_score_adj:0
+```
+
+**7.6 GB RSS trên VPS 8 GB** sau 656 phút (10 h 56 min) ⇒ rò rỉ bộ nhớ ~11
+MB/phút. Binary lúc đó là commit `5284bd3` (sha256
+`4af44b29ef1adf729f416d624d18147030bf8d52f0c7f149bfaa0a0143b0feab`), tức
+**TRƯỚC** cả cụm `competitor-recon-and-strategy` lẫn
+`bugfix-presign-and-contract-plan` — nên đây KHÔNG phải rò rỉ do 2 cụm đó gây
+ra, mà là lỗi có sẵn từ trước. Nguyên nhân chưa truy được trong cụm này (ghi
+CÒN NỢ) — nghi vấn đầu bảng là các cấu trúc tích luỹ không có trần trong
+`AppStateInner` (`candidate_seen`, `ReserveCache`, `MinedTxIndex`,
+`TaxCache`) và `logs/bot.jsonl` 366 MB đọc lại mỗi lần gọi `/api/econ`.
+
+**Hệ quả cho mọi số liệu dưới đây: cửa sổ quan sát là 10.92 h, KHÔNG phải
+24 h.** Mọi con số "mỗi ngày" trong bảng là QUY ĐỔI tuyến tính, đã ghi rõ.
+
+### 1. Công cụ phân tích — `scripts/analyze_econ.sh` + `scripts/cluster_funded_scan.sh`
+
+Cả 2 là **bash + jq + awk**, chạy được thẳng trên VPS (không cần toolchain
+Rust ở đó, đúng lệnh), chỉ ĐỌC log/RPC.
+
+- `cluster_funded_scan.sh` — dựng danh sách ví thuộc CỤM ĐỐI THỦ cho 1 khoảng
+  block bằng `eth_getLogs` THẬT (`Transfer` của WBNB/USDT có `topics[1]` là 1
+  trong 3 seed đã verify ở BAOCAO41). Bắt buộc vì binary chạy trên VPS
+  (`5284bd3`) CHƯA có field `victim_in_competitor_cluster` — phải dựng lại
+  ngoại tuyến. Kết quả cho khoảng block của lần chạy
+  (`122071909..122159273`): **44 call, 0 lỗi, 13.119 lần cấp vốn, 824 ví riêng
+  biệt**.
+- `analyze_econ.sh` — 1 lần `tail | grep` qua log 366 MB, `jq` trích TSV, rồi
+  `awk` tổng hợp. Output: `1a_pool_quote_hour.tsv`, `1a_front_p80.tsv`,
+  `1b_by_quote.tsv`, `1b_top_pools.tsv`, `1c_by_hour.tsv`, `1d_summary.txt`.
+  Bản sao đã `scp` về `logs/vps_analysis/`.
+
+Quy tắc số liệu (giống hệt `web::compute_econ_from_rows` để 2 nguồn không bao
+giờ lệch): cộng lãi theo **đơn vị quote gốc**, chỉ quy sang BNB khi tỉ giá của
+CHÍNH dòng đó hợp lệ; tỉ giá quote→BNB > 1.0 với quote khác WBNB = dấu vết bug
+A1 (`ReserveCache` thiếu chiều `quote`, binary VPS chưa có bản sửa) → LOẠI và
+đếm riêng (**1.873 dòng** bị loại trong lần chạy này).
+
+### 2. KẾT QUẢ — con số quyết định
+
+**Tổng (10.92 h, WSL phân tích / VPS sinh dữ liệu):**
+
+```
+candidate=387.409  sim.result=497  net_pos=497  net_pos_non_cluster=16
+cụm đối thủ chiếm 96.8% số net_pos   rate_rejected=1.873
+```
+
+**481/497 (96.8%) cơ hội "có lãi" là ví burner của chính cụm đối thủ MEV** —
+kiểm cả 2 cách đều ra ĐÚNG 481: "từng được seed cấp vốn" và "được cấp vốn
+trong cửa sổ ±2 block quanh block victim được đào". Đây là phát hiện lớn nhất
+của cụm: con số `net_pos` trần trụi ở mọi BAOCAO trước ĐÃ bị nhóm này chi
+phối.
+
+**Theo quote:**
+
+| quote | candidate | sim.result | net_pos | net_pos KHÔNG cụm | lãi KHÔNG cụm | best |
+|---|---|---|---|---|---|---|
+| usdt | 33.425 | 487 | 487 | **6** | 1,63 USDT | 219,55 USDT (thuộc cụm) |
+| wbnb | 353.984 | 10 | 10 | **10** | **0,4800 BNB** | 0,1187 BNB |
+
+**Top pool theo `net_pos_non_cluster`** (`1b_top_pools.tsv`):
+
+| pool | token | quote | candidate | net_pos | KHÔNG cụm | lãi KHÔNG cụm | % net_pos là ví cụm |
+|---|---|---|---|---|---|---|---|
+| `0x76c42dda…` | BORT | wbnb | 59 | 9 | **9** | 0,4546 BNB | 0,0% |
+| `0xd69aeb83…` | POP | usdt | 557 | 5 | **5** | 0,0069 USDT | 0,0% |
+| `0x3f803ec2…` | BTCB | usdt | 45 | 1 | 1 | 1,6193 USDT | 0,0% |
+| `0x6c6636ea…` | CATE | wbnb | 1 | 1 | 1 | 0,0254 BNB | 0,0% |
+| `0xcec13213…` | BinanceTown | usdt | 551 | 236 | **0** | 0 | **100%** |
+| `0xdfe23efb…` | BNC | usdt | 540 | 245 | **0** | 0 | **100%** |
+
+2 pool "lãi nhất" (`0xcec13213…`, `0xdfe23efb…` — đúng 2 pool BAOCAO42 thấy
+trong 30 phút) có **100% victim là ví của cụm đối thủ**: đó là hệ thống bot
+kia tự swap token của chính họ (cả 2 token đều có đuôi vanity `7777`), KHÔNG
+phải nạn nhân bình thường.
+
+**Trả lời 4 câu hỏi của lệnh (mục 1d):**
+
+- **(a) Pool ≥ 5 `net_pos_non_cluster`/ngày:** đúng **2** pool —
+  `0x76c42dda…` (BORT/WBNB) 19,8/ngày và `0xd69aeb83…` (POP/USDT) 11,0/ngày.
+- **(b) WBNB có pool nào lãi không:** **CÓ** — `0x76c42dda…` 9 cơ hội /
+  0,4546 BNB và `0x6c6636ea…` 1 cơ hội / 0,0254 BNB. Đây là **thay đổi kết
+  luận so với BAOCAO42** ("30 phút không có pool WBNB nào có lãi") — cửa sổ 30
+  phút khi đó quá ngắn, không phải đặc tính thật của `pairs.txt`.
+- **(c) Giờ tập trung:** UTC 00–04 (**VN 07–11**) chiếm 12/16 cơ hội không
+  thuộc cụm; riêng UTC 04 (VN 11) mang 0,351 BNB = 73% tổng lãi WBNB.
+- **(d) Vốn cần:** quote WBNB **4,995 BNB**, quote USDT **2.999,995 USDT** —
+  cả 2 đều ĐÚNG BẰNG trần cấu hình (`max_front_bnb=5`, `max_front_usdt=3000`),
+  tức **trần vốn đang là thứ quyết định quy mô, không phải thị trường** (y hệt
+  quan sát A6 ở BAOCAO42, giờ đã xác nhận trên cửa sổ dài gấp 22 lần).
+
+**Quy đổi cho Chủ (KHÔNG phải cam kết):** 0,48 BNB + 1,63 USDT / 10,92 h ⇒
+~1,055 BNB/ngày lãi MÔ PHỎNG, chưa trừ bribe (binary `5284bd3` chưa có gate
+bribe F-02; mô hình bribe 40% ⇒ còn ~0,63 BNB/ngày) và giả định thắng 100%
+cuộc đua — hiện chưa có bằng chứng nào về tỉ lệ thắng thật.
+
+### 3. Mục 2 — `net_pos_non_cluster` ở MỌI nơi có `net_pos`
+
+`web::compute_econ_from_rows`: `BucketAcc`/`PoolAcc` thêm
+`net_pos_non_cluster` + `sum_..._non_cluster`; `/api/econ` thêm
+`net_pos_total_non_cluster`, `sum_net_bnb_total_non_cluster`, và
+`summary_line` in cả 2 số. `top_pools`/`top_pools_by_net` thêm
+`net_pos_non_cluster` + `pct_net_pos_la_vi_cum`; `top_pools_by_net` giờ SẮP
+theo lãi ĐÃ LOẠI CỤM (sắp theo lãi thô đưa đúng 2 pool 100%-cụm lên đầu bảng
+go/no-go — chính là cái bẫy đã làm BAOCAO42 kết luận NO-GO).
+
+`/api/compete` thêm `by_pool` (dùng lại đúng `compute_econ_from_rows`, không
+nhân bản logic), `net_pos_total`/`net_pos_total_non_cluster` và
+`pct_net_pos_la_vi_cum` — trả lời thẳng câu "% victim có lãi là ví cụm" theo
+từng pool. Dashboard `web/index.html`+`app.js` thêm 2 cột tương ứng.
+
+### 4. Mục 3 — nạp lại `state/pairs_vetted.json` lúc boot
+
+2 thay đổi, cái thứ 2 là **bug thật phát hiện khi làm mục này**:
+
+1. `PairBook::set_vet_result_with_age` + `restore_vet_snapshot` (gọi ở đầu
+   `pairs_vet_task`): nạp lại kết quả vet của lần chạy trước, **GIỮ TUỔI THẬT**
+   của phép đo (`measured_at` trong file). Snapshot còn hạn
+   (`age <= pairs_vet_interval_sec * 2`) làm ấm cổng (a) của đường ký ngay khi
+   boot; snapshot quá hạn vẫn `vet_stale` — nạp lại KHÔNG BAO GIỜ nới cổng.
+2. `pairs_vet_task` trước đây ghi đè `state/pairs_vetted.json` bằng ĐÚNG các
+   pool vet trong vòng đó, nên sau vòng đầu (126 pool) file **teo dần**. Đo
+   thật: file trên WSL lúc bắt đầu phiên chỉ còn **24 dòng**, log lần chạy đầu
+   `{"event":"pair.vet_restore","restored":24,...}`. Giờ ghi ảnh chụp ĐẦY ĐỦ
+   từ `PairBook::vet_snapshot()` (thêm field `ok`/`age_sec`/`measured_at`).
+
+### 5. Mục 4 — `shadow.sim` hỗ trợ quote USDT
+
+`sim_evm::simulate_sandwich_quote`/`run_sandwich_quote` (bản tổng quát theo
+quote asset; `quote = WBNB` đi ĐÚNG đường code cũ). Nhánh ERC20: cấp vốn quote
+cho attacker bằng ghi thẳng storage `balanceOf` (sentinel-probe đã verify ở
+B4'.4), approve router, front/back đều dùng
+`swapExactTokensForTokensSupportingFeeOnTransferTokens`; `back_out` trừ phần
+vốn CHƯA TIÊU nên số vốn cấp không thể làm lệch lãi/lỗ. Đơn vị `profit_wei`
+trả về là ĐƠN VỊ CỦA QUOTE — log `shadow.sim` đổi `profit_sim_bnb` →
+`profit_sim_native` + thêm `quote` (bài học đặt tên sai ở A7).
+
+Trước cụm này 9/9 bundle ký được ở BAOCAO42 (toàn quote USDT) đều
+`skipped:"usdt_not_supported_by_simulate_sandwich"` ⇒ không có `profit_sim`
+nào để đối chiếu `profit_net`.
+
+### 6. Mục 5 — `BSC_HTTP_SIM` từ `.env` + phân loại `pair.vet_error`
+
+- `transport::load_dotenv_defaults` gọi ở dòng đầu `main()`: nạp `.env` vào
+  môi trường tiến trình khi chạy TRỰC TIẾP binary (chạy qua
+  `scripts/paper_run.sh` thì script đã `set -a; . ./.env` và bước này không
+  đổi gì — biến đã có LUÔN thắng). Trước đó `BSC_HTTP_SIM` chỉ trong `.env`
+  bị bỏ qua im lặng khi chạy tay. KHÔNG BAO GIỜ log giá trị (file có
+  `PRIVATE_KEY`), chỉ log TÊN biến (`env.dotenv_loaded`).
+- `transport::classify_vet_error` — 4 lớp: `missing_trie_node` /
+  `rate_limited` / `unsupported_method` / `other`, ghi vào `pair.vet_error`
+  (`class`) + tổng kết mỗi vòng `pair.vet_cycle_done`
+  (`errors_by_class`, `never_vetted_pools`). Ý nghĩa vận hành:
+  `missing_trie_node` = node KHÔNG giữ state ⇒ pool đó **không bao giờ ký
+  được** trên node hiện tại (cổng (a) `vet_stale` vĩnh viễn), khác hẳn 429 tạm
+  thời. Đo thật ngay lần chạy đầu phiên này (WSL, 5 URL public mặc định):
+  `{"due":105,"error_pools":89,"errors_by_class":{"missing_trie_node":89},"measured":16,"never_vetted_pools":88}`.
+
+### 6b. BUG GỐC tìm được khi làm mục 5 — `pairs_vet_task` fork tại block ĐÃ CŨ
+
+Phân loại lỗi ở mục 5 dẫn thẳng tới một bug thật, không phải hạn chế hạ tầng
+như tưởng ban đầu.
+
+**Triệu chứng**: shadow run 30 phút (RUN 2) có **8/8 candidate** rơi vào đúng
+2 pool USDT bận nhất (`0xdfe23efb…` BNC, `0xcec13213…`/`0xe210c058…`
+BinanceTown) và **cả 8 đều abort `vet_stale`** — 2 pool đó không bao giờ vet
+nổi, dù vẫn cùng danh sách `pairs.txt` với 66 pool vet được bình thường.
+
+**Kiểm bằng RPC thật** (test `real_rpc_which_node_can_vet_the_two_hot_usdt_pools`,
+chạy đúng `measure_tax_evm` mà `pairs_vet_task` gọi):
+
+```
+bsc.blockrazor.xyz        BNC          block=122168084 OK  buy_bps=0 sell_bps=0 honeypot=false
+bsc.blockrazor.xyz        BinanceTown  block=122168084 OK  buy_bps=0 sell_bps=0 honeypot=false
+bsc-dataseed1.defibit.io  BNC          block=122168111 OK  buy_bps=0 sell_bps=0 honeypot=false
+bsc-dataseed1.defibit.io  BinanceTown  block=122168111 OK  buy_bps=0 sell_bps=0 honeypot=false
+-- do sau block (cung 1 node, cung 1 token) --
+head-0 (122168127)   OK
+head-2 (122168125)   OK
+head-10 (122168117)  OK
+head-50 (122168077)  OK
+head-200 (122167927) LOI[unsupported_method] "doc storage slot 0 that bai: -32000 not supported"
+```
+
+⇒ Token/pool KHÔNG có vấn đề gì, node cũng vet được — **chỉ hỏng khi fork ở
+block quá cũ** (giữa 50 và 200 block, khớp cửa sổ state ~128 block của node
+BSC full).
+
+**Nguyên nhân**: `pairs_vet_task` đọc `app_state.last_block` **MỘT LẦN** đầu
+mỗi vòng rồi dùng đúng số đó cho cả 126 pool. Vòng vet chạy TUẦN TỰ (300 ms
+nghỉ + thời gian RPC mỗi pool) nên mất **3–4 phút**; BSC ~2,2 block/s ⇒ tới
+cuối vòng block đó đã cũ **400–500 block**, vượt xa cửa sổ state. Vì thứ tự
+lặp ổn định, **luôn luôn là những pool ở cuối danh sách** bị hỏng ⇒ chúng
+không bao giờ được vet ⇒ không bao giờ ký được. Đây cũng là lời giải cho con
+số `never_vetted_pools` đứng im ở 60–88 suốt các vòng.
+
+**Sửa (2 bước, bước 2 lộ ra ngay khi chạy lại bước 1)**:
+
+1. Đọc lại block **mỗi lần lặp** thay vì 1 lần/vòng.
+2. Block đó phải hỏi **CHÍNH NODE SIM** (`provider.get_block_number()`), không
+   phải `app_state.last_block` (đỉnh theo pool RPC ĐƯỜNG NÓNG). 2 pool RPC là
+   2 node khác nhau; node sim tụt lại 1–2 block là bình thường và fork vào
+   block nó CHƯA CÓ trả lỗi `"khong tim thay block N"` — đo thật ngay lần chạy
+   đầu sau bước 1: **37 dòng `pair.vet_error{class:"other"}`**. Fallback khi
+   `eth_blockNumber` lỗi: `last_block - 2`.
+
+**Kết quả đo thật sau khi sửa đủ 2 bước** (RUN 4, WSL, binary
+`7eb2ddee19b095f4f627de3dee008e821d98def5b91fc0e78fbebe7ddd22861f`):
+**0 dòng `pair.vet_error`** (trước đó: 174 / 30 phút ở RUN 1, 76 ở RUN 2,
+37 ở RUN 3), `state/pairs_vetted.json` tăng **24 → 66 → 86 pool**, và
+**bundle shadow đầu tiên có `profit_sim` quote USDT** trong lịch sử repo được
+ký + mô phỏng (xem mục 5b).
+
+Bài học: `errors_by_class` của mục 5 không chỉ để báo cáo — chính nó biến một
+hiện tượng bị gán nhầm cho "RPC public kém" thành một bug định vị được.
+
+### 5b. Đối chiếu ĐẦU TIÊN `profit_sim` (revm 3 chân) vs `profit_net` (V2-math) trên quote USDT
+
+Dòng thật đầu tiên (RUN 4, cùng 1 victim
+`0x4c29f855f68f9507ad394b660d2310ef3e635d5dd592f82d8ed456edc85da991`):
+
+```
+bundle.shadow_econ  quote=usdt profit_net=37.159 USDT  bribe=14.864  net_after_bribe=22.295
+                    victim_in_competitor_cluster=false  presign_total_ms=0.277
+shadow.sim          quote=usdt profit_sim_native=-14.490 USDT  victim_ok=FALSE
+                    fork_block=122169515  buy_tax_bps=0 sell_tax_bps=0  sim_ms=5551
+```
+
+Đọc đúng: đường nóng V2-math dự đoán **+37,16 USDT**, nhưng replay bằng EVM
+thật cho thấy **victim KHÔNG thực thi được** (`victim_ok=false`) tại block đó
+⇒ không có sandwich, chỉ còn round-trip mất phí pool: **−14,49 USDT trên
+front 3000 USDT = −48 bps**, khớp gần đúng phí pool 2 × 25 bps. Nghĩa là số
+học kế toán của nhánh USDT nhất quán, và `shadow.sim` làm đúng việc nó sinh
+ra để làm: **bắt được trường hợp công thức đóng lạc quan hơn thực tế**.
+Mẫu thứ 2 cho kết quả gần như y hệt (`profit_sim = −14,489` USDT,
+`victim_ok=false`, `profit_net` dự đoán +54,92 USDT).
+
+**Tại sao `victim_ok=false`? — 2 giả thuyết, CHƯA phân định được (MISSING):**
+
+1. **Ví victim chưa có USDT tại block fork.** Victim mẫu 1 là EOA
+   `0x01fe357b…`, gọi thẳng V2 Router `swapExactTokensForTokens`
+   (`0x38ed1739`), mua bằng 807,3 USDT. Tra on-chain THẬT lúc viết báo cáo:
+   `balanceOf(USDT) = 0.0000`, `nonce = 636` — ví hoạt động nhiều nhưng KHÔNG
+   giữ USDT lúc nghỉ, tức mẫu "được cấp vốn rồi swap ngay trong cùng block".
+   Fork ở state ĐẦU block ⇒ `transferFrom` của victim thất bại ⇒ replay hỏng,
+   **không liên quan gì tới chân front của ta**. (Đáng chú ý:
+   `victim_in_competitor_cluster=false` — ví này KHÔNG nhận tiền từ 3 seed đã
+   biết, nên hoặc là cụm khác, hoặc là mẫu cấp vốn khác.)
+2. **Chân front 3000 USDT đẩy victim qua `amountOutMin`.** Front = 3,4%
+   reserve (3000 / 88.786 USDT), gấp 3,7 lần victim. Nhưng đường nóng ĐÃ kiểm
+   `sim_v2::victim_still_ok(victim_amount_out, amount_out_min)` với
+   `amount_out_min` đọc THẲNG từ calldata và kết luận victim sống — nên nếu
+   giả thuyết này đúng thì V2-math và EVM đang bất đồng, và đó mới là chuyện
+   phải sửa.
+
+**Cách phân định (1 dòng, cho cụm sau):** khi `victim_ok=false`, chạy lại
+`simulate_sandwich_quote` với `front_in = 0` trên CÙNG fork. Victim vẫn hỏng ⇒
+giả thuyết 1 (state ví). Victim sống ⇒ giả thuyết 2 (front của ta giết victim)
+và phải hạ `front_in` hoặc sửa gate `victim_would_revert`. KHÔNG làm ở cụm này
+vì ngoài phạm vi lệnh — ghi rõ thay vì đoán.
+
+### 7. CÒN NỢ sau cụm này
+
+- **Rò rỉ bộ nhớ gây OOM trên VPS (7,6 GB / 656 phút)** — chưa truy nguyên,
+  chưa sửa. Đây là chặn đường chạy 24 h liên tục.
+- **`victim_in_competitor_cluster` chỉ có trong binary từ
+  `bugfix-presign-and-contract-plan`** — mọi log cũ phải dựng lại cụm bằng
+  `cluster_funded_scan.sh` (cần RPC).
+- **Tỉ lệ THẮNG cuộc đua: vẫn MISSING** — mọi con số lãi đều là mô phỏng.
+- **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ từ
+  `real-economics-mode2`), không đổi ở cụm này.

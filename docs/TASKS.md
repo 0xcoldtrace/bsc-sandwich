@@ -64,6 +64,8 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | `hotpath-fix-then-decoder-ur` Phần B = `decoder-coverage` (cụm 4: UR đa command, `SmartRouter.multicall`, biến thể không-deadline, `exactOutput*`, fix bug pre-existing `exactInput` 2-lớp offset ABI) | 39 | *(xem BAOCAO39 ô 3)* | MỘT PHẦN — xem "decoder-coverage" (`docs/STATE.md`) mục CÒN NỢ (multihop, `*_SWAP_EXACT_OUT` làm command chính trong UR, recipient sentinel) |
 | `econ-truth-latency-vps` (PairBook cache+backoff, FIX BUG GỐC funnel.simulated vs sim.result, `/api/econ` top_pools+USDT bucket, `compete.check`, Sync-event ReserveCache, deploy VPS) | 40 | *(xem BAOCAO40 ô 3)* | MỘT PHẦN — xem "Nợ CÒN THẬT" dưới cho danh sách chưa làm (nonce gate v2 vẫn no-op vì thiếu nguồn điền cache, `competitor_profit_bnb`, p95 latency Sync-event chưa đối chiếu số) |
 | `competitor-recon-and-strategy` (trinh sát MEV thật, bribe model F-02, SỬA F-01 bundle thiếu victim, raw tx reconstruction, shadow mode ký thật) | 41 | *(xem BAOCAO41 ô 3)* | MỘT PHẦN — xem `docs/STATE.md` mục cùng tên cho danh sách CÒN NỢ đầy đủ (bribe coinbase-leg chưa gửi, relay.rs 3-leg chưa nối live loop, shadow chỉ WBNB, 3 địa chỉ Chủ hỏi bị rút gọn chưa tra được) |
+| `bugfix-presign-and-contract-plan` (A1 `ReserveCache` khoá thiếu `quote`, A2 `sanity_reject`, A3 cụm đối thủ, A4 pre-sign 0-RPC, A5 RPC nền, A6 `/api/econ` vốn, A7 shadow 30', A8 2 ví burner + PHẦN B `docs/CONTRACT_DESIGN.md`) | 42 | `63e11b5` | MỘT PHẦN — xem `docs/STATE.md` mục cùng tên, CÒN NỢ chính: `shadow.sim` chưa hỗ trợ USDT (đã sửa ở `decision-data-24h`), p95 `seen_to_decision` 344 ms > mốc 321 ms, bribe leg chưa có contract |
+| `decision-data-24h` (phân tích 10.92 h THẬT từ VPS + 5 nợ nhỏ) | 43 | *(xem BAOCAO43 ô 3)* | MỘT PHẦN — 6/7 mục XONG; mục 7 (chờ `DONE` của paper 24h) **KHÔNG THỂ ĐẠT**: bot VPS đã bị **OOM-kill sau 656 phút**, không có `DONE`. Xem "Nợ CÒN THẬT" mục OOM. |
 
 ## Hoãn, lý do (không phải "chưa làm" — có chủ đích, cần lệnh Chủ mới đổi)
 
@@ -90,6 +92,17 @@ chép, mà là giới hạn lịch sử git thật của repo).
   đi — chuyển sang phục vụ vet nền/pre-sign/validator.
 
 ## Nợ CÒN THẬT theo chiến lược mode 2 (cần làm hoặc cần lệnh Chủ)
+
+- **RÒ RỈ BỘ NHỚ → OOM (chặn mọi lần chạy dài)** — phát hiện ở cụm
+  `decision-data-24h`: bot paper trên VPS (8 GB RAM, binary commit `5284bd3`)
+  bị kernel OOM-kill sau **656 phút** với **anon-rss 7,6 GB**
+  (`dmesg`: `Out of memory: Killed process 377294 (bsc_sandwich)`), tức ~11
+  MB/phút. Chưa truy được nguyên nhân; nghi vấn: các cấu trúc tích luỹ không
+  có trần (`candidate_seen`, `ReserveCache`, `MinedTxIndex`, `TaxCache`) và
+  `/api/econ` đọc lại toàn bộ `logs/bot.jsonl` (366 MB) mỗi lần gọi. **Không
+  chạy 24 h được cho tới khi sửa.**
+- **Tỉ lệ THẮNG cuộc đua vẫn MISSING** — mọi số lãi trong repo (kể cả 0,48 BNB
+  /10,92 h ở `decision-data-24h`) là lãi MÔ PHỎNG, giả định bundle được chọn.
 
 - **BUG cổng tax pair-mode — ĐÃ SỬA** (cụm `real-economics-mode2`, BAOCAO38):
   `honeypot_or_tax=95/phút`/`unprofitable=0` phát hiện ở BAOCAO37 do đường

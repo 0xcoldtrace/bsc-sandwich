@@ -1,0 +1,22 @@
+=== RUN 1 (WSL, port 18940, KHONG dat BSC_HTTP_SIM, dong 538776..552169) ===
+{"bg_url_count":3,"bg_urls":["https://bsc-dataseed1.defibit.io/***","https://bsc-rpc.publicnode.com/***","https://bsc.rpc.blxrbdn.com/***"],"event":"rpc.bg_pool","hot_url_count":5,"separated":true,"source":"3 URL cuoi cua BSC_HTTP (mac dinh)","ts":"2026-09-16T05:24:18.590918709+00:00"}
+{"event":"pair.vet_restore","max_age_sec":4127,"restored":24,"skipped":0,"still_fresh":false,"ts":"2026-09-16T05:24:18.591856854+00:00","vet_max_age_sec":1200}
+{"due":105,"error_pools":89,"errors_by_class":{"missing_trie_node":89},"event":"pair.vet_cycle_done","measured":16,"never_vetted_pools":88,"ts":"2026-09-16T05:28:03.748055578+00:00"}
+{"due":110,"error_pools":85,"errors_by_class":{"rate_limited":1,"unsupported_method":84},"event":"pair.vet_cycle_done","measured":25,"never_vetted_pools":70,"ts":"2026-09-16T05:31:05.573194087+00:00"}
+-- class --
+     89 "class":"missing_trie_node"
+      1 "class":"other"
+      1 "class":"rate_limited"
+     84 "class":"unsupported_method"
+
+=== RUN 2 (WSL, port 18941, BSC_HTTP_SIM=bsc.blockrazor.xyz,bsc-dataseed1.bnbchain.org, tu dong 552170) ===
+{"bg_url_count":3,"bg_urls":["https://bsc-dataseed1.defibit.io/***","https://bsc-rpc.publicnode.com/***","https://bsc.rpc.blxrbdn.com/***"],"event":"rpc.bg_pool","hot_url_count":5,"separated":true,"source":"3 URL cuoi cua BSC_HTTP (mac dinh)","ts":"2026-09-16T05:32:43.792495178+00:00"}
+{"event":"pair.vet_restore","max_age_sec":4599,"restored":56,"skipped":0,"still_fresh":false,"ts":"2026-09-16T05:32:43.793243619+00:00","vet_max_age_sec":1200}
+{"due":86,"error_pools":76,"errors_by_class":{"unsupported_method":76},"event":"pair.vet_cycle_done","measured":10,"never_vetted_pools":60,"ts":"2026-09-16T05:36:39.332219824+00:00"}
+-- class --
+     76 "class":"unsupported_method"
+-- sim pool URL --
+{"event":"rpc.connect","pool_index":0,"pool_size":2,"transport":"sim","ts":"2026-09-16T05:32:44.219718260+00:00","url":"https://bsc.blockrazor.xyz/***"}
+{"event":"rpc.method_unsupported","pool_index":0,"pool_size":2,"transport":"sim","ts":"2026-09-16T05:34:46.149713726+00:00"}
+{"event":"rpc.connect","pool_index":1,"pool_size":2,"transport":"sim","ts":"2026-09-16T05:34:47.082319881+00:00","url":"https://bsc-dataseed1.bnbchain.org/***"}
+{"event":"rpc.method_unsupported","pool_index":1,"pool_size":2,"transport":"sim","ts":"2026-09-16T05:34:48.131212334+00:00"}

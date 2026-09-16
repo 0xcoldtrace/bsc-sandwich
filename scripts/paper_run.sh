@@ -246,6 +246,29 @@ if [ "$LIVE_MODE" = "shadow" ]; then
   echo "---- dem shadow.sim victim_ok=true / co loi ----"
   count_matches_in '"event":"shadow.sim"' '"victim_ok":true'
   count_matches_in '"event":"shadow.sim"' '"error"'
+  # Cum `decision-data-24h` (muc 4) - doi chieu profit_sim (revm 3 chan) voi
+  # profit_net (duong nong V2-math) cho TUNG bundle da ky. Truoc cum nay nhanh
+  # quote USDT khong co profit_sim nao (9/9 bundle bi skip), nen bang nay rong.
+  # Dung `jq` (co san WSL + VPS); khong co jq thi in dong tho, KHONG bia so.
+  echo "---- doi chieu profit_sim (revm) vs profit_net (V2-math) theo tung victim ----"
+  if command -v jq >/dev/null 2>&1; then
+    RUN_LOG | grep '"event":"shadow.sim"' | jq -r '
+      "  " + (.victim_hash[0:18]) + " quote=" + (.quote // "?") +
+      (if .error then "  LOI: " + (.error[0:90])
+       elif .skipped then "  SKIP: " + .skipped
+       else "  profit_sim=" + ((.profit_sim_native // 0) | tostring) +
+            "  victim_ok=" + ((.victim_ok // false) | tostring) +
+            "  tax_buy/sell=" + ((.buy_tax_bps // "-") | tostring) + "/" + ((.sell_tax_bps // "-") | tostring)
+       end)' 2>/dev/null || echo "  (khong co dong shadow.sim)"
+    echo "  profit_net tuong ung (bundle.shadow_econ):"
+    RUN_LOG | grep '"event":"bundle.shadow_econ"' | jq -r '
+      "  " + (.victim_hash[0:18]) + "  profit_net=" + ((.profit_net_native // .profit_net_bnb // .profit_net_wei // "-") | tostring) +
+      "  bribe=" + ((.bribe_native // .bribe_bnb // "-") | tostring) +
+      "  unit=" + ((.bribe_unit // .quote // "?") | tostring)' 2>/dev/null || echo "  (khong co dong bundle.shadow_econ)"
+  else
+    echo "  (khong co jq - in dong tho)"
+    RUN_LOG | grep '"event":"shadow.sim"' | tail -10 || true
+  fi
   echo "---- latency.decision_vs_mined 10 dong cuoi ----"
   RUN_LOG | grep '"event":"latency.decision_vs_mined"' | tail -10 || true
 fi
@@ -258,6 +281,14 @@ echo "victim_in_competitor_cluster=true = $(count_matches '"victim_in_competitor
 echo "---- cum A2: dem skip sanity_reject / competitor_victim ----"
 echo "sanity_reject = $(count_matches_in '"event":"tx.skip"' '"reason":"sanity_reject"')"
 echo "competitor_victim = $(count_matches_in '"event":"tx.skip"' '"reason":"competitor_victim"')"
+echo "---- cum 'decision-data-24h' muc 3: pair.vet_restore (nap lai snapshot vet luc boot) ----"
+RUN_LOG | grep '"event":"pair.vet_restore"' | tail -2 || echo "(khong thay - chua co state/pairs_vetted.json)"
+echo "---- cum 'decision-data-24h' muc 5: pair.vet_cycle_done (loi vet theo LOAI + so pool chua vet duoc) ----"
+RUN_LOG | grep '"event":"pair.vet_cycle_done"' | tail -3 || echo "(khong thay)"
+echo "vet_error missing_trie_node = $(count_matches_in '"event":"pair.vet_error"' '"class":"missing_trie_node"')"
+echo "vet_error rate_limited      = $(count_matches_in '"event":"pair.vet_error"' '"class":"rate_limited"')"
+echo "vet_error unsupported_method= $(count_matches_in '"event":"pair.vet_error"' '"class":"unsupported_method"')"
+echo "vet_error other             = $(count_matches_in '"event":"pair.vet_error"' '"class":"other"')"
 echo "---- cum A4: mined_index.ready / pair.vet_cycle ----"
 RUN_LOG | grep -E '"event":"(mined_index.ready|pair.vet_cycle)"' | tail -5 || echo "(khong thay)"
 

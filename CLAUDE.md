@@ -141,7 +141,18 @@ KHÔNG thêm cột cho wallet-mode ở cụm này.
 
 Nhiều pool WBNB: sim version `scan_*=true` đã pin, chọn **1 profit max**.
 
-Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | rpc_error | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error | gas_cap`
+Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | rpc_error | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error | gas_cap | sanity_reject | competitor_victim`
+(`sanity_reject` + `competitor_victim` thêm ở cụm
+`bugfix-presign-and-contract-plan` A2/A3, ghi vào CLAUDE.md ở cụm
+`decision-data-24h` mục 6 theo lệnh Chủ. `sanity_reject`: kết quả sim vi phạm
+1 trong 3 trần vô lý — `front_in > 10%` reserve, `profit > 2%` reserve, hoặc
+`victim_in > 100%` reserve (đo thật 30 phút: 106/106 dòng pass, cổng không cắt
+cơ hội thật nào). `competitor_victim`: victim là ví của CỤM ĐỐI THỦ MEV đã
+trinh sát (`src/competitor.rs` — 3 seed đã verify on-chain + ví burner nhận
+Transfer quote từ seed trong block ±1), chỉ skip khi
+`allow_competitor_victims=false` (ship) VÀ `live_mode` khác `"off"`. Đo thật
+10.92 h trên VPS: 481/497 cơ hội có lãi là ví của cụm này, nên mọi số `net_pos`
+phải đọc kèm `net_pos_non_cluster`.)
 (`gas_cap` thêm ở cụm `real-economics-mode2` — F-03: `gas_cost_wei` đo thật
 vượt trần `front_max_gas_bnb_wei+back_max_gas_bnb_wei`, HOẶC `eth_gasPrice`
 đo được vượt `gas_price_max_gwei`.)

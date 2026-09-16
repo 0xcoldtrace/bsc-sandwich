@@ -1,0 +1,25 @@
+==== 1d KET LUAN BANG SO ====
+cua so du lieu: 2026-09-15T17:45:20.421108574+00:00  ->  2026-09-16T04:40:47.365795812+00:00
+so gio THAT quan sat duoc: 10.92 h  (KHONG phai 24h neu bot chet som)
+vi cum doi thu nap tu: /root/analysis/cluster_funded.tsv
+tong: candidate=387409 sim.result=497 net_pos=497 net_pos_non_cluster=16 (cum doi thu chiem 96.8% so net_pos) rate_rejected=1873
+
+-- (a) pool dat >= 5 net_pos_non_cluster/NGAY (quy doi tu so gio that) --
+   0x76c42dda1de814ac60951c2c89c77dbecfb86ffb quote=wbnb net_pos_nc=9 -> 19.8/ngay  lai_nc=0.4546 wbnb  vi_cum chiem 0.0% net_pos
+   0xd69aeb830435594c7d3a9b133af96dd02e65f431 quote=usdt net_pos_nc=5 -> 11.0/ngay  lai_nc=0.0069 usdt  vi_cum chiem 0.0% net_pos
+   (khong dong nao o tren = KHONG pool nao dat nguong 5/ngay)
+
+-- (b) quote WBNB co pool nao co lai khong --
+   0x76c42dda1de814ac60951c2c89c77dbecfb86ffb net_pos_nc=9 lai=0.454624 BNB
+   0x6c6636eada7cc046c7a83aea0d973810234ec291 net_pos_nc=1 lai=0.025364 BNB
+
+-- (c) gio tap trung (top 5 gio theo net_pos_non_cluster) --
+   UTC 01 (VN 08): net_pos_nc=7  candidate=35991  usdt=1.63  wbnb=0.025364
+   UTC 04 (VN 11): net_pos_nc=3  candidate=26824  usdt=0.00  wbnb=0.350958
+   UTC 00 (VN 07): net_pos_nc=2  candidate=39581  usdt=0.00  wbnb=0.039122
+   UTC 19 (VN 02): net_pos_nc=2  candidate=36669  usdt=0.00  wbnb=0.026322
+   UTC 02 (VN 09): net_pos_nc=1  candidate=31462  usdt=0.00  wbnb=0.022952
+
+-- (d) von can de lay 80% lai (theo quote, chi dong KHONG thuoc cum) --
+   quote=usdt: 6 co hoi, tong lai 1.6262 -> can von 2999.9950 usdt de lay 6 co hoi (1.6262 = 100.0%)
+   quote=wbnb: 10 co hoi, tong lai 0.4800 -> can von 4.9950 wbnb de lay 10 co hoi (0.4800 = 100.0%)

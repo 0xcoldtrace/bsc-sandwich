@@ -202,6 +202,76 @@ pub fn is_unsupported_method_error(err: &str) -> bool {
         || lower.contains("personal token")
 }
 
+/// Cụm `decision-data-24h` (mục 5) — PHÂN LOẠI lỗi vet nền (`pair.vet_error`)
+/// để phân biệt 3 nguyên nhân hoàn toàn khác nhau, trước đây gộp chung 1 chuỗi
+/// lỗi thô:
+///
+/// - `missing_trie_node` — node KHÔNG GIỮ state của block đó (node full pruned
+///   hoặc đã prune qua block cần fork). Đây là hạn chế HẠ TẦNG, không phải lỗi
+///   token: pool dính lỗi này KHÔNG BAO GIỜ vet được trên node hiện tại ⇒
+///   không bao giờ ký được cho pool đó (cổng (a) `vet_stale` vĩnh viễn). Cần
+///   node archive riêng (`BSC_HTTP_SIM`).
+/// - `rate_limited` — HTTP 429, tạm thời, thử lại vòng sau là được.
+/// - `unsupported_method` — xem `is_unsupported_method_error` (đổi URL).
+/// - `other` — mọi thứ còn lại (revert thật, decode lỗi...).
+pub fn classify_vet_error(err: &str) -> &'static str {
+    let lower = err.to_lowercase();
+    if lower.contains("missing trie node") || lower.contains("required historical state unavailable") {
+        "missing_trie_node"
+    } else if lower.contains("429") || lower.contains("too many requests") {
+        "rate_limited"
+    } else if is_unsupported_method_error(err) {
+        "unsupported_method"
+    } else {
+        "other"
+    }
+}
+
+/// Cụm `decision-data-24h` (mục 5) — nạp `.env` vào biến môi trường tiến trình
+/// khi bot được chạy TRỰC TIẾP (`./target/release/bsc_sandwich config.toml`),
+/// không qua `scripts/paper_run.sh` (script đó đã `set -a; . ./.env`).
+///
+/// Vì thiếu bước này, mọi biến chỉ có trong `.env` mà không được script export
+/// — cụ thể `BSC_HTTP_SIM` (node archive riêng cho revm fork) — bị bot bỏ qua
+/// im lặng khi chạy tay, và `pairs_vet_task` lại rơi vào đúng node public
+/// không đủ state (`missing trie node`).
+///
+/// Quy tắc: biến ĐÃ CÓ trong môi trường luôn THẮNG (`.env` chỉ là mặc định,
+/// không ghi đè lệnh chạy); dòng trống/`#` bỏ qua; nháy `"`/`'` bao ngoài giá
+/// trị được gỡ; **KHÔNG BAO GIỜ log giá trị** (file này chứa `PRIVATE_KEY`) —
+/// chỉ trả về danh sách TÊN biến đã nạp.
+pub fn load_dotenv_defaults(path: &std::path::Path) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(path) else { return Vec::new() };
+    let mut loaded = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let key = key.trim();
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        if std::env::var(key).is_ok() {
+            continue;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        if value.is_empty() {
+            continue;
+        }
+        std::env::set_var(key, value);
+        loaded.push(key.to_string());
+    }
+    loaded
+}
+
 #[derive(Debug, Default)]
 struct RpcPoolState {
     idx: usize,
@@ -1652,5 +1722,62 @@ mod tests {
             assert_eq!(computed, hash, "{label}: keccak256(raw) phai khop hash that");
             println!("{label}: hash={hash:#x} raw_len={} nguon={}", raw.len(), source.as_str());
         }
+    }
+
+    /// Cụm `decision-data-24h` (mục 5) — `.env` chỉ là MẶC ĐỊNH: biến đã có
+    /// trong môi trường (vd do `paper_run.sh` export, hoặc Chủ đặt trước lệnh
+    /// chạy) phải THẮNG, không bao giờ bị `.env` ghi đè.
+    #[test]
+    fn load_dotenv_defaults_khong_ghi_de_bien_da_co_va_go_nhay() {
+        let dir = std::env::temp_dir().join(format!("bsc_dotenv_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env.test");
+        std::fs::write(
+            &path,
+            "# comment\n\nBSC_TEST_SIM_URL=\"https://sim.example.com\"\nBSC_TEST_ALREADY=tu_file\nexport BSC_TEST_EXPORTED='https://exported.example.com'\nBSC_TEST_RONG=\nkhong-phai-dong-gan\n",
+        )
+        .unwrap();
+        std::env::set_var("BSC_TEST_ALREADY", "tu_moi_truong");
+
+        let loaded = load_dotenv_defaults(&path);
+
+        assert_eq!(std::env::var("BSC_TEST_SIM_URL").unwrap(), "https://sim.example.com", "nhay \" phai bi go");
+        assert_eq!(std::env::var("BSC_TEST_EXPORTED").unwrap(), "https://exported.example.com", "ho tro tien to `export ` + nhay '");
+        assert_eq!(std::env::var("BSC_TEST_ALREADY").unwrap(), "tu_moi_truong", "bien da co trong moi truong PHAI thang .env");
+        assert!(std::env::var("BSC_TEST_RONG").is_err(), "gia tri rong -> khong set");
+        assert!(loaded.contains(&"BSC_TEST_SIM_URL".to_string()));
+        assert!(loaded.contains(&"BSC_TEST_EXPORTED".to_string()));
+        assert!(!loaded.contains(&"BSC_TEST_ALREADY".to_string()), "bien khong nap thi khong duoc bao cao la da nap");
+        // Ham tra ve TEN bien, khong bao gio tra ve gia tri (file that co PRIVATE_KEY).
+        assert!(loaded.iter().all(|k| !k.contains("https://")));
+
+        std::env::remove_var("BSC_TEST_SIM_URL");
+        std::env::remove_var("BSC_TEST_EXPORTED");
+        std::env::remove_var("BSC_TEST_ALREADY");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_dotenv_defaults_file_khong_ton_tai_tra_rong_khong_panic() {
+        assert!(load_dotenv_defaults(std::path::Path::new("/khong/ton/tai/.env")).is_empty());
+    }
+
+    /// Cụm `decision-data-24h` (mục 5) — 4 lớp lỗi vet nền phải tách bạch:
+    /// `missing_trie_node` (node KHÔNG bao giờ vet được pool đó) khác hẳn
+    /// `rate_limited` (thử lại là xong).
+    #[test]
+    fn classify_vet_error_tach_missing_trie_node_khoi_cac_loi_khac() {
+        assert_eq!(
+            classify_vet_error("sim_evm thuc thi loi: tax buy: Database(Inner(Transport(HttpError { status: 429, body: \"\" })))"),
+            "rate_limited"
+        );
+        assert_eq!(
+            classify_vet_error("Database(Inner(Transport(ErrorResp(ErrorPayload { code: -32000, message: \"missing trie node 0xabc (path ) state 0xdef is not available\" }))))"),
+            "missing_trie_node",
+            "phai uu tien missing trie node hon -32000 (chuoi nay chua CA hai)"
+        );
+        assert_eq!(classify_vet_error("required historical state unavailable"), "missing_trie_node");
+        assert_eq!(classify_vet_error("-32602 Archive requests require a personal token"), "unsupported_method");
+        assert_eq!(classify_vet_error("execution reverted: TRANSFER_FROM_FAILED"), "other");
     }
 }

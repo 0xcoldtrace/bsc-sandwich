@@ -128,6 +128,24 @@ Script sẽ:
 
 ---
 
+## CẢNH BÁO vận hành: rò rỉ bộ nhớ → OOM khi chạy dài (đo thật 2026-09-16)
+
+Lần chạy paper 24 h trên VPS (8 GB RAM, binary commit `5284bd3`) **bị kernel
+OOM-kill sau 656 phút** với `anon-rss 7,6 GB` (`dmesg`:
+`Out of memory: Killed process 377294 (bsc_sandwich)`), tức ~11 MB/phút. Chưa
+sửa được (xem `docs/TASKS.md` mục "Nợ CÒN THẬT").
+
+Cho tới khi sửa xong, khi chạy dài trên VPS:
+
+- Theo dõi RSS: `watch -n 60 'ps -o rss=,etime= -p $(cat state/paper_run.pid)'`.
+  Mốc tham khảo: ~11 MB/phút ⇒ máy 8 GB đầy sau ~11 h.
+- Chia thành nhiều phiên ngắn (4–6 h) thay vì 1 phiên 24 h, hoặc thêm
+  `MemoryMax=` vào unit systemd + `Restart=always` để bot tự sống lại thay vì
+  chết im lặng.
+- Đọc `logs/paper24h.out`: dòng `BOT DA CHET sau N phut` là dấu hiệu bị kill,
+  KHÔNG phải chạy xong (`scripts/paper_run.sh` in `DONE` khi hết giờ bình
+  thường).
+
 ## Vận hành trên VPS
 
 Checklist đầy đủ để đưa bot lên 1 VPS chạy paper (hoặc chờ live sau này).

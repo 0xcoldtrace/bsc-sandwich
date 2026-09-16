@@ -1,0 +1,19 @@
+nohup: ignoring input
+== may chay: VPS (repo: /root/bsc-sandwich) ==
+BSC_WS host = bsc-rpc.publicnode.com,wss (KHONG in URL day du)
+  -> khop publicnode, OK
+== cargo build --release ==
+    Finished `release` profile [optimized] target(s) in 0.34s
+== binary sha256 = 4af44b29ef1adf729f416d624d18147030bf8d52f0c7f149bfaa0a0143b0feab ==
+== git HEAD = 5284bd376fb78ea0b450249fb2d09d4adfd7f812 ==
+da xoa state/halt.lock (neu co)
+== config TAM (chi nguong ve 0 + web_port, GIU NGUYEN sim_engine/pair_scan_universal/scan_quote_usdt tu config.toml that), port 18910 ==
+== pairs.txt (grep tho, xem sim.evm/pair.unvetted trong log de co so that): tong=126 vetted=126 chua_vet=0 ==
+== chay bot 1440 phut, log -> logs/paper_run_1789494319.log (bot.jsonl tu dong 43138) ==
+PID=377294
+scripts/paper_run.sh: line 191: 377294 Killed                  ./target/release/bsc_sandwich "$CFG" > "$LOG" 2>&1
+BOT DA CHET sau 656 phut
+---- tail -30 logs/paper_run_1789494319.log ----
+bsc_sandwich boot: chain_id=56 dry_run=true allow_live=false bot_armed=false
+CANH BAO: min_profit_bnb=0 BNB thap hon tong gas front+back cap (6000000000000000 wei) - xem logs/bot.jsonl config.gas_warning
+web dashboard bind tai http://127.0.0.1:18910 (dry_run=true)

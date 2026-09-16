@@ -353,6 +353,53 @@ impl PairBook {
         }
     }
 
+    /// Cụm `decision-data-24h` (mục 3) — ghi kết quả vet đã đo TỪ TRƯỚC (nạp
+    /// lại `state/pairs_vetted.json` lúc boot), giữ đúng TUỔI THẬT của phép đo
+    /// thay vì coi như vừa đo xong. Cổng pre-sign (`shadow::pre_sign_revet_fast`
+    /// mục (a)) so `vet_age_sec` với `pairs_vet_interval_sec * 2`, nên nạp lại
+    /// mà gắn tuổi = 0 sẽ là NÓI DỐI về độ tươi: snapshot cũ 3 tiếng sẽ được
+    /// coi là vừa vet. Với `age_sec` thật, snapshot còn hạn làm ấm cổng ngay
+    /// khi boot, snapshot quá hạn vẫn `vet_stale` đúng như không nạp gì.
+    pub fn set_vet_result_with_age(&mut self, pair_addr: Address, result: VetResult, ok: bool, age_sec: u64) {
+        let measured_at = Instant::now().checked_sub(Duration::from_secs(age_sec)).unwrap_or_else(Instant::now);
+        self.vet_results.insert(pair_addr, (result, measured_at));
+        if ok {
+            self.vet_failed.remove(&pair_addr);
+        } else {
+            self.vet_failed.insert(pair_addr);
+        }
+    }
+
+    /// Cụm `decision-data-24h` (mục 3) — TOÀN BỘ kết quả vet nền đang giữ trong
+    /// bộ nhớ: `(pair, token, quote, VetResult, age_sec, ok)`.
+    ///
+    /// Trước cụm này `pairs_vet_task` ghi đè `state/pairs_vetted.json` bằng
+    /// ĐÚNG các pool vet trong VÒNG ĐÓ (`results`), nên sau vòng đầu (vet hết
+    /// 126 pool) mọi vòng sau chỉ còn vài pool tới hạn → file teo dần và không
+    /// còn dùng để khôi phục trạng thái được. Hàm này cho task đó ghi ảnh chụp
+    /// ĐẦY ĐỦ mỗi lần.
+    ///
+    /// `token` suy từ `source_line` y hệt `tokens_to_vet` — pool không suy được
+    /// token (`resolved_from=Direct`) bị bỏ qua (không đoán).
+    pub fn vet_snapshot(&self) -> Vec<(Address, Address, Address, VetResult, u64, bool)> {
+        let mut out = Vec::new();
+        for (pair_addr, (result, measured_at)) in &self.vet_results {
+            let Some(entry) = self.pairs.get(pair_addr) else { continue };
+            let token_str = entry.source_line.split(',').next().unwrap_or("").trim();
+            let Ok(token) = Address::from_str(token_str) else { continue };
+            out.push((
+                *pair_addr,
+                token,
+                entry.quote,
+                *result,
+                measured_at.elapsed().as_secs(),
+                !self.vet_failed.contains(pair_addr),
+            ));
+        }
+        out.sort_by_key(|(p, ..)| *p);
+        out
+    }
+
     /// Cụm `strategy-lock-mode2` — danh sách `(pair_addr, token_addr)` cần
     /// `pairs_vet_task` đo lại: MỌI entry đã có `vetted_at` (Chủ đã vet tay)
     /// VÀ biết được địa chỉ TOKEN riêng (`resolved_from=Token` — dòng gốc là
@@ -1129,6 +1176,59 @@ mod tests {
 
         book.set_vet_result(pair, VetResult { buy_bps: 0, sell_bps: 0, honeypot: false, block: 101 }, true);
         assert!(book.contains(&pair), "vet PASS lan sau phai tra lai candidate");
+    }
+
+    /// Cụm `decision-data-24h` (mục 3) — nạp lại snapshot vet phải GIỮ TUỔI
+    /// THẬT của phép đo, không reset về 0. Nếu reset, cổng pre-sign (a) coi
+    /// snapshot 3 tiếng trước là "vừa vet" và cho ký theo số đo quá hạn —
+    /// đúng thứ luật `pre_sign_revet_fast` sinh ra để chặn.
+    #[test]
+    fn set_vet_result_with_age_giu_dung_tuoi_phep_do() {
+        let mut book = PairBook::new();
+        let pair = addr("0x7777777777777777777777777777777777777777");
+        book.insert_test_entry(pair, "0xtoken", ResolvedFrom::Token);
+
+        book.set_vet_result_with_age(pair, VetResult { buy_bps: 0, sell_bps: 0, honeypot: false, block: 10 }, true, 1800);
+        let (_, age) = book.vet_result(&pair).expect("phai co ket qua vet sau khi nap");
+        assert!((1795..=1805).contains(&age), "tuoi phai la ~1800s (nap lai), khong phai 0; nhan duoc {age}");
+        assert!(book.contains(&pair), "ok=true -> van la candidate");
+
+        // Nap lai 1 entry `ok=false` phai giu nguyen trang thai bi loai.
+        book.set_vet_result_with_age(pair, VetResult { buy_bps: 0, sell_bps: 9000, honeypot: true, block: 11 }, false, 5);
+        assert!(!book.contains(&pair), "ok=false nap lai -> pool van bi loai khoi candidate");
+    }
+
+    /// Cụm `decision-data-24h` (mục 3) — `vet_snapshot` trả TOÀN BỘ pool đã
+    /// vet (không chỉ pool vet trong vòng hiện tại), kèm `ok` đúng trạng thái.
+    /// Đây là thứ sửa bug `state/pairs_vetted.json` teo dần từ 126 dòng xuống
+    /// vài dòng sau vòng vet đầu tiên.
+    #[tokio::test]
+    async fn vet_snapshot_tra_toan_bo_pool_da_vet_kem_co_ok() {
+        let (_dir, logger) = test_logger();
+        let token_a = addr("0x00000000000000000000000000000000000000a1");
+        let token_b = addr("0x00000000000000000000000000000000000000b1");
+        let pair_a = addr("0x00000000000000000000000000000000000000a2");
+        let pair_b = addr("0x00000000000000000000000000000000000000b2");
+        let mut map = HashMap::new();
+        map.insert(token_a, pair_a);
+        map.insert(token_b, pair_b);
+        let resolver = MockResolver { map, err_for: vec![] };
+        let content = format!(
+            "{token_a:#x} # A | vetted 2026-09-16 | tax 0/0 | owner renounced | note\n{token_b:#x} # B | vetted 2026-09-16 | tax 0/0 | owner renounced | note\n"
+        );
+        let mut book = PairBook::new();
+        book.reload(&content, &resolver, &logger, Instant::now(), true).await;
+
+        book.set_vet_result(pair_a, VetResult { buy_bps: 0, sell_bps: 0, honeypot: false, block: 100 }, true);
+        book.set_vet_result(pair_b, VetResult { buy_bps: 0, sell_bps: 9000, honeypot: false, block: 100 }, false);
+
+        let snap = book.vet_snapshot();
+        assert_eq!(snap.len(), 2, "phai co CA 2 pool da vet, khong chi pool vong hien tai");
+        let a = snap.iter().find(|(p, ..)| *p == pair_a).expect("pool A");
+        let b = snap.iter().find(|(p, ..)| *p == pair_b).expect("pool B");
+        assert_eq!(a.1, token_a, "token suy dung tu source_line");
+        assert!(a.5, "pool A vet PASS -> ok=true");
+        assert!(!b.5, "pool B vet FAIL -> ok=false, phai giu khi nap lai");
     }
 
     /// Cụm `real-economics-mode2` — ĐẠT CẦN DÁN mục 0: token vetted (từ

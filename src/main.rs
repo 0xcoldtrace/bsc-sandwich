@@ -26,6 +26,15 @@ use tokio::sync::{RwLock, Semaphore};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Cum `decision-data-24h` (muc 5) - nap `.env` TRUOC khi doc bat ky bien
+    // moi truong nao (BSC_HTTP/BSC_HTTP_SIM/BSC_WS/PRIVATE_KEY...). Chay qua
+    // `scripts/paper_run.sh` thi script da export san va buoc nay khong doi gi
+    // (bien da co luon THANG); chay TRUC TIEP binary thi truoc day `.env` bi
+    // bo qua hoan toan - do la ly do `BSC_HTTP_SIM` cua Chu khong bao gio co
+    // tac dung khi chay tay. KHONG in gia tri (file co PRIVATE_KEY), chi in
+    // ten bien.
+    let dotenv_loaded = transport::load_dotenv_defaults(std::path::Path::new(".env"));
+
     let config_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "config.toml".to_string());
@@ -45,6 +54,12 @@ async fn main() -> anyhow::Result<()> {
 
     let state_files = Arc::new(StateFiles::new("state")?);
     let logger = Arc::new(BotLogger::new("logs/bot.jsonl")?);
+    if !dotenv_loaded.is_empty() {
+        logger.log(
+            "env.dotenv_loaded",
+            serde_json::json!({ "keys": dotenv_loaded, "note": "chi TEN bien, KHONG bao gio log gia tri" }),
+        );
+    }
 
     // Cum `econ-truth-latency-vps` (muc 1) - hook panic GIU LAI VINH VIEN
     // (khong phai chan doan tam thoi): panic ben trong 1 task da
@@ -1342,6 +1357,9 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
 /// Bỏ qua cả vòng nếu chưa có provider HTTP hoặc chưa có `last_block` (boot
 /// chưa xong) — thử lại ở vòng kế tiếp, không panic/không giả số block.
 async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPool>) {
+    // Cum `decision-data-24h` (muc 3) - nap lai ket qua vet lan chay TRUOC
+    // (neu con han) TRUOC khi vao vong lap, de cong (a) cua duong ky am ngay.
+    restore_vet_snapshot(&app_state).await;
     loop {
         let (interval_sec, max_tax_bps) = {
             let cfg = app_state.config.read().await;
@@ -1394,11 +1412,41 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
                 );
             }
             let mut results = Vec::with_capacity(targets.len());
+            // Cum `decision-data-24h` (muc 5) - dem theo LOAI loi + so pool
+            // KHONG vet duoc, tra loi cau "bao nhieu pool khong bao gio ky
+            // duoc vi node thieu state".
+            let mut err_by_class: std::collections::HashMap<&'static str, u64> = std::collections::HashMap::new();
+            let mut err_pools: std::collections::HashSet<Address> = std::collections::HashSet::new();
+            let targets_len = targets.len();
             for (pair_addr, token, quote) in targets {
                 let quote_asset =
                     if quote == venues::usdt_addr() { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };
                 let probe_in = probe_in_for_quote(quote_asset);
-                match bsc_sandwich::sim_evm::measure_tax_evm(provider.clone(), current_block, token, quote, probe_in)
+                // Cum `decision-data-24h` (muc 5) - DOC LAI block MOI LAN LAP.
+                // Truoc day ca vong dung 1 `current_block` chup luc bat dau
+                // vong; vong vet 126 pool chay TUAN TU (300 ms/pool + thoi
+                // gian RPC) mat 3-4 PHUT, ma BSC ~2,2 block/s => toi cuoi vong
+                // block do da cu 400-500 block. Node BSC thuong chi giu state
+                // ~128 block, nen cac pool o CUOI danh sach LUON hong voi
+                // `-32000 not supported`, va vi thu tu lap on dinh nen LUON la
+                // cung nhung pool do -> chung khong bao gio duoc vet -> khong
+                // bao gio ky duoc (cong (a) `vet_stale` vinh vien).
+                // Do THAT (test `real_rpc_which_node_can_vet_the_two_hot_usdt_pools`):
+                //   head-0/-2/-10/-50 = OK ; head-200 = LOI unsupported_method.
+                //
+                // Hoi CHINH NODE SIM dinh cua no (`eth_blockNumber`) thay vi
+                // dung `app_state.last_block` (dinh theo pool RPC DUONG NONG):
+                // 2 pool RPC la 2 node khac nhau, node sim tut lai 1-2 block
+                // la binh thuong, va fork vao block node do CHUA CO tra loi
+                // "khong tim thay block N" (quan sat that ngay lan chay dau
+                // sau khi sua: 36 dong `pair.vet_error{class:"other"}`).
+                // 1 `eth_blockNumber` moi pool la re (task NEN, von da ngu
+                // 300 ms/pool) va luon dung node dang dung.
+                let block_now = match provider.get_block_number().await {
+                    Ok(b) => b,
+                    Err(_) => app_state.last_block.read().await.unwrap_or(current_block).saturating_sub(2),
+                };
+                match bsc_sandwich::sim_evm::measure_tax_evm(provider.clone(), block_now, token, quote, probe_in)
                     .await
                 {
                     Ok(m) => {
@@ -1413,7 +1461,7 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
                                     "buy_bps": m.buy_bps,
                                     "sell_bps": m.sell_bps,
                                     "honeypot": m.honeypot,
-                                    "block": current_block,
+                                    "block": block_now,
                                 }),
                             );
                         }
@@ -1423,7 +1471,7 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
                                 buy_bps: m.buy_bps,
                                 sell_bps: m.sell_bps,
                                 honeypot: m.honeypot,
-                                block: current_block,
+                                block: block_now,
                             },
                             ok,
                         );
@@ -1434,17 +1482,23 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
                             "buy_bps": m.buy_bps,
                             "sell_bps": m.sell_bps,
                             "honeypot": m.honeypot,
-                            "block": current_block,
+                            "block": block_now,
                             "ts": chrono::Utc::now().to_rfc3339(),
                         }));
                     }
                     Err(e) => {
                         let err_str = e.to_string();
+                        // Cum `decision-data-24h` (muc 5) - phan loai nguyen
+                        // nhan, xem `transport::classify_vet_error`.
+                        let class = transport::classify_vet_error(&err_str);
+                        *err_by_class.entry(class).or_insert(0u64) += 1;
+                        err_pools.insert(pair_addr);
                         app_state.logger.log(
                             "pair.vet_error",
                             serde_json::json!({
                                 "pair": format!("{pair_addr:#x}"),
                                 "token": format!("{token:#x}"),
+                                "class": class,
                                 "error": err_str,
                             }),
                         );
@@ -1468,11 +1522,55 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
                 // giam ap luc RPC tren pool sim khi pairs.txt co hang tram dong.
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
+            if targets_len > 0 {
+                // Cum `decision-data-24h` (muc 5) - tong ket 1 vong vet: bao
+                // nhieu pool do duoc, bao nhieu hong va HONG VI GI. Pool
+                // `missing_trie_node` la pool KHONG BAO GIO ky duoc tren node
+                // hien tai (cong (a) `vet_stale` vinh vien), khac han loi 429
+                // tam thoi.
+                let never_vetted = {
+                    let book = app_state.pairbook.read().await;
+                    book.tokens_to_vet().into_iter().filter(|(p, _, _)| book.vet_result(p).is_none()).count()
+                };
+                app_state.logger.log(
+                    "pair.vet_cycle_done",
+                    serde_json::json!({
+                        "due": targets_len,
+                        "measured": results.len(),
+                        "error_pools": err_pools.len(),
+                        "errors_by_class": err_by_class,
+                        "never_vetted_pools": never_vetted,
+                    }),
+                );
+            }
             if !results.is_empty() {
+                // Cum `decision-data-24h` (muc 3) - ghi ANH CHUP DAY DU tu
+                // PairBook, KHONG phai chi cac pool vet trong vong nay. Truoc
+                // day file bi ghi de bang `results` (chi pool toi han), nen sau
+                // vong dau file teo dan tu 126 dong xuong con vai dong -> khong
+                // con dung de khoi phuc trang thai luc boot duoc.
+                let snapshot = app_state.pairbook.read().await.vet_snapshot();
+                let rows: Vec<serde_json::Value> = snapshot
+                    .iter()
+                    .map(|(pair, token, quote, r, age_sec, ok)| {
+                        serde_json::json!({
+                            "pair": format!("{pair:#x}"),
+                            "token": format!("{token:#x}"),
+                            "quote": format!("{quote:#x}"),
+                            "buy_bps": r.buy_bps,
+                            "sell_bps": r.sell_bps,
+                            "honeypot": r.honeypot,
+                            "block": r.block,
+                            "ok": ok,
+                            "age_sec": age_sec,
+                            "measured_at": (chrono::Utc::now() - chrono::Duration::seconds(*age_sec as i64)).to_rfc3339(),
+                        })
+                    })
+                    .collect();
                 let _ = tokio::fs::create_dir_all("state").await;
                 let _ = tokio::fs::write(
                     "state/pairs_vetted.json",
-                    serde_json::to_string_pretty(&results).unwrap_or_default(),
+                    serde_json::to_string_pretty(&rows).unwrap_or_default(),
                 )
                 .await;
             }
@@ -1482,6 +1580,93 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
         // dieu kien `due_after` o tren quyet dinh, khong con do nhip ngu nay.
         tokio::time::sleep(Duration::from_secs(30)).await;
     }
+}
+
+/// Cụm `decision-data-24h` (mục 3) — nạp lại `state/pairs_vetted.json` NGAY
+/// SAU lần `pair.reload` đầu tiên, để cổng (a) của đường ký shadow
+/// (`shadow::pre_sign_revet_fast`, "vet còn tươi") ấm ngay thay vì abort
+/// `vet_stale` suốt ~15 phút đầu mỗi lần chạy (quan sát thật BAOCAO42: 3/12
+/// bundle abort đúng vì lý do này).
+///
+/// Tuổi phép đo được giữ NGUYÊN theo `measured_at` trong file (không reset về
+/// 0): snapshot còn hạn (`age <= pairs_vet_interval_sec * 2`) làm ấm cổng,
+/// snapshot quá hạn vẫn bị coi là `vet_stale` — nạp lại KHÔNG BAO GIỜ nới lỏng
+/// cổng an toàn. Entry `ok=false` cũng được nạp (pool từng bị vet nền loại vẫn
+/// bị loại cho tới lần vet PASS kế tiếp).
+///
+/// File không tồn tại/parse lỗi/thiếu field → bỏ qua im lặng ở mức entry, log
+/// tổng kết `pair.vet_restore` (không panic, không chặn boot).
+async fn restore_vet_snapshot(app_state: &AppState) {
+    let path = std::path::Path::new("state/pairs_vetted.json");
+    let Ok(raw) = tokio::fs::read_to_string(path).await else { return };
+    let Ok(rows) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else {
+        app_state
+            .logger
+            .log("pair.vet_restore", serde_json::json!({ "restored": 0, "error": "pairs_vetted.json khong parse duoc" }));
+        return;
+    };
+    let now = chrono::Utc::now();
+    let mut restored = 0u64;
+    let mut skipped = 0u64;
+    let mut max_age: u64 = 0;
+    // Doc nguong tax TRUOC khi cam khoa ghi `pairbook` - khong bao gio `.await`
+    // len 1 khoa khac trong khi dang giu khoa ghi (tranh xep chong khoa voi
+    // `config_reload_task`).
+    let max_tax_bps = app_state.config.read().await.max_roundtrip_tax_bps();
+    {
+        let mut book = app_state.pairbook.write().await;
+        for row in &rows {
+            let Some(pair) = row["pair"].as_str().and_then(|s| Address::from_str(s).ok()) else {
+                skipped += 1;
+                continue;
+            };
+            // `measured_at` (cum nay) hoac `ts` (dinh dang file CU truoc cum
+            // nay) - thieu ca 2 thi KHONG doan tuoi, bo qua entry do.
+            let ts_str = row["measured_at"].as_str().or_else(|| row["ts"].as_str());
+            let Some(measured_at) = ts_str.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else {
+                skipped += 1;
+                continue;
+            };
+            let age_sec = (now - measured_at.with_timezone(&chrono::Utc)).num_seconds().max(0) as u64;
+            let (Some(buy_bps), Some(sell_bps), Some(block)) =
+                (row["buy_bps"].as_u64(), row["sell_bps"].as_u64(), row["block"].as_u64())
+            else {
+                skipped += 1;
+                continue;
+            };
+            let honeypot = row["honeypot"].as_bool().unwrap_or(false);
+            // File CU khong co field `ok` - suy lai tu chinh so do (cung cong
+            // thuc `pairs_vet_task`), khong mac dinh `true`.
+            let ok = match row["ok"].as_bool() {
+                Some(v) => v,
+                None => !honeypot && tax::combine_roundtrip_bps(buy_bps as u32, sell_bps as u32) <= max_tax_bps,
+            };
+            book.set_vet_result_with_age(
+                pair,
+                bsc_sandwich::pairbook::VetResult {
+                    buy_bps: buy_bps as u32,
+                    sell_bps: sell_bps as u32,
+                    honeypot,
+                    block,
+                },
+                ok,
+                age_sec,
+            );
+            restored += 1;
+            max_age = max_age.max(age_sec);
+        }
+    }
+    let vet_max_age_sec = app_state.config.read().await.pairs_vet_interval_sec.saturating_mul(2);
+    app_state.logger.log(
+        "pair.vet_restore",
+        serde_json::json!({
+            "restored": restored,
+            "skipped": skipped,
+            "max_age_sec": max_age,
+            "vet_max_age_sec": vet_max_age_sec,
+            "still_fresh": rows.len() as u64 > 0 && max_age <= vet_max_age_sec,
+        }),
+    );
 }
 
 /// Cụm `real-economics-mode2` (F-03) — đo gas UNIT thật (KHÔNG phải wei) 1
@@ -2324,10 +2509,15 @@ fn spawn_shadow_sign_task(
 /// front-buy → victim replay THẬT → back-sell) trong 1 task NỀN chạy SAU khi
 /// đã ký — không nằm trên đường ký, không ảnh hưởng `presign_ms`.
 ///
-/// Chỉ chạy cho quote WBNB: `simulate_sandwich` dựng chân front bằng
-/// `swapExactETHForTokens*` (native BNB). Nhánh USDT ghi
-/// `shadow.sim{skipped:"usdt_not_supported_by_simulate_sandwich"}` — KHÔNG
-/// bịa số cho nhánh chưa hỗ trợ.
+/// Cụm `decision-data-24h` (mục 4) — chạy cho CẢ 2 quote asset. Trước cụm này
+/// nhánh USDT bị bỏ qua (`skipped:"usdt_not_supported_by_simulate_sandwich"`),
+/// khiến 9/9 bundle shadow ký được ở BAOCAO42 (toàn bộ là quote USDT) không có
+/// `profit_sim` nào để đối chiếu với `profit_net` của đường nóng V2-math.
+/// `sim_evm::simulate_sandwich_quote` giờ dựng chân front/back bằng
+/// `swapExactTokensForTokens*` khi quote là ERC20.
+///
+/// **`profit_sim_native` là đơn vị CỦA QUOTE** (BNB hay USDT) — log kèm
+/// `quote`, không quy đổi chéo (bài học bug A1).
 fn spawn_shadow_bundle_sim(
     app_state: AppState,
     victim: transport::PendingTxRaw,
@@ -2338,16 +2528,8 @@ fn spawn_shadow_bundle_sim(
 ) {
     tokio::spawn(async move {
         let victim_hash = victim.hash;
-        if quote_asset == pipeline::QuoteAsset::Usdt {
-            app_state.logger.log(
-                "shadow.sim",
-                serde_json::json!({
-                    "victim_hash": format!("{victim_hash:#x}"),
-                    "skipped": "usdt_not_supported_by_simulate_sandwich",
-                }),
-            );
-            return;
-        }
+        let quote_addr =
+            if quote_asset == pipeline::QuoteAsset::Usdt { venues::usdt_addr() } else { venues::wbnb_addr() };
         // RPC rieng cho revm fork (BSC_HTTP_SIM/BSC_HTTP_BG) - khong dung
         // duong nong.
         let provider = match app_state.sim_provider.read().await.clone() {
@@ -2358,16 +2540,20 @@ fn spawn_shadow_bundle_sim(
             },
         };
         let t0 = std::time::Instant::now();
-        match bsc_sandwich::sim_evm::simulate_sandwich(provider, fork_block, front_in, token, &victim).await {
+        match bsc_sandwich::sim_evm::simulate_sandwich_quote(provider, fork_block, front_in, token, quote_addr, &victim)
+            .await
+        {
             Ok(o) => app_state.logger.log(
                 "shadow.sim",
                 serde_json::json!({
                     "victim_hash": format!("{victim_hash:#x}"),
                     "token": format!("{token:#x}"),
+                    "quote": quote_asset.as_str(),
                     "fork_block": fork_block,
                     "front_in_wei": o.front_in.to_string(),
                     "profit_sim_wei": o.profit_wei.to_string(),
-                    "profit_sim_bnb": o.profit_wei as f64 / 1e18,
+                    // Don vi = quote cua pool (BNB hoac USDT), xem `quote`.
+                    "profit_sim_native": o.profit_wei as f64 / 1e18,
                     "victim_ok": o.victim_success,
                     "buy_tax_bps": o.buy_tax_bps,
                     "sell_tax_bps": o.sell_tax_bps,
@@ -2378,6 +2564,7 @@ fn spawn_shadow_bundle_sim(
                 "shadow.sim",
                 serde_json::json!({
                     "victim_hash": format!("{victim_hash:#x}"),
+                    "quote": quote_asset.as_str(),
                     "error": e.to_string(),
                     "sim_ms": t0.elapsed().as_secs_f64() * 1000.0,
                 }),

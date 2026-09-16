@@ -1,0 +1,3 @@
+quote	candidate	candidate_cluster	sim_result	net_pos	net_pos_non_cluster	sum_net_native	sum_net_nc_native	sum_net_nc_bnb	best_native	rate_rejected
+usdt	33425	1837	487	487	6	22896.729838	1.626248	0.002288	219.550517	1873
+wbnb	353984	484	10	10	10	0.479988	0.479988	0.479988	0.118729	0

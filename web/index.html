@@ -84,21 +84,24 @@
   <h2>Kinh tế (cụm real-economics-mode2 — đọc <code>logs/bot.jsonl</code>)</h2>
   <p id="econ-summary"></p>
   <table>
-    <thead><tr><th>bucket (BNB)</th><th>count</th><th>gross_pos</th><th>net_pos</th><th>sum_net_pos_bnb</th><th>best_net_bnb</th><th>median_gas_cost_bnb</th></tr></thead>
+    <thead><tr><th>bucket (BNB)</th><th>count</th><th>gross_pos</th><th>net_pos</th><th>net_pos KHÔNG cụm</th><th>sum_net_pos_bnb</th><th>sum KHÔNG cụm</th><th>best_net_bnb</th><th>median_gas_cost_bnb</th></tr></thead>
     <tbody id="econ-buckets-body"></tbody>
   </table>
   <p id="econ-decode-fail"></p>
   <h3>Vốn cần (cụm bugfix-presign-and-contract-plan, A6)</h3>
   <table>
-    <thead><tr><th>bucket front_in (BNB)</th><th>count</th><th>net_pos</th><th>sum_net_pos_bnb</th><th>best_net_bnb</th></tr></thead>
+    <thead><tr><th>bucket front_in (BNB)</th><th>count</th><th>net_pos</th><th>net_pos KHÔNG cụm</th><th>sum_net_pos_bnb</th><th>sum KHÔNG cụm</th><th>best_net_bnb</th></tr></thead>
     <tbody id="econ-front-buckets-body"></tbody>
   </table>
   <p id="econ-capital80"></p>
   <p id="econ-competitor"></p>
   <p id="econ-rate-health"></p>
-  <h3>Top pool (cột "cụm đối thủ chạm" — A6)</h3>
+  <h3>Top pool (cột "cụm đối thủ chạm" — A6; cột "KHÔNG cụm" — cụm decision-data-24h mục 2)</h3>
+  <p class="note">Đo thật 10.92 h trên VPS: <b>481/497</b> cơ hội có lãi là ví
+  burner của chính cụm đối thủ MEV. Chỉ cột <b>net_pos KHÔNG cụm</b> dùng để
+  kết luận kinh tế được.</p>
   <table>
-    <thead><tr><th>pool</th><th>symbol</th><th>count</th><th>net_pos</th><th>sum_net_bnb</th><th>cụm đối thủ chạm?</th></tr></thead>
+    <thead><tr><th>pool</th><th>symbol</th><th>count</th><th>net_pos</th><th>net_pos KHÔNG cụm</th><th>% net_pos là ví cụm</th><th>sum_net_bnb</th><th>sum KHÔNG cụm</th><th>cụm đối thủ chạm?</th></tr></thead>
     <tbody id="econ-top-pools-body"></tbody>
   </table>
   <p>Bucket <code>victim_in</code> nay ap dung cho CA 2 quote asset (USDT quy doi qua <code>amount_in_bnb_equiv</code> — reserve THAT, khong price oracle). <code>rate_inverted_rejected</code> phai LUON = 0 sau ban sua A1 (<code>ReserveCache</code> khoa kem <code>quote</code>); khac 0 nghia la con dong log ghi boi binary cu. Xem day du qua <code>GET /api/econ</code>.</p>

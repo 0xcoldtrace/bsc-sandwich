@@ -283,7 +283,33 @@ async fn validate_list(State(state): State<AppState>) -> Json<Value> {
 }
 
 async fn compete(State(state): State<AppState>) -> Json<Value> {
-    Json(state.compete_stats.snapshot())
+    let mut out = state.compete_stats.snapshot();
+    // Cụm `decision-data-24h` (mục 2) — thêm bảng THEO POOL: trong số cơ hội
+    // CÓ LÃI trên pool đó, bao nhiêu phần trăm victim chính là ví của cụm đối
+    // thủ MEV (`victim_in_competitor_cluster`). Đây là con số quyết định "pool
+    // này có đáng làm không": pool 100% victim-cụm nghĩa là đối thủ đang tự
+    // swap token của họ, front-run nhóm đó là đối đầu trực diện với hệ thống
+    // có hạ tầng bundle riêng, KHÔNG phải nạn nhân bình thường.
+    //
+    // Nguồn số liệu giống hệt `/api/econ` (cùng `compute_econ_from_rows`, cùng
+    // bộ lọc `boot_wall_clock`) để 2 endpoint không bao giờ lệch nhau.
+    let log_path = state.logger.path().to_path_buf();
+    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let all_lines: Vec<&str> = content.lines().collect();
+    let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
+    let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
+    let boot_ts = state.boot_wall_clock.to_rfc3339();
+    let econ = compute_econ_from_rows(&rows, Some(&boot_ts));
+    out["by_pool"] = econ["top_pools_by_net"].clone();
+    out["net_pos_total"] = econ["net_pos_total"].clone();
+    out["net_pos_total_non_cluster"] = econ["net_pos_total_non_cluster"].clone();
+    out["pct_net_pos_la_vi_cum"] = {
+        let np = econ["net_pos_total"].as_u64().unwrap_or(0);
+        let nc = econ["net_pos_total_non_cluster"].as_u64().unwrap_or(0);
+        json!(if np > 0 { (np - nc) as f64 * 100.0 / np as f64 } else { 0.0 })
+    };
+    out["competitor"] = econ["competitor"].clone();
+    Json(out)
 }
 
 /// Cụm `competitor-recon-and-strategy` (mục 4, shadow mode) — dashboard khối
@@ -914,6 +940,13 @@ struct PoolAcc {
     /// 1 dòng `compete.result` trên pool đó tìm thấy tx liền kề của địa chỉ
     /// khác chạm ĐÚNG pool (`competitor` khác null).
     competitor_touched: bool,
+    /// Cụm `decision-data-24h` (mục 2) — `net_pos` SAU KHI LOẠI victim thuộc
+    /// cụm đối thủ. Đo 10.92 h thật trên VPS cho thấy 481/497 cơ hội có lãi
+    /// (96.8%) là ví burner của chính cụm đối thủ đang tự swap token của họ —
+    /// `net_pos` trần trụi vì vậy KHÔNG dùng để kết luận kinh tế được; mọi nơi
+    /// hiện `net_pos` phải hiện kèm con số đã loại cụm này.
+    net_pos_non_cluster: u64,
+    sum_net_bnb_non_cluster: f64,
 }
 
 #[derive(Default)]
@@ -921,7 +954,10 @@ struct BucketAcc {
     count: u64,
     gross_pos: u64,
     net_pos: u64,
+    /// Cụm `decision-data-24h` (mục 2) — xem `PoolAcc::net_pos_non_cluster`.
+    net_pos_non_cluster: u64,
     sum_net_pos_bnb: f64,
+    sum_net_pos_bnb_non_cluster: f64,
     best_net_bnb: Option<f64>,
     gas_cost_bnb_samples: Vec<f64>,
 }
@@ -936,7 +972,9 @@ impl BucketAcc {
             "count": self.count,
             "gross_pos": self.gross_pos,
             "net_pos": self.net_pos,
+            "net_pos_non_cluster": self.net_pos_non_cluster,
             "sum_net_pos_bnb": self.sum_net_pos_bnb,
+            "sum_net_pos_bnb_non_cluster": self.sum_net_pos_bnb_non_cluster,
             "best_net_bnb": self.best_net_bnb,
             "median_gas_cost_bnb": median_gas,
         })
@@ -997,6 +1035,9 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     let mut nonce_stale_count: u64 = 0;
     let mut candidate_count: u64 = 0;
     let mut net_pos_total: u64 = 0;
+    // Cụm `decision-data-24h` (mục 2).
+    let mut net_pos_total_non_cluster: u64 = 0;
+    let mut sum_net_bnb_total_non_cluster: f64 = 0.0;
     let mut best_net_bnb_total: Option<f64> = None;
     // Cụm `competitor-recon-and-strategy` (F-02) — tổng bribe MÔ PHỎNG đã
     // trừ vào các dòng `sim.result` (mọi dòng `Simulated` ĐÃ vượt gate
@@ -1129,6 +1170,10 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                     if net_wei > 0 {
                         acc.net_pos += 1;
                         acc.sum_net_bnb += (net_wei as f64) * rate / 1e18;
+                        if !in_cluster {
+                            acc.net_pos_non_cluster += 1;
+                            acc.sum_net_bnb_non_cluster += (net_wei as f64) * rate / 1e18;
+                        }
                     }
                 }
             }
@@ -1159,6 +1204,12 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                             acc.net_pos += 1;
                             net_pos_total += 1;
                             let net_bnb = (net_wei as f64) * rate / 1e18;
+                            if !in_cluster {
+                                acc.net_pos_non_cluster += 1;
+                                acc.sum_net_pos_bnb_non_cluster += net_bnb;
+                                net_pos_total_non_cluster += 1;
+                                sum_net_bnb_total_non_cluster += net_bnb;
+                            }
                             acc.sum_net_pos_bnb += net_bnb;
                             acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net_bnb, |b: f64| b.max(net_bnb)));
                             best_net_bnb_total = Some(best_net_bnb_total.map_or(net_bnb, |b: f64| b.max(net_bnb)));
@@ -1190,6 +1241,14 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                         if net > 0.0 {
                             acc.net_pos += 1;
                             acc.sum_net_pos_bnb += net * rate;
+                            // Cụm `decision-data-24h` (mục 2) — bucket VỐN CẦN
+                            // cũng phải tách nhóm cụm đối thủ, nếu không bảng
+                            // "cần bao nhiêu vốn" sẽ tính cả vốn cho những cơ
+                            // hội mà ta KHÔNG định lấy.
+                            if !in_cluster {
+                                acc.net_pos_non_cluster += 1;
+                                acc.sum_net_pos_bnb_non_cluster += net * rate;
+                            }
                             acc.best_net_bnb = Some(acc.best_net_bnb.map_or(net * rate, |b: f64| b.max(net * rate)));
                         }
                     }
@@ -1259,12 +1318,18 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     // đều KHÔNG lọt top-10 theo count, nên bảng đó toàn `net_pos=0`. Thêm
     // danh sách THỨ 2 sắp theo LÃI — đây mới là bảng trả lời "pool nào đáng
     // làm, và pool đó có bị cụm đối thủ chạm không".
-    let mut top_pools_by_net: Vec<(String, u64, f64, bool)> = top_pools
+    let mut top_pools_by_net: Vec<(String, u64, f64, bool, u64, f64)> = top_pools
         .iter()
         .filter(|(_, acc)| acc.net_pos > 0)
-        .map(|(p, acc)| (p.clone(), acc.net_pos, acc.sum_net_bnb, acc.competitor_touched))
+        .map(|(p, acc)| {
+            (p.clone(), acc.net_pos, acc.sum_net_bnb, acc.competitor_touched, acc.net_pos_non_cluster, acc.sum_net_bnb_non_cluster)
+        })
         .collect();
-    top_pools_by_net.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    // Cụm `decision-data-24h` (mục 2) — sắp theo LÃI ĐÃ LOẠI CỤM ĐỐI THỦ
+    // (`sum_net_bnb_non_cluster`), không phải lãi thô: 2 pool "lãi nhất" đo
+    // được trên VPS (`0xdfe23efb…`, `0xcec13213…`) có 100% victim là ví của
+    // cụm đối thủ, tức đứng đầu bảng cũ nhưng KHÔNG đáng làm.
+    top_pools_by_net.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal));
     top_pools_by_net.truncate(10);
     top_pools.sort_by(|a, b| b.1.count.cmp(&a.1.count));
     top_pools.truncate(10);
@@ -1275,9 +1340,10 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     let decode_fail_smartrouter = decode_fail_by_router.get("SmartRouter").copied().unwrap_or(0);
 
     let summary_line = format!(
-        "candidate={} net_pos={} best_net_bnb={} p50_ms={} p95_ms={} stale_pct={:.2} decode_fail_smartrouter={}",
+        "candidate={} net_pos={} net_pos_non_cluster={} best_net_bnb={} p50_ms={} p95_ms={} stale_pct={:.2} decode_fail_smartrouter={}",
         candidate_count,
         net_pos_total,
+        net_pos_total_non_cluster,
         best_net_bnb_total.map(|b| format!("{b:.6}")).unwrap_or_else(|| "-".to_string()),
         p50.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
         p95.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
@@ -1294,23 +1360,33 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
             "pair": pair,
             "count": acc.count,
             "net_pos": acc.net_pos,
+            "net_pos_non_cluster": acc.net_pos_non_cluster,
             "sum_net_bnb": acc.sum_net_bnb,
+            "sum_net_bnb_non_cluster": acc.sum_net_bnb_non_cluster,
+            "pct_net_pos_la_vi_cum": if acc.net_pos > 0 { (acc.net_pos - acc.net_pos_non_cluster) as f64 * 100.0 / acc.net_pos as f64 } else { 0.0 },
             // Cụm A6 — "cụm đối thủ chạm: có/không" (2 nguồn: victim CHÍNH LÀ
             // ví của cụm, hoặc `compete.result` thấy tx liền kề chạm cùng pool).
             "competitor_touched": acc.competitor_touched,
         })).collect::<Vec<_>>(),
         // A6 — pool ĐÁNG LÀM (có lãi), kèm cờ cụm đối thủ chạm: đây là bảng
         // dùng cho điều kiện go/no-go #2 (`docs/CONTRACT_DESIGN.md` B7).
-        "top_pools_by_net": top_pools_by_net.into_iter().map(|(pair, net_pos, sum_net_bnb, competitor_touched)| json!({
+        "top_pools_by_net": top_pools_by_net.into_iter().map(|(pair, net_pos, sum_net_bnb, competitor_touched, net_pos_nc, sum_net_bnb_nc)| json!({
             "pair": pair,
             "net_pos": net_pos,
+            "net_pos_non_cluster": net_pos_nc,
             "sum_net_bnb": sum_net_bnb,
+            "sum_net_bnb_non_cluster": sum_net_bnb_nc,
+            "pct_net_pos_la_vi_cum": if net_pos > 0 { (net_pos - net_pos_nc) as f64 * 100.0 / net_pos as f64 } else { 0.0 },
             "competitor_touched": competitor_touched,
         })).collect::<Vec<_>>(),
         "decode_fail_by_router": decode_fail_by_router,
         "latency_ms": { "p50": p50, "p95": p95, "samples": latency_ms_samples.len() },
         "nonce_stale_pct_of_candidate": stale_pct,
         "net_pos_total": net_pos_total,
+        // Cụm `decision-data-24h` (mục 2) — con số DUY NHẤT nên dùng để kết
+        // luận kinh tế (xem `PoolAcc::net_pos_non_cluster`).
+        "net_pos_total_non_cluster": net_pos_total_non_cluster,
+        "sum_net_bnb_total_non_cluster": sum_net_bnb_total_non_cluster,
         "best_net_bnb": best_net_bnb_total,
         "summary_line": summary_line,
         // Cụm `competitor-recon-and-strategy` (F-02) — bribe MÔ PHỎNG đã trừ
@@ -1513,6 +1589,58 @@ mod tests {
 
     fn wei(bnb: f64) -> String {
         ((bnb * 1e18) as u128).to_string()
+    }
+
+    /// Cụm `decision-data-24h` (mục 2) — `net_pos` KHÔNG còn đứng một mình ở
+    /// bất kỳ đâu: bucket, pool, tổng, và `summary_line` đều phải kèm con số
+    /// ĐÃ LOẠI victim thuộc cụm đối thủ. Dữ liệu thật 10.92 h trên VPS: 481/497
+    /// cơ hội có lãi là ví burner của chính cụm đối thủ.
+    #[test]
+    fn compute_econ_tach_net_pos_non_cluster_moi_cho_co_net_pos() {
+        let row = |pair: &str, cluster: bool, profit: i64| {
+            json!({
+                "event": "sim.result",
+                "token": "0xtoken1",
+                "pair": pair,
+                "quote": "wbnb",
+                "amount_in": wei(0.06),
+                "amount_in_bnb_equiv": wei(0.06),
+                "front_in_wei": wei(0.05),
+                "profit_net_wei": profit,
+                "victim_in_competitor_cluster": cluster,
+            })
+        };
+        let rows = vec![
+            row("0xpool_cum", true, 4_000_000_000_000_000i64),
+            row("0xpool_cum", true, 6_000_000_000_000_000i64),
+            row("0xpool_that", false, 3_000_000_000_000_000i64),
+        ];
+        let econ = compute_econ_from_rows(&rows, None);
+
+        assert_eq!(econ["net_pos_total"], 3);
+        assert_eq!(econ["net_pos_total_non_cluster"], 1, "chi 1 co hoi khong thuoc cum doi thu");
+        assert!((econ["sum_net_bnb_total_non_cluster"].as_f64().unwrap() - 0.003).abs() < 1e-9);
+
+        let bucket = econ["buckets_bnb"].as_array().unwrap().iter().find(|b| b["bucket"] == "0.05-0.2").unwrap();
+        assert_eq!(bucket["net_pos"], 3);
+        assert_eq!(bucket["net_pos_non_cluster"], 1);
+
+        // `top_pools_by_net` sap theo LAI DA LOAI CUM -> pool that dung dau,
+        // du pool cum co tong lai lon gap 3.3 lan.
+        let by_net = econ["top_pools_by_net"].as_array().unwrap();
+        assert_eq!(by_net[0]["pair"], "0xpool_that");
+        assert_eq!(by_net[0]["net_pos_non_cluster"], 1);
+        assert!((by_net[0]["pct_net_pos_la_vi_cum"].as_f64().unwrap() - 0.0).abs() < 1e-9);
+        let pool_cum = by_net.iter().find(|p| p["pair"] == "0xpool_cum").unwrap();
+        assert_eq!(pool_cum["net_pos"], 2);
+        assert_eq!(pool_cum["net_pos_non_cluster"], 0);
+        assert!((pool_cum["pct_net_pos_la_vi_cum"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+
+        assert!(
+            econ["summary_line"].as_str().unwrap().contains("net_pos=3 net_pos_non_cluster=1"),
+            "summary_line phai hien ca 2 so: {}",
+            econ["summary_line"]
+        );
     }
 
     /// ĐẠT CẦN DÁN — 1 dòng `sim.result` quote=wbnb, `amount_in`=0.06 BNB

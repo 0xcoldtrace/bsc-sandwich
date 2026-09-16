@@ -235,34 +235,112 @@ pub async fn simulate_sandwich(
     token: Address,
     victim: &PendingTxRaw,
 ) -> Result<EvmSandwichOutcome, SimEvmError> {
+    simulate_sandwich_quote(provider, fork_block, front_in, token, wbnb(), victim).await
+}
+
+/// Cụm `decision-data-24h` (mục 4) — bản TỔNG QUÁT theo QUOTE ASSET của
+/// `simulate_sandwich`. `quote = WBNB` giữ nguyên hành vi cũ (front-buy bằng
+/// BNB native qua `swapExactETHForTokens*`); `quote = USDT` (hoặc bất kỳ
+/// ERC20 quote nào đã pin) dựng CẢ 2 chân bằng
+/// `swapExactTokensForTokensSupportingFeeOnTransferTokens` và cấp vốn quote
+/// cho attacker bằng cách GHI THẲNG storage `balanceOf` (kỹ thuật
+/// sentinel-probe đã verify ở B4'.4 và đang dùng trong `measure_tax_on_fork`)
+/// — BSC không có cơ chế "wrap" USDT.
+///
+/// Lý do cụm này cần: shadow mode 30 phút ở BAOCAO42 ký được 9 bundle, cả 9
+/// đều quote USDT, và cả 9 dòng `shadow.sim` đều
+/// `skipped:"usdt_not_supported_by_simulate_sandwich"` — tức KHÔNG có
+/// `profit_sim` nào để đối chiếu với `profit_net` của đường nóng V2-math.
+///
+/// **Đơn vị `profit_wei`/`back_out` trả về là ĐƠN VỊ CỦA `quote`** (BNB khi
+/// quote=WBNB, USDT khi quote=USDT) — caller phải log kèm quote, không được
+/// mặc định coi là BNB.
+pub async fn simulate_sandwich_quote(
+    provider: DynProvider,
+    fork_block: u64,
+    front_in: U256,
+    token: Address,
+    quote: Address,
+    victim: &PendingTxRaw,
+) -> Result<EvmSandwichOutcome, SimEvmError> {
     let (mut db, block_timestamp) = open_fork(provider, fork_block).await?;
     db.insert_account_info(attacker_address(), AccountInfo::from_balance(U256::from(FUND_BNB_WEI)));
     let mut evm = build_evm(db, fork_block, block_timestamp);
-    run_sandwich(&mut evm, front_in, token, victim)
+    run_sandwich_quote(&mut evm, front_in, token, quote, victim)
 }
 
 /// Phần THỰC THI thuần (sync) của `simulate_sandwich` — tách ra để B4'.4 gọi
 /// lặp lại trên CÙNG 1 `ForkEvm` đã warm (nhiều `front_in` khác nhau) mà
 /// không fork/fetch lại. Logic y hệt `simulate_sandwich` cũ (chỉ code-move).
 fn run_sandwich(evm: &mut ForkEvm, front_in: U256, token: Address, victim: &PendingTxRaw) -> Result<EvmSandwichOutcome, SimEvmError> {
+    run_sandwich_quote(evm, front_in, token, wbnb(), victim)
+}
+
+/// Cụm `decision-data-24h` (mục 4) — `run_sandwich` tổng quát theo quote asset
+/// (xem doc-comment `simulate_sandwich_quote`). `quote == WBNB` đi ĐÚNG đường
+/// code cũ (native BNB), không đổi một byte hành vi nào.
+fn run_sandwich_quote(
+    evm: &mut ForkEvm,
+    front_in: U256,
+    token: Address,
+    quote: Address,
+    victim: &PendingTxRaw,
+) -> Result<EvmSandwichOutcome, SimEvmError> {
     let victim_to = victim.to.ok_or_else(|| SimEvmError::Fork("victim.to=None, khong the replay (thieu router that)".to_string()))?;
     let attacker = attacker_address();
+    let is_native_quote = quote == wbnb();
+
+    // Quote ERC20 (USDT): cap von quote cho attacker bang cach ghi thang
+    // storage `balanceOf` (khong co co che wrap) + approve router 1 lan.
+    // `fund_quote` = 2x front_in de sau khi tieu `front_in` van con du lam moc
+    // doi chieu; phan CHUA TIEU (`fund_quote - front_in`) duoc tru ra khi tinh
+    // `back_out`, nen so von cap KHONG the lam sai lech loi/lo.
+    let fund_quote = if is_native_quote { U256::ZERO } else { front_in.saturating_mul(U256::from(2u64)) };
+    if !is_native_quote {
+        let slot = probe_erc20_balance_slot(evm, quote, attacker)?;
+        set_erc20_balance(evm, quote, attacker, slot, fund_quote)?;
+        let approve_quote = IERC20Min::approveCall { spender: router(), amount: U256::MAX }.abi_encode();
+        let tx = TxEnv::builder()
+            .caller(attacker)
+            .kind(TxKind::Call(quote))
+            .gas_limit(200_000)
+            .gas_price(0)
+            .nonce(0)
+            .chain_id(Some(56))
+            .data(Bytes::from(approve_quote))
+            .build_fill();
+        let r = evm.transact_commit(tx).map_err(|e| SimEvmError::Exec(format!("approve quote: {e:?}")))?;
+        if !r.is_success() {
+            return Err(SimEvmError::Revert(format!("approve quote revert/halt: {r:?}")));
+        }
+    }
 
     // ---- buy-tax estimate NGAY TRUOC front-buy (state fork nguyen ven) ----
-    let expected_token_out = quote_amounts_out(evm, wbnb(), token, front_in).ok().flatten();
+    let expected_token_out = quote_amounts_out(evm, quote, token, front_in).ok().flatten();
 
-    // ---- front-buy: NATIVE BNB -> token ----
-    let front_calldata = IPancakeV2RouterFeeOnTransfer::swapExactETHForTokensSupportingFeeOnTransferTokensCall {
-        amountOutMin: U256::ZERO,
-        path: vec![wbnb(), token],
-        to: attacker,
-        deadline: U256::from(DEADLINE_MAX),
-    }
-    .abi_encode();
+    // ---- front-buy: quote -> token ----
+    let front_calldata = if is_native_quote {
+        IPancakeV2RouterFeeOnTransfer::swapExactETHForTokensSupportingFeeOnTransferTokensCall {
+            amountOutMin: U256::ZERO,
+            path: vec![quote, token],
+            to: attacker,
+            deadline: U256::from(DEADLINE_MAX),
+        }
+        .abi_encode()
+    } else {
+        IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+            amountIn: front_in,
+            amountOutMin: U256::ZERO,
+            path: vec![quote, token],
+            to: attacker,
+            deadline: U256::from(DEADLINE_MAX),
+        }
+        .abi_encode()
+    };
     let front_tx = TxEnv::builder()
         .caller(attacker)
         .kind(TxKind::Call(router()))
-        .value(front_in)
+        .value(if is_native_quote { front_in } else { U256::ZERO })
         .gas_limit(3_000_000)
         .gas_price(0)
         .nonce(0)
@@ -310,17 +388,28 @@ fn run_sandwich(evm: &mut ForkEvm, front_in: U256, token: Address, victim: &Pend
     let victim_success = victim_result.is_success();
 
     // ---- sell-tax estimate NGAY TRUOC back-sell (state da qua victim) ----
-    let expected_bnb_out = quote_amounts_out(evm, token, wbnb(), token_received).ok().flatten();
+    let expected_bnb_out = quote_amounts_out(evm, token, quote, token_received).ok().flatten();
 
-    // ---- back-sell: token (TOAN BO da nhan) -> NATIVE BNB ----
-    let back_calldata = IPancakeV2RouterFeeOnTransfer::swapExactTokensForETHSupportingFeeOnTransferTokensCall {
-        amountIn: token_received,
-        amountOutMin: U256::ZERO,
-        path: vec![token, wbnb()],
-        to: attacker,
-        deadline: U256::from(DEADLINE_MAX),
-    }
-    .abi_encode();
+    // ---- back-sell: token (TOAN BO da nhan) -> quote ----
+    let back_calldata = if is_native_quote {
+        IPancakeV2RouterFeeOnTransfer::swapExactTokensForETHSupportingFeeOnTransferTokensCall {
+            amountIn: token_received,
+            amountOutMin: U256::ZERO,
+            path: vec![token, quote],
+            to: attacker,
+            deadline: U256::from(DEADLINE_MAX),
+        }
+        .abi_encode()
+    } else {
+        IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+            amountIn: token_received,
+            amountOutMin: U256::ZERO,
+            path: vec![token, quote],
+            to: attacker,
+            deadline: U256::from(DEADLINE_MAX),
+        }
+        .abi_encode()
+    };
     let back_tx = TxEnv::builder()
         .caller(attacker)
         .kind(TxKind::Call(router()))
@@ -335,18 +424,25 @@ fn run_sandwich(evm: &mut ForkEvm, front_in: U256, token: Address, victim: &Pend
         return Err(SimEvmError::Revert(format!("back-sell revert/halt: {back_result:?}")));
     }
 
-    let final_native_balance = evm
-        .ctx
-        .db_mut()
-        .basic(attacker)
-        .map_err(|e| SimEvmError::Exec(format!("doc so du cuoi that bai: {e:?}")))?
-        .map(|info| info.balance)
-        .unwrap_or(U256::ZERO);
-
-    // gas_price=0 cho MOI tx attacker (front/approve/back) -> native balance
-    // chi doi vi swap that (khong lan gas): final = FUND - front_in + back_out.
-    let fund = U256::from(FUND_BNB_WEI);
-    let back_out = (final_native_balance + front_in).saturating_sub(fund);
+    let back_out = if is_native_quote {
+        let final_native_balance = evm
+            .ctx
+            .db_mut()
+            .basic(attacker)
+            .map_err(|e| SimEvmError::Exec(format!("doc so du cuoi that bai: {e:?}")))?
+            .map(|info| info.balance)
+            .unwrap_or(U256::ZERO);
+        // gas_price=0 cho MOI tx attacker (front/approve/back) -> native balance
+        // chi doi vi swap that (khong lan gas): final = FUND - front_in + back_out.
+        let fund = U256::from(FUND_BNB_WEI);
+        (final_native_balance + front_in).saturating_sub(fund)
+    } else {
+        // Quote ERC20: doc `balanceOf(quote, attacker)` va tru phan von CHUA
+        // TIEU (`fund_quote - front_in`) - gas khong tra bang quote nen so nay
+        // chi phan anh 2 chan swap.
+        let final_quote_balance = read_balance(evm, quote, attacker)?;
+        final_quote_balance.saturating_sub(fund_quote.saturating_sub(front_in))
+    };
 
     let front_i = i128::try_from(front_in).map_err(|_| SimEvmError::Decode("front_in vuot i128".to_string()))?;
     let back_i = i128::try_from(back_out).map_err(|_| SimEvmError::Decode("back_out vuot i128".to_string()))?;
@@ -1615,6 +1711,194 @@ mod tests {
     // `#[tokio::test]` mặc định single-thread sẽ fail ngay ở bước fork.
     // Production (`main.rs::main`, `#[tokio::main]`) đã multi-thread sẵn
     // (`Cargo.toml` bật `rt-multi-thread`), không cần đổi gì ở đó.
+    /// Cụm `decision-data-24h` (mục 5) — TRẢ LỜI câu "node nào vet được pool
+    /// nào": chạy ĐÚNG phép đo của `pairs_vet_task` (`measure_tax_evm` tại
+    /// block hiện tại) cho 2 pool USDT bận nhất trên TỪNG URL RPC, in kết quả
+    /// + LỚP LỖI (`transport::classify_vet_error`).
+    ///
+    /// Lý do cần: shadow run 30 phút của cụm này có 8/8 candidate rơi vào đúng
+    /// 2 pool đó và cả 8 đều abort `vet_stale` — phải biết đây là "node không
+    /// kham được" (hạ tầng, cần `BSC_HTTP_SIM` trả phí) hay "token có vấn đề"
+    /// (nghiệp vụ). KHÔNG assert node nào phải chạy được (đó là chuyện của
+    /// nhà cung cấp RPC, không phải của code) — test này ĐẠT khi CHẠY được và
+    /// IN ra bảng thật; số liệu trong BAOCAO đọc từ bảng đó.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn real_rpc_which_node_can_vet_the_two_hot_usdt_pools() {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use std::str::FromStr as _;
+
+        let usdt = Address::from_str(crate::venues::USDT_ADDRESS).unwrap();
+        let probe_in = U256::from(50u64) * U256::from(10u64).pow(U256::from(18u64)); // 50 USDT, khop probe_in_for_quote
+        let tokens = [
+            ("BNC", "0x01FBEd06A70EB1b4A0B43Dbc6a94f99944CD7777"),
+            ("BinanceTown", "0xe210C0583C1071714EDed2d8bEEab05Ab5bB7777"),
+        ];
+        // Danh sach URL: `BSC_HTTP` cua Chu (neu co) + cac URL du phong.
+        let mut urls = crate::transport::collect_rpc_urls_from_env("BSC_HTTP");
+        for u in validate_rpc_urls() {
+            if !urls.contains(&u) {
+                urls.push(u);
+            }
+        }
+        urls = crate::transport::filter_read_urls(urls);
+        println!("real_rpc_which_node_can_vet: {} URL, 2 pool USDT nong nhat", urls.len());
+
+        let mut any_ok = false;
+        for url in &urls {
+            let host = url.split('/').nth(2).unwrap_or("?");
+            let provider: DynProvider = match ProviderBuilder::new().connect(url).await {
+                Ok(p) => p.erased(),
+                Err(e) => {
+                    println!("  {host:<34} KET NOI LOI: {e}");
+                    continue;
+                }
+            };
+            let block = match provider.get_block_number().await {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("  {host:<34} eth_blockNumber LOI: {e}");
+                    continue;
+                }
+            };
+            for (sym, addr) in &tokens {
+                let token = Address::from_str(addr).unwrap();
+                match measure_tax_evm(provider.clone(), block, token, usdt, probe_in).await {
+                    Ok(m) => {
+                        any_ok = true;
+                        println!(
+                            "  {host:<34} {sym:<12} block={block} OK  buy_bps={} sell_bps={} honeypot={}",
+                            m.buy_bps, m.sell_bps, m.honeypot
+                        );
+                    }
+                    Err(e) => {
+                        let es = e.to_string();
+                        println!(
+                            "  {host:<34} {sym:<12} block={block} LOI[{}] {}",
+                            crate::transport::classify_vet_error(&es),
+                            es.chars().take(110).collect::<String>()
+                        );
+                    }
+                }
+            }
+        }
+        println!("=> co it nhat 1 node vet duoc 2 pool nay: {any_ok}");
+
+        // Phan 2 — DO SAU BLOCK: `pairs_vet_task` fork tai `app_state.last_block`
+        // (block bot thay gan nhat), KHONG phai dung dinh chain. Neu node chi
+        // giu state vai block thi vet se hong khi bot cham 1 nhip - do THAT
+        // thay vi doan.
+        if let Some(url) = urls.first() {
+            let host = url.split('/').nth(2).unwrap_or("?");
+            if let Ok(p) = ProviderBuilder::new().connect(url).await {
+                let provider: DynProvider = p.erased();
+                if let Ok(head) = provider.get_block_number().await {
+                    let token = Address::from_str(tokens[0].1).unwrap();
+                    for depth in [0u64, 2, 10, 50, 200] {
+                        let b = head.saturating_sub(depth);
+                        match measure_tax_evm(provider.clone(), b, token, usdt, probe_in).await {
+                            Ok(m) => println!("  do sau: {host} block=head-{depth} ({b}) OK buy={} sell={}", m.buy_bps, m.sell_bps),
+                            Err(e) => {
+                                let es = e.to_string();
+                                println!(
+                                    "  do sau: {host} block=head-{depth} ({b}) LOI[{}] {}",
+                                    crate::transport::classify_vet_error(&es),
+                                    es.chars().take(90).collect::<String>()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Cụm `decision-data-24h` (mục 4) — kiểm CƠ CHẾ nhánh quote USDT của
+    /// `simulate_sandwich_quote` trên STATE THẬT tại block mới nhất: cấp vốn
+    /// USDT cho attacker bằng ghi storage (sentinel-probe), approve router,
+    /// front-buy `swapExactTokensForTokens(USDT→token)`, back-sell ngược lại.
+    ///
+    /// Victim ở đây là 1 tx USDT-buy DỰNG TAY từ một ví có USDT thật (không
+    /// phải tx pending — test này kiểm PLUMBING, không kiểm dự đoán kinh tế:
+    /// phần đó do shadow run 30 phút + `shadow.sim` đo trên victim THẬT).
+    /// Vì vậy chỉ assert những gì chứng minh được: 2 chân swap CHẠY ĐƯỢC trên
+    /// state thật, và round-trip khi không có victim ở giữa phải LỖ (đúng phí
+    /// pool 2 × 0.25% + trượt giá), KHÔNG được lãi — lãi ở đây sẽ là dấu hiệu
+    /// kế toán `back_out` sai chiều.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn real_rpc_simulate_sandwich_quote_usdt_leg_mechanics() {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use std::str::FromStr as _;
+
+        let url = validate_rpc_urls()[0].clone();
+        let provider: DynProvider = ProviderBuilder::new().connect(&url).await.expect("ket noi RPC that bai").erased();
+        let chain_id = provider.get_chain_id().await.expect("eth_chainId that bai");
+        assert_eq!(chain_id, 56, "phai la BSC mainnet");
+        let fork_block = provider.get_block_number().await.expect("eth_blockNumber that bai");
+
+        // BNC/USDT - pool USDT dong nhat trong `pairs.txt` theo do that 10.92h
+        // tren VPS (`logs/vps_analysis/1b_top_pools.tsv`).
+        let token = Address::from_str("0x01FBEd06A70EB1b4A0B43Dbc6a94f99944CD7777").unwrap();
+        let usdt = Address::from_str(crate::venues::USDT_ADDRESS).unwrap();
+        let front_in = U256::from(1_000u64) * U256::from(10u64).pow(U256::from(18u64)); // 1000 USDT
+
+        // Victim dung tay: 1 ví có USDT that mua token bang USDT qua V2 Router.
+        let victim_from = Address::from_str("0xB406021E07b31E1f7850FCcCD7076094f18d07eF").unwrap();
+        let victim_calldata = IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+            amountIn: U256::from(100u64) * U256::from(10u64).pow(U256::from(18u64)),
+            amountOutMin: U256::ZERO,
+            path: vec![usdt, token],
+            to: victim_from,
+            deadline: U256::from(DEADLINE_MAX),
+        }
+        .abi_encode();
+        let victim = PendingTxRaw {
+            from: victim_from,
+            to: Some(router()),
+            value: U256::ZERO,
+            input: victim_calldata,
+            hash: alloy::primitives::B256::ZERO,
+            gas: 400_000,
+            gas_price: U256::from(1_000_000_000u64),
+            nonce: 0,
+        };
+
+        let outcome = simulate_sandwich_quote(provider.clone(), fork_block, front_in, token, usdt, &victim)
+            .await
+            .expect("nhanh quote USDT phai chay duoc tren state THAT (truoc cum nay: khong co nhanh nay)");
+
+        println!(
+            "real_rpc_simulate_sandwich_quote_usdt THAT: fork_block={fork_block} token={token:#x} quote=USDT \n\
+             front_in={} USDT  token_received={}  back_out={} USDT  profit={} (don vi USDT wei)  victim_success={}  buy_tax_bps={:?} sell_tax_bps={:?}",
+            front_in,
+            outcome.token_received,
+            outcome.back_out,
+            outcome.profit_wei,
+            outcome.victim_success,
+            outcome.buy_tax_bps,
+            outcome.sell_tax_bps
+        );
+
+        assert!(!outcome.token_received.is_zero(), "front-buy bang USDT phai nhan duoc token that");
+        assert!(!outcome.back_out.is_zero(), "back-sell phai tra lai USDT");
+        // Round-trip qua CUNG 1 pool voi victim NHO (100 USDT) ke giua: phi
+        // pool 2 x 0.25% (~50 bps) LON HON phan bot lai duoc tu victim, nen
+        // ket qua phai LO — nhung lo IT HON 50 bps dung bang phan victim bu
+        // lai. Do that lan chay dau: lo 23 bps (victim_success=true) — day
+        // chinh la bang chung ca 3 chan (front USDT, victim replay, back
+        // USDT) deu chay that tren state that.
+        let front_i = i128::try_from(front_in).unwrap();
+        assert!(
+            outcome.profit_wei < 0,
+            "victim 100 USDT qua nho so front 1000 USDT -> phai LO; lai o day la dau hieu ke toan back_out sai chieu (nhan duoc {})",
+            outcome.profit_wei
+        );
+        let loss_bps = (-outcome.profit_wei) * 10_000 / front_i;
+        println!("  round-trip loss = {loss_bps} bps (phi pool ~50 bps TRU phan victim bu lai; victim_success={})", outcome.victim_success);
+        assert!(loss_bps <= 200, "lo {loss_bps} bps qua lon so phi pool 50 bps = dau hieu ke toan back_out sai, khong phai phi pool");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn real_rpc_sim_evm_matches_sim_v2_when_zero_tax() {

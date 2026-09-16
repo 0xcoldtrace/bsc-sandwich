@@ -1,0 +1,7 @@
+pool	quote	candidate	net_pos	net_pos_non_cluster	sum_net_nc_native	pct_netpos_la_vi_cum	competitor_touched
+0x76c42dda1de814ac60951c2c89c77dbecfb86ffb	wbnb	59	9	9	0.454624	0.0	1
+0xd69aeb830435594c7d3a9b133af96dd02e65f431	usdt	557	5	5	0.006925	0.0	0
+0x3f803ec2b816ea7f06ec76aa2b6f2532f9892d62	usdt	45	1	1	1.619323	0.0	0
+0x6c6636eada7cc046c7a83aea0d973810234ec291	wbnb	1	1	1	0.025364	0.0	0
+0xcec13213c390d51121f82ba2ecafb8e11e0af7a3	usdt	551	236	0	0.000000	100.0	1
+0xdfe23efbdb03ea985c2423eb916fca8cae1d02ef	usdt	540	245	0	0.000000	100.0	1

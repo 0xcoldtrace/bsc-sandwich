@@ -156,7 +156,10 @@ function renderEcon(data) {
     body.innerHTML = (data.buckets_bnb || [])
       .map(
         (b) =>
-          `<tr><td>${b.bucket}</td><td>${b.count}</td><td>${b.gross_pos}</td><td>${b.net_pos}</td><td>${fmtBnbMaybe(b.sum_net_pos_bnb)}</td><td>${fmtBnbMaybe(b.best_net_bnb)}</td><td>${fmtBnbMaybe(b.median_gas_cost_bnb)}</td></tr>`
+          `<tr><td>${b.bucket}</td><td>${b.count}</td><td>${b.gross_pos}</td><td>${b.net_pos}</td>` +
+          `<td class="${(b.net_pos_non_cluster || 0) > 0 ? "ok" : ""}">${b.net_pos_non_cluster || 0}</td>` +
+          `<td>${fmtBnbMaybe(b.sum_net_pos_bnb)}</td><td>${fmtBnbMaybe(b.sum_net_pos_bnb_non_cluster)}</td>` +
+          `<td>${fmtBnbMaybe(b.best_net_bnb)}</td><td>${fmtBnbMaybe(b.median_gas_cost_bnb)}</td></tr>`
       )
       .join("");
   }
@@ -166,7 +169,10 @@ function renderEcon(data) {
     frontBody.innerHTML = (data.buckets_front_in_bnb || [])
       .map(
         (b) =>
-          `<tr><td>${b.bucket}</td><td>${b.count}</td><td>${b.net_pos}</td><td>${fmtBnbMaybe(b.sum_net_pos_bnb)}</td><td>${fmtBnbMaybe(b.best_net_bnb)}</td></tr>`
+          `<tr><td>${b.bucket}</td><td>${b.count}</td><td>${b.net_pos}</td>` +
+          `<td class="${(b.net_pos_non_cluster || 0) > 0 ? "ok" : ""}">${b.net_pos_non_cluster || 0}</td>` +
+          `<td>${fmtBnbMaybe(b.sum_net_pos_bnb)}</td><td>${fmtBnbMaybe(b.sum_net_pos_bnb_non_cluster)}</td>` +
+          `<td>${fmtBnbMaybe(b.best_net_bnb)}</td></tr>`
       )
       .join("");
   }
@@ -198,7 +204,10 @@ function renderEcon(data) {
     poolsBody.innerHTML = (data.top_pools || [])
       .map(
         (p) =>
-          `<tr><td>${p.pair}</td><td>${p.symbol || "-"}</td><td>${p.count}</td><td>${p.net_pos}</td><td>${fmtBnbMaybe(p.sum_net_bnb)}</td>` +
+          `<tr><td>${p.pair}</td><td>${p.symbol || "-"}</td><td>${p.count}</td><td>${p.net_pos}</td>` +
+          `<td class="${(p.net_pos_non_cluster || 0) > 0 ? "ok" : "bad"}">${p.net_pos_non_cluster || 0}</td>` +
+          `<td class="${Number(p.pct_net_pos_la_vi_cum || 0) >= 50 ? "bad" : "ok"}">${Number(p.pct_net_pos_la_vi_cum || 0).toFixed(1)}%</td>` +
+          `<td>${fmtBnbMaybe(p.sum_net_bnb)}</td><td>${fmtBnbMaybe(p.sum_net_bnb_non_cluster)}</td>` +
           `<td class="${p.competitor_touched ? "bad" : "ok"}">${p.competitor_touched ? "CÓ" : "không"}</td></tr>`
       )
       .join("");
