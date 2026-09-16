@@ -317,6 +317,7 @@ async fn compete(State(state): State<AppState>) -> Json<Value> {
         .iter()
         .filter(|l| econ_line_can_dung(l))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(prune_econ_row)
         .collect();
     let boot_ts = state.boot_wall_clock.to_rfc3339();
     let econ = compute_econ_from_rows(&rows, Some(&boot_ts));
@@ -1114,7 +1115,15 @@ async fn read_log_tail(path: &std::path::Path) -> String {
     if f.read_to_end(&mut buf).await.is_err() {
         return String::new();
     }
-    let content = String::from_utf8_lossy(&buf).into_owned();
+    // `String::from_utf8` TÁI DÙNG chính `Vec<u8>` vừa đọc (không copy);
+    // `String::from_utf8_lossy(&buf).into_owned()` thì luôn cấp phát thêm một
+    // bản sao nữa cùng kích thước — với đuôi log 30 MB đó là 30 MB thừa mỗi
+    // lời gọi API. Chỉ rơi về đường lossy khi file thật sự có byte không hợp
+    // lệ UTF-8 (chưa từng gặp với log của bot, nhưng không được panic).
+    let content = match String::from_utf8(buf) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    };
     if truncated {
         match content.find('\n') {
             Some(i) => content[i + 1..].to_string(),
@@ -1156,6 +1165,55 @@ const ECON_EVENTS_CAN_DUNG: [&str; 5] =
 /// đó), không bao giờ theo hướng bỏ sót — nên không thể làm sai số liệu.
 fn econ_line_can_dung(line: &str) -> bool {
     ECON_EVENTS_CAN_DUNG.iter().any(|e| line.contains(e))
+}
+
+/// Cụm `verify-cluster-as-victim` (mục 1b) — CHỈ những trường này được
+/// `compute_econ_from_rows` đọc tới.
+///
+/// # Vì sao cần
+///
+/// Đo có kiểm soát ở phiên này (WSL, `bot.jsonl` **30,09 MB**, gọi `/api/econ`
+/// ĐÚNG MỘT LẦN): `VmRSS` 41,66 → **289,91 MB** (đỉnh 318,53 MB) và **không
+/// tụt lại** sau 2,5 phút. Tức bộ lọc chuỗi `ECON_EVENTS_CAN_DUNG` thêm ở
+/// BAOCAO44 **KHÔNG giải quyết được vấn đề** — nó chỉ giảm SỐ dòng phải parse,
+/// còn phần tốn bộ nhớ là mỗi dòng `tx.skip` (35 622 dòng trong lần đo này)
+/// được dựng thành một `serde_json::Value` đầy đủ ~20 trường, giữ nguyên
+/// trong `Vec` tới khi hàm trả về.
+///
+/// Trong 20 trường đó `compute_econ_from_rows` chỉ đọc đúng danh sách dưới
+/// đây. Cắt phần còn lại NGAY SAU khi parse (giá trị đầy đủ chỉ sống đúng một
+/// vòng lặp rồi được giải phóng) giữ lại đúng thứ cần mà không đổi một byte
+/// kết quả.
+const ECON_FIELDS_CAN_DUNG: [&str; 20] = [
+    "event",
+    "ts",
+    "reason",
+    "hash",
+    "victim_hash",
+    "to",
+    "pair",
+    "quote",
+    "amount_in",
+    "amount_in_bnb_equiv",
+    "front_in_wei",
+    "gas_cost_wei",
+    "bribe_wei",
+    "profit_gross_wei",
+    "profit_net_wei",
+    "seen_to_decision_ms",
+    "victim_in_competitor_cluster",
+    "victim_ok",
+    "victim_ok_v2",
+    "competitor",
+];
+
+/// Giữ lại đúng `ECON_FIELDS_CAN_DUNG` của một dòng log đã parse. Dòng không
+/// phải object (không xảy ra với log của bot, nhưng file có thể bị sửa tay)
+/// được trả nguyên vẹn thay vì bị vứt — không im lặng mất dữ liệu.
+fn prune_econ_row(mut row: Value) -> Value {
+    let Some(map) = row.as_object_mut() else { return row };
+    map.retain(|k, _| ECON_FIELDS_CAN_DUNG.contains(&k.as_str()));
+    row
 }
 
 /// 5 bucket `victim_in` (BNB) đúng CLAUDE.md mục 3.a.
@@ -1281,6 +1339,7 @@ async fn econ(State(state): State<AppState>) -> Json<Value> {
         .iter()
         .filter(|l| econ_line_can_dung(l))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(prune_econ_row)
         .collect();
     // Cụm `real-economics-mode2` — CHỈ tính dòng có `ts >= boot_wall_clock`
     // (`logs/bot.jsonl` dùng CHUNG qua mọi lần chạy, không bị xoá) — thiếu
@@ -2378,5 +2437,78 @@ mod tests {
         assert_eq!(router_display_name("0x1A0A18AC4BECDDbd6389559687d1A73d8927E416"), "UR v3 (cu)");
         assert_eq!(router_display_name("0xd9C500DfF816a1Da21A48A732d3498Bf09dc9AEB"), "UR Infinity");
         assert_eq!(router_display_name("0x0000000000000000000000000000000000dead"), "other");
+    }
+
+    /// Cụm `verify-cluster-as-victim` (mục 1b) — `prune_econ_row` KHÔNG được
+    /// làm đổi một con số nào của `/api/econ`.
+    ///
+    /// Test so kết quả `compute_econ_from_rows` trên dòng ĐẦY ĐỦ với kết quả
+    /// trên dòng đã cắt: phải BẰNG NHAU từng byte. Nếu sau này ai thêm một
+    /// trường mới vào `compute_econ_from_rows` mà quên thêm vào
+    /// `ECON_FIELDS_CAN_DUNG`, test này hỏng ngay.
+    #[test]
+    fn prune_econ_row_khong_doi_ket_qua_econ() {
+        let day_du = vec![
+            json!({
+                "event": "sim.result",
+                "ts": "2026-09-16T09:00:00+00:00",
+                "hash": "0xaaa",
+                "pair": "0xpool",
+                "quote": "wbnb",
+                "amount_in": wei(0.06),
+                "amount_in_bnb_equiv": wei(0.06),
+                "front_in_wei": wei(0.05),
+                "profit_gross_wei": wei(0.01),
+                "profit_net_wei": wei(0.009),
+                "gas_cost_wei": wei(0.001),
+                "bribe_wei": wei(0.0005),
+                "seen_to_decision_ms": 12.5,
+                "victim_ok_v2": true,
+                "victim_in_competitor_cluster": false,
+                // Các trường KHÔNG nằm trong whitelist — phải bị cắt mà không
+                // ảnh hưởng gì tới số liệu.
+                "token": "0xtoken",
+                "venue": "v2",
+                "selector": "0xb6f9de95",
+                "from": "0xfrom",
+                "reserve_quote": wei(30.0),
+                "gas_price_gwei": 0.05,
+                "victim_out_wei": "123",
+                "amount_out_min_wei": "1",
+                "victim_out_no_front_wei": "456",
+                "net_pos_after_bribe_wei": wei(0.0085),
+            }),
+            json!({
+                "event": "shadow.sim",
+                "ts": "2026-09-16T09:00:02+00:00",
+                "victim_hash": "0xaaa",
+                "victim_ok": true,
+                "quote": "wbnb",
+                "profit_sim_native": 0.0091,
+                "fork_block": 1,
+                "decision_block": 2,
+                "sim_ms": 1234.5,
+            }),
+            json!({
+                "event": "tx.skip",
+                "ts": "2026-09-16T09:00:01+00:00",
+                "reason": "not_in_list",
+                "hash": "0xbbb",
+                "to": "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+                "seen_to_decision_ms": 3.25,
+                "venue": "v2",
+                "selector": "0x38ed1739",
+                "from": "0xfrom2",
+            }),
+        ];
+        let cat: Vec<Value> = day_du.iter().cloned().map(prune_econ_row).collect();
+        let a = compute_econ_from_rows(&day_du, Some("2026-09-16T08:00:00+00:00"));
+        let b = compute_econ_from_rows(&cat, Some("2026-09-16T08:00:00+00:00"));
+        assert_eq!(a, b, "cat truong khong duoc dung -> ket qua /api/econ phai y het");
+        // Và phải thật sự có cắt (nếu không thì test trên luôn đúng một cách tầm thường).
+        assert!(
+            cat[0].as_object().unwrap().len() < day_du[0].as_object().unwrap().len(),
+            "dong sim.result phai bi cat bot truong"
+        );
     }
 }

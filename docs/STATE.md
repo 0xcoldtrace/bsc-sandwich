@@ -5388,3 +5388,129 @@ Bài học: `victim_ok=false` không phải MỘT nguyên nhân. Bảng 3 biến
 mục 1 phân định được là vì nó hỏi câu hỏi đúng (`front_in=0` thì sao?) chứ
 không phải vì nó đoán trúng giả thuyết — và nó trả lời khác nhau ở 2 đường
 khác nhau của cùng một bot.
+
+## `verify-cluster-as-victim` — kẹp cụm đối thủ có lãi không, đo bằng EVM (BAOCAO45, 2026-09-16)
+
+Cụm này trả lời câu hỏi Chủ đặt sau BAOCAO44: **tx của cụm `0xB406` có
+sandwich được không, và lãi bao nhiêu** — bằng EVM fork đúng block, chứ không
+bằng lập luận. Kết quả làm lộ **ba lỗi đo** khiến mọi con số về cụm này trong
+BAOCAO43/44 không dùng được, và **một lỗi nhận diện** trong `src/competitor.rs`.
+
+### 1. Hình dạng THẬT của cụm `0xB406` (đo on-chain 2026-09-16)
+
+Trinh sát ở BAOCAO41 mô tả "dispatcher cấp vốn nhiều ví burner rồi cả nhóm
+swap ngay". Quét lại on-chain hôm nay (`scripts/cluster_tx_scan.py`) cho thấy
+cụm hiện chạy **hai** dạng song song:
+
+| dạng | `tx.to` | selector | bot có decode được không |
+|---|---|---|---|
+| `to_cluster` | contract của cụm (`0x8180…`) | `0xecb65f51` | **KHÔNG** — `tx.to` không phải router Pancake nên bị chặn ngay ở gate đầu tiên (`not_pancake_router`) |
+| `from_funded` | V2 Router đã pin | `0x38ed1739` (`swapExactTokensForTokens`) | CÓ — đây là toàn bộ phần cụm mà bot thực sự nhìn thấy |
+| `from_seed` | contract của cụm | `0x5aab2274` | KHÔNG (lệnh cấp vốn, không phải swap) |
+
+Điểm quan trọng nhất: **ví burner được seed cấp vốn trong CHÍNH block nó
+swap, ở `tx_index` ngay liền trước.** Đã verify bằng `eth_getBlockReceipts`
+của đúng block đào trên 5/5 mẫu. Tại `block − 1` ví đó có **0 USDT**.
+
+### 2. Ba lỗi ĐO (không phải lỗi kinh tế) — đã sửa trong cụm này
+
+**(a) `fork_block` vẫn sai khi bot quyết định TRỄ.** BUG #4 của BAOCAO44 đổi
+fork từ `current_block` sang `current_block − 1`. Nhưng khi
+`decision_block > mined_block` (BAOCAO44 đo 18% số quyết định là trễ), thì
+`decision_block − 1` VẪN có thể chính là block victim đã được đào. Đo thật:
+5/5 victim USDT có `fork_block` bằng ĐÚNG `mined_block`. Sửa: tra
+`mined_index` (0 RPC, cửa sổ 32 block) rồi fork tại
+`min(decision_block, mined_block) − 1`.
+
+**(b) Không block nào replay được victim của cụm.** Trạng thái "đã cấp vốn,
+chưa swap" chỉ tồn tại GIỮA hai tx trong cùng một block; `AlloyDB` đọc state ở
+CUỐI block nên không bao giờ chạm tới nó. Vì vậy mọi `shadow.sim` cho ví
+burner đều `TransferHelper: TRANSFER_FROM_FAILED` **kể cả ở `front_in = 0`**
+— tức không liên quan gì tới chân front của ta. Trên chain cả 5 tx đều
+`status = 0x1`. Sửa: `sim_evm::run_sandwich_quote_topup` nạp cho victim đúng
+lượng quote họ sắp tiêu, bằng CÙNG kỹ thuật ghi thẳng storage `balanceOf` đã
+dùng cho attacker. **Allowance KHÔNG BAO GIỜ bị ghi đè** (đo được là `2^256−1`
+thật) — nếu còn `TRANSFER_FROM_FAILED` sau khi nạp thì đó mới là allowance
+thật. Mọi dòng log kèm `victim_quote_topped_up = true` phải đọc là *"lãi NẾU
+victim có tiền như lúc họ thật sự chạy"*, không phải lãi đã xác nhận trên
+state thật của block fork.
+
+**(c) `room` không dựng lại được từ log cũ.** `sim.result` chỉ có
+`victim_out_wei` (đã trừ ảnh hưởng chân front đã gated), nên
+`room = amountOut_thật / amountOutMin` mà lệnh yêu cầu không tính được. Thêm
+`victim_out_no_front_wei` (V2-math thuần trên reserve vừa đọc, 0 RPC thêm).
+
+### 3. Lỗi NHẬN DIỆN trong `src/competitor.rs`
+
+Ba seed không chỉ cấp vốn — **chúng còn tự swap**. Khi seed swap, router gọi
+`transferFrom(seed → POOL, amountIn)`, sinh ra đúng cái log
+`Transfer(seed → X)` mà bộ lọc cụm đang bắt. Hậu quả: **địa chỉ POOL bị ghi
+vào cụm như thể là ví burner**. Đo thật: `0xdfe23efb…`, `0xf867ca53…`,
+`0xcec13213…` đều xuất hiện trong `competitor.funded` nhưng cả ba là POOL
+trong `pairs.txt` (đúng bằng giá trị trường `pair` của `sim.result` cùng lúc).
+Chưa gây quyết định sai (pool không bao giờ là `tx.from`) nhưng làm hỏng
+`funded_total`/`funded_now`. Sửa: bỏ qua địa chỉ nhận là pool bot đã biết.
+
+**Giới hạn KHÔNG sửa được bằng code**: cờ `victim_in_competitor_cluster` của
+bot **luôn `false`** cho mẫu hình "cấp vốn + swap trong cùng block" — lúc bot
+quyết định, block đó chưa được đào nên log cấp vốn chưa tồn tại. Vì vậy mọi
+phân tích "bao nhiêu % cơ hội là của cụm" phải phân loại **ngoại tuyến** từ
+quét on-chain (`--cluster-from-scan` của `scripts/analyze_cluster_econ45.py`),
+KHÔNG được lấy từ cờ sống của bot. Con số "481/497 là ví của cụm" ở BAOCAO43
+vì thế là **cận dưới**, không phải số chính xác.
+
+### 4. Đường gửi của cụm — đo bằng đầu dò mempool riêng
+
+`logs/bot.jsonl` KHÔNG trả lời được "cụm có gửi private không": bot chỉ ghi
+`tx.seen` cho tx đã qua **gate router**, mà phần lớn tx của cụm đi tới contract
+riêng của họ. Lấy sự vắng mặt của `tx.seen` làm bằng chứng "private" là kết
+luận SAI. Vì vậy cụm này thêm `src/bin/mempool_probe.rs` — subscribe ĐÚNG cùng
+`BSC_WS` mà bot dùng và ghi **mọi** hash pending, không lọc gì. Lưu ý kênh
+phải rộng (`PENDING_WS_CHANNEL_SIZE`); kênh mặc định nhỏ làm đầu dò chết sau
+~20 hash với lỗi `channel lagged`, và số lần `lagged` phải được dán vào báo
+cáo vì đó là sai số của chính phép đo.
+
+Gas price KHÔNG dùng được làm bằng chứng private: 44/44 tx cụm đo được đều
+`0.05 gwei`, nhưng đó đúng bằng mức tối thiểu hiện hành của BSC, không phải
+dấu hiệu kênh riêng.
+
+### 5. Rủi ro phản ứng của cụm đối thủ — bot phải tự phát hiện
+
+Vì phần lớn cơ hội có lãi đo được cho tới nay là tx của cụm này, mất nguồn đó
+= mất phần lớn lý do chạy bot. Ba kịch bản phản ứng, và **cả ba đều hiện ra
+với bot dưới CÙNG một dấu hiệu**:
+
+1. **Chuyển sang relay private** — tx của họ không còn xuất hiện trong mempool
+   công khai; bot chỉ thấy chúng sau khi block đã đào (quá muộn để front-run).
+2. **Đổi ví seed / dispatcher** — 3 địa chỉ trong `SEED_ADDRESSES` không còn
+   khớp, `ClusterIndex` trả `false` cho mọi ví.
+3. **Đổi sang pool ngoài `pairs.txt`** — candidate không còn đi qua pair-mode.
+
+Dấu hiệu chung: **số candidate nhận diện được là của cụm mỗi giờ tụt mạnh**.
+`competitor::ClusterRateWatch` + `main.rs::cluster_rate_watch_task` đếm
+candidate theo từng phút (trần cứng 180 bucket), mỗi 5 phút so cửa sổ 60 phút
+gần nhất với 60 phút liền trước, và ghi `competitor.alert` khi tụt **> 80 %**
+(ngưỡng Chủ ra). Hai chống-báo-giả: cửa sổ trước phải có ≥ 20 candidate cụm
+(giờ vắng khách không sinh cảnh báo), và cooldown 60 phút. Sự kiện luôn kèm
+`cur_total_60m`/`prev_total_60m` để phân biệt **"cụm bỏ đi"** (tổng candidate
+vẫn cao) với **"bot mất WS / mempool im"** (tổng cũng tụt). Trạng thái đọc
+được ở `GET /api/compete` khối `cluster_rate`, và container có trần trong
+`GET /api/mem`.
+
+Cảnh báo này KHÔNG tự tắt bot và KHÔNG đổi quyết định nào — nó chỉ báo, đúng
+nguyên tắc "web/logger không đụng signer".
+
+### 6. `not_in_list` từng tốn 2 lời gọi RPC mỗi tx (p95)
+
+Đo thật (WSL, 11 650 quyết định, commit `cc285d7`): `p95 seen_to_decision =
+599 ms`, và **177/200 mẫu chậm nhất có `reason = not_in_list`**. Đường nóng
+gọi `resolve_reserves_cached` (`getPair` + `getReserves`) cho MỌI tx V2 decode
+được, rồi mới phát hiện token không nằm trong `pairs.txt`. Ở cấu hình ship
+mode-2 (`wallet_scan_enabled=false`, `pair_scan_universal=false`) kết cục của
+những tx đó LUÔN là `not_in_list` — hai lời gọi RPC kia không bao giờ đổi được
+quyết định. `main.rs::can_skip_not_in_list_without_rpc` cắt sớm, 0 RPC.
+
+Cổng này **không** được áp khi wallet-mode bật (mode 1 route theo địa chỉ
+`from`, không theo pool) hoặc universal-mode bật (mode 3 quét mọi pool WBNB,
+không cần có trong `pairs.txt`) — có test riêng cho cả hai, và một test đọc
+thẳng `config.toml` ship để hỏng ngay nếu cờ ship đổi.
