@@ -388,7 +388,17 @@ grep -n '`' scripts/paper_run.sh  ->  chi con trong dong comment '#'
 
 ### 7. `git status --short` SAU commit + `git log -1`
 
-<<GIT_PLACEHOLDER>>
+```
+eb1f7a84047901818d1f7bd22d4ee7e19132a04c 2026-09-16 13:29:48 +0700
+(git status --short SAU commit nay: chi con chinh file BAOCAO43.md dang duoc
+viet - commit bo sung ngay sau, hash ghi o dong Commit cuoi file)
+```
+
+Binary sha256 CUOI PHIEN (sau moi thay doi, `cargo build --release`):
+`2c2f85d93c7d37f97ed0034ce5bbc6c95712742e7cb01367f82c621879387954`
+(RUN 4 chay bang ban `7eb2ddee…` — chenh lech duy nhat la 1 sua khoa
+`restore_vet_snapshot` khong `.await` len khoa `config` khi dang giu khoa ghi
+`pairbook`, khong doi hanh vi do duoc).
 
 ## 6. CHAIN — `0x38`
 
@@ -446,4 +456,4 @@ grep -n '`' scripts/paper_run.sh  ->  chi con trong dong comment '#'
 8. **Đường `sim_engine="evm"` vẫn dùng trần gas cấu hình** (nợ cũ từ
    `real-economics-mode2`), không đụng ở cụm này.
 
-Commit: <<COMMIT>>
+Commit: `eb1f7a84047901818d1f7bd22d4ee7e19132a04c` (+ commit bo sung cho chinh file nay)
