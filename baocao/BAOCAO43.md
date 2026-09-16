@@ -121,6 +121,25 @@ Out of memory: Killed process 377294 (bsc_sandwich) total-vm:9532056kB,
 truy nguyên (ghi CÒN NỢ). **Cửa sổ dữ liệu vì vậy là 10,92 h, không phải 24 h**
 — mọi số "mỗi ngày" dưới đây là QUY ĐỔI, ghi rõ.
 
+**Xác nhận trạng thái bot VPS sau khi phân tích (ĐẠT CẦN DÁN yêu cầu `pgrep`)**:
+
+```
+pgrep -a bsc_sandwich        ->  (rong)   "bot VPS: 0 tien trinh"
+```
+
+**Bot đã CHẾT TRƯỚC khi phiên này ssh vào, KHÔNG phải do việc phân tích** —
+3 mốc thời gian độc lập chứng minh:
+
+```
+dmesg:  [Wed Sep 16 04:40:50 2026] Out of memory: Killed process 377294 (bsc_sandwich)
+stat :  /root/bsc-sandwich/logs/bot.jsonl  sua lan cuoi 2026-09-16 04:40:55 UTC
+ssh   :  lan ket noi DAU TIEN cua phien nay ~04:57 UTC (sau khi bot chet 16 phut)
+```
+
+Việc phân tích chạy `nice -n 19`, chỉ ĐỌC `logs/bot.jsonl`, ghi vào
+`/root/analysis/` (đã dọn file trung gian sau khi xong: còn **1,1 MB**,
+đĩa `28G available`), KHÔNG đụng file nào của bot.
+
 ### 1a/1b/1c/1d — BẢNG SỐ (quan trọng nhất)
 
 `1d_summary.txt` nguyên văn (VPS, `nice -n 19`, dữ liệu 10,92 h):
