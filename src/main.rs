@@ -2013,6 +2013,7 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         amount_in: None,
         quote: None,
         pair: None,
+        victim_out_no_front_wei: None,
         reserve_quote: None,
         gas_cost_wei: None,
         gas_price_gwei: None,
@@ -2261,6 +2262,17 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                         // log moi ngay khi co du lieu (pool da resolve, gas da tinh).
                         meta.pair = Some(format!("{pair_addr:#x}"));
                         meta.reserve_quote = Some(reserves.reserve_wbnb.to_string());
+                        // Cụm `verify-cluster-as-victim` (mục 2) — `amountOut`
+                        // victim nhận khi KHÔNG có front của ta (tử số của
+                        // `room`). Thuần V2-math trên reserve vừa đọc, 0 RPC.
+                        meta.victim_out_no_front_wei = meta
+                            .amount_in
+                            .as_deref()
+                            .and_then(|v| alloy::primitives::U256::from_str(v).ok())
+                            .and_then(|ain| {
+                                bsc_sandwich::sim_v2::get_amount_out(ain, reserves.reserve_wbnb, reserves.reserve_token)
+                            })
+                            .map(|v| v.to_string());
                         meta.gas_cost_wei = Some(gas_cost_wei.to_string());
                         meta.gas_price_gwei = Some(gas_price_wei as f64 / 1e9);
                         let victims = app_state.victims.read().await;
@@ -2357,6 +2369,15 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                                 // cua pool do.
                                 meta.pair = Some(format!("{pair_addr:#x}"));
                                 meta.reserve_quote = Some(reserves.reserve_wbnb.to_string());
+                                // Cụm `verify-cluster-as-victim` (mục 2) — như nhánh WBNB.
+                                meta.victim_out_no_front_wei = meta
+                                    .amount_in
+                                    .as_deref()
+                                    .and_then(|v| alloy::primitives::U256::from_str(v).ok())
+                                    .and_then(|ain| {
+                                        bsc_sandwich::sim_v2::get_amount_out(ain, reserves.reserve_wbnb, reserves.reserve_token)
+                                    })
+                                    .map(|v| v.to_string());
                                 // Cum `real-economics-mode2` (muc 0) - cung
                                 // danh dau "vet_fail" nhu nhanh WBNB (giu
                                 // visibility thay vi roi im lang qua not_in_list).

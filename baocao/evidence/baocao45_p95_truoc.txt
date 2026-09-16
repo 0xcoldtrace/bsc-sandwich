@@ -1,0 +1,24 @@
+== p95 TRUOC cong 0-RPC (WSL, binary commit cc285d7, 11650 quyet dinh) ==
+p50=0.01 p90=426.73 p95=599.33 p99=736.38 max=2540.29
+20 mau cham nhat (reason):
+     2540.3 ms  reason=not_in_list
+     1738.9 ms  reason=not_in_list
+     1687.2 ms  reason=not_in_list
+     1550.6 ms  reason=not_in_list
+     1374.6 ms  reason=not_in_list
+     1301.8 ms  reason=not_in_list
+     1272.9 ms  reason=not_in_list
+     1271.3 ms  reason=not_in_list
+     1261.3 ms  reason=not_in_list
+     1241.0 ms  reason=not_in_list
+     1208.8 ms  reason=not_in_list
+     1180.6 ms  reason=unprofitable
+     1161.6 ms  reason=unprofitable
+     1158.2 ms  reason=unprofitable
+     1147.5 ms  reason=not_in_list
+     1127.0 ms  reason=not_in_list
+     1126.0 ms  reason=not_in_list
+     1126.0 ms  reason=not_in_list
+     1124.2 ms  reason=not_in_list
+     1075.5 ms  reason=not_in_list
+reason cua 200 mau cham nhat: [('not_in_list', 169), ('sell_direction', 12), ('unprofitable', 10), ('victim_would_revert', 7), ('not_quote_pair', 1), ('decode_fail', 1)]

@@ -1382,6 +1382,13 @@ pub struct TxLogMeta {
     /// Reserve của quote asset trong pool đã resolve (wei) — `None` khi chưa
     /// resolve được pool.
     pub reserve_quote: Option<String>,
+    /// Cụm `verify-cluster-as-victim` (mục 2) — `amountOut` victim SẼ nhận
+    /// nếu KHÔNG có chân front của ta (V2-math thuần trên reserve tại block
+    /// quyết định). Đây là tử số của `room = amountOut_thật / amountOutMin`
+    /// mà lệnh yêu cầu; trước cụm này log chỉ có `victim_out_wei` (đã TRỪ ảnh
+    /// hưởng front đã gated), nên `room` đúng nghĩa không dựng lại được từ
+    /// log. `None` khi chưa resolve được pool hoặc chưa decode được amount_in.
+    pub victim_out_no_front_wei: Option<String>,
     /// Cụm F-03 — chi phí gas THẬT đã tính (wei, đơn vị BNB — gas luôn trả
     /// bằng BNB) tại thời điểm quyết định. `None` khi chưa tính tới bước đó.
     pub gas_cost_wei: Option<String>,
@@ -1532,6 +1539,9 @@ pub fn log_outcome_v2(
                     "victim_ok_v2": crate::sim_v2::victim_still_ok(q.victim_out, meta.amount_out_min),
                     "victim_out_wei": q.victim_out.to_string(),
                     "amount_out_min_wei": meta.amount_out_min.to_string(),
+                    // Cụm `verify-cluster-as-victim` (mục 2) — tử số của
+                    // `room`, xem `TxLogMeta::victim_out_no_front_wei`.
+                    "victim_out_no_front_wei": meta.victim_out_no_front_wei,
                 }),
             );
         }
