@@ -132,6 +132,23 @@ pub struct EvmSandwichOutcome {
     /// `back_out - front_in`, KHÔNG trừ gas (đúng CLAUDE.md, gas chặn riêng).
     pub profit_wei: i128,
     pub victim_success: bool,
+    /// Cụm `truth-victim-ok-and-memleak` (mục 1) — LÝ DO victim revert, decode
+    /// từ output của `ExecutionResult::Revert` (chuẩn Solidity
+    /// `Error(string)` = selector `0x08c379a0`). Đây là thứ PHÂN ĐỊNH được 2
+    /// giả thuyết ghi ở `docs/STATE.md` mục 5b mà không cần đoán:
+    /// `"PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT"` ⇒ chân front của ta đẩy
+    /// victim qua `amountOutMin`; `"TransferHelper: TRANSFER_FROM_FAILED"` ⇒
+    /// state ví victim (thiếu balance/allowance tại block fork); chuỗi khác
+    /// (ví dụ luật anti-bot của chính token) ⇒ nguyên nhân thứ 3, ghi nguyên
+    /// văn thay vì gán bừa vào 1 trong 2 giả thuyết. `None` khi victim
+    /// THÀNH CÔNG, hoặc khi `Halt` (out-of-gas…) — khi đó `victim_halt` mang
+    /// mô tả.
+    pub victim_revert_reason: Option<String>,
+    /// Số token victim THẬT SỰ nhận được trong lần replay này (đo bằng delta
+    /// `balanceOf(token, victim.from)` quanh tx victim) — so trực tiếp được
+    /// với `victim_out` của V2-math và với `amountOutMin` trong calldata.
+    /// `U256::ZERO` khi victim revert.
+    pub victim_out: U256,
     /// Ước lượng buy-tax (bps) = so `token_received` thật với
     /// `getAmountsOut` (AMM-math thuần, KHÔNG tax) tại đúng thời điểm front
     /// chạy — `None` nếu `getAmountsOut` lỗi/trả 0 (không đo được).
@@ -150,6 +167,38 @@ fn wbnb() -> Address {
 }
 fn router() -> Address {
     Address::from_str(V2_ROUTER_ADDRESS).expect("V2_ROUTER_ADDRESS da pin phai hop le")
+}
+
+/// Cụm `truth-victim-ok-and-memleak` (mục 1) — đọc LÝ DO revert từ
+/// `ExecutionResult`. Solidity `require(cond, "msg")` sinh ra output
+/// `Error(string)` (selector `0x08c379a0` + ABI-encode 1 string); `Panic(uint)`
+/// là `0x4e487b71`. Trả `None` khi tx THÀNH CÔNG. Với `Halt` (out-of-gas,
+/// stack…) trả mô tả dạng `"halt: <reason>"` — KHÔNG bịa một chuỗi require
+/// không tồn tại. Output revert không theo chuẩn nào (custom error) được trả
+/// nguyên dạng hex rút gọn để còn tra lại được.
+fn revert_reason(result: &revm::context::result::ExecutionResult) -> Option<String> {
+    use revm::context::result::ExecutionResult as ER;
+    match result {
+        ER::Success { .. } => None,
+        ER::Halt { reason, .. } => Some(format!("halt: {reason:?}")),
+        ER::Revert { output, .. } => {
+            let bytes = output.as_ref();
+            if bytes.is_empty() {
+                return Some("revert: (khong co du lieu)".to_string());
+            }
+            if bytes.len() >= 4 && bytes[..4] == [0x08, 0xc3, 0x79, 0xa0] {
+                if let Ok(msg) = <String as alloy::sol_types::SolValue>::abi_decode(&bytes[4..]) {
+                    return Some(msg);
+                }
+            }
+            if bytes.len() >= 36 && bytes[..4] == [0x4e, 0x48, 0x7b, 0x71] {
+                let code = U256::from_be_slice(&bytes[4..36]);
+                return Some(format!("panic: {code}"));
+            }
+            let head: String = bytes.iter().take(16).map(|b| format!("{b:02x}")).collect();
+            Some(format!("revert: 0x{head} (len={})", bytes.len()))
+        }
+    }
 }
 
 fn u256_to_u128_bps(numer_diff: U256, denom: U256) -> Option<u32> {
@@ -289,14 +338,22 @@ fn run_sandwich_quote(
     let victim_to = victim.to.ok_or_else(|| SimEvmError::Fork("victim.to=None, khong the replay (thieu router that)".to_string()))?;
     let attacker = attacker_address();
     let is_native_quote = quote == wbnb();
+    // Cum `truth-victim-ok-and-memleak` (muc 1) — `front_in = 0` la che do
+    // CHUNG NGHIEM: replay MOT MINH victim tren fork, KHONG co chan front/back
+    // nao cua ta. Day la bien the (a) cua thi nghiem phan dinh victim_ok=false:
+    // victim van hong khi front_in=0 => do state cua chinh vi victim tai block
+    // fork; victim song => chinh chan front cua ta giet victim.
+    // Khong the di duong code thuong voi front_in=0 vi router revert
+    // INSUFFICIENT_INPUT_AMOUNT (loi cua TA, khong phai cau tra loi can tim).
+    let victim_only = front_in.is_zero();
 
     // Quote ERC20 (USDT): cap von quote cho attacker bang cach ghi thang
     // storage `balanceOf` (khong co co che wrap) + approve router 1 lan.
     // `fund_quote` = 2x front_in de sau khi tieu `front_in` van con du lam moc
     // doi chieu; phan CHUA TIEU (`fund_quote - front_in`) duoc tru ra khi tinh
     // `back_out`, nen so von cap KHONG the lam sai lech loi/lo.
-    let fund_quote = if is_native_quote { U256::ZERO } else { front_in.saturating_mul(U256::from(2u64)) };
-    if !is_native_quote {
+    let fund_quote = if is_native_quote || victim_only { U256::ZERO } else { front_in.saturating_mul(U256::from(2u64)) };
+    if !is_native_quote && !victim_only {
         let slot = probe_erc20_balance_slot(evm, quote, attacker)?;
         set_erc20_balance(evm, quote, attacker, slot, fund_quote)?;
         let approve_quote = IERC20Min::approveCall { spender: router(), amount: U256::MAX }.abi_encode();
@@ -316,7 +373,7 @@ fn run_sandwich_quote(
     }
 
     // ---- buy-tax estimate NGAY TRUOC front-buy (state fork nguyen ven) ----
-    let expected_token_out = quote_amounts_out(evm, quote, token, front_in).ok().flatten();
+    let expected_token_out = if victim_only { None } else { quote_amounts_out(evm, quote, token, front_in).ok().flatten() };
 
     // ---- front-buy: quote -> token ----
     let front_calldata = if is_native_quote {
@@ -337,7 +394,7 @@ fn run_sandwich_quote(
         }
         .abi_encode()
     };
-    let front_tx = TxEnv::builder()
+    let front_tx_opt = if victim_only { None } else { Some(TxEnv::builder()
         .caller(attacker)
         .kind(TxKind::Call(router()))
         .value(if is_native_quote { front_in } else { U256::ZERO })
@@ -346,13 +403,15 @@ fn run_sandwich_quote(
         .nonce(0)
         .chain_id(Some(56))
         .data(Bytes::from(front_calldata))
-        .build_fill();
-    let front_result = evm.transact_commit(front_tx).map_err(|e| SimEvmError::Exec(format!("front-buy: {e:?}")))?;
-    if !front_result.is_success() {
-        return Err(SimEvmError::Revert(format!("front-buy revert/halt: {front_result:?}")));
+        .build_fill()) };
+    if let Some(front_tx) = front_tx_opt {
+        let front_result = evm.transact_commit(front_tx).map_err(|e| SimEvmError::Exec(format!("front-buy: {e:?}")))?;
+        if !front_result.is_success() {
+            return Err(SimEvmError::Revert(format!("front-buy revert/halt: {front_result:?}")));
+        }
     }
 
-    let token_received = read_balance(evm, token, attacker)?;
+    let token_received = if victim_only { U256::ZERO } else { read_balance(evm, token, attacker)? };
     let buy_tax_bps = expected_token_out.and_then(|expected| shortfall_bps(expected, token_received));
 
     // ---- approve (max) truoc khi ban lai ----
@@ -367,12 +426,18 @@ fn run_sandwich_quote(
         .chain_id(Some(56))
         .data(Bytes::from(approve_calldata))
         .build_fill();
-    let approve_result = evm.transact_commit(approve_tx).map_err(|e| SimEvmError::Exec(format!("approve: {e:?}")))?;
-    if !approve_result.is_success() {
-        return Err(SimEvmError::Revert(format!("approve revert/halt: {approve_result:?}")));
+    if !victim_only {
+        let approve_result = evm.transact_commit(approve_tx).map_err(|e| SimEvmError::Exec(format!("approve: {e:?}")))?;
+        if !approve_result.is_success() {
+            return Err(SimEvmError::Revert(format!("approve revert/halt: {approve_result:?}")));
+        }
     }
 
     // ---- victim: replay DUNG calldata/from/value/gas/nonce that ----
+    // Cum `truth-victim-ok-and-memleak` (muc 1): do `balanceOf(token, victim.from)`
+    // NGAY TRUOC va NGAY SAU tx victim -> `victim_out` THAT trong replay, so
+    // truc tiep duoc voi `victim_out` cua V2-math va `amountOutMin` calldata.
+    let victim_token_before = read_balance(evm, token, victim.from).unwrap_or(U256::ZERO);
     let victim_gas_price = u128::try_from(victim.gas_price).unwrap_or(0);
     let victim_tx = TxEnv::builder()
         .caller(victim.from)
@@ -386,9 +451,16 @@ fn run_sandwich_quote(
         .build_fill();
     let victim_result = evm.transact_commit(victim_tx).map_err(|e| SimEvmError::Exec(format!("victim replay: {e:?}")))?;
     let victim_success = victim_result.is_success();
+    let victim_revert_reason = revert_reason(&victim_result);
+    let victim_out = if victim_success {
+        read_balance(evm, token, victim.from).unwrap_or(U256::ZERO).saturating_sub(victim_token_before)
+    } else {
+        U256::ZERO
+    };
 
     // ---- sell-tax estimate NGAY TRUOC back-sell (state da qua victim) ----
-    let expected_bnb_out = quote_amounts_out(evm, token, quote, token_received).ok().flatten();
+    let expected_bnb_out =
+        if victim_only { None } else { quote_amounts_out(evm, token, quote, token_received).ok().flatten() };
 
     // ---- back-sell: token (TOAN BO da nhan) -> quote ----
     let back_calldata = if is_native_quote {
@@ -410,7 +482,7 @@ fn run_sandwich_quote(
         }
         .abi_encode()
     };
-    let back_tx = TxEnv::builder()
+    let back_tx_opt = if victim_only { None } else { Some(TxEnv::builder()
         .caller(attacker)
         .kind(TxKind::Call(router()))
         .gas_limit(3_000_000)
@@ -418,13 +490,18 @@ fn run_sandwich_quote(
         .nonce(0)
         .chain_id(Some(56))
         .data(Bytes::from(back_calldata))
-        .build_fill();
-    let back_result = evm.transact_commit(back_tx).map_err(|e| SimEvmError::Exec(format!("back-sell: {e:?}")))?;
-    if !back_result.is_success() {
-        return Err(SimEvmError::Revert(format!("back-sell revert/halt: {back_result:?}")));
+        .build_fill()) };
+    if let Some(back_tx) = back_tx_opt {
+        let back_result = evm.transact_commit(back_tx).map_err(|e| SimEvmError::Exec(format!("back-sell: {e:?}")))?;
+        if !back_result.is_success() {
+            return Err(SimEvmError::Revert(format!("back-sell revert/halt: {back_result:?}")));
+        }
     }
 
-    let back_out = if is_native_quote {
+    let back_out = if victim_only {
+        // Khong co chan nao cua ta chay -> khong co dong tien nao cua ta.
+        U256::ZERO
+    } else if is_native_quote {
         let final_native_balance = evm
             .ctx
             .db_mut()
@@ -454,6 +531,8 @@ fn run_sandwich_quote(
         back_out,
         profit_wei: back_i - front_i,
         victim_success,
+        victim_revert_reason,
+        victim_out,
         buy_tax_bps,
         sell_tax_bps,
     })
@@ -878,6 +957,24 @@ impl BlockForkCache {
         (r, t0.elapsed().as_secs_f64() * 1000.0)
     }
 
+    /// Cụm `truth-victim-ok-and-memleak` (mục 1) — bản quote-aware của
+    /// `run_sandwich_cached`, để thí nghiệm 3 biến thể `front_in` chạy trên
+    /// ĐÚNG MỘT fork (cùng block, cùng state gốc) thay vì 5 fork khác nhau —
+    /// nếu mỗi biến thể tự fork riêng thì block/state đã trôi và kết quả
+    /// KHÔNG so sánh được với nhau, tức thí nghiệm mất ý nghĩa.
+    pub fn run_sandwich_quote_cached(
+        &mut self,
+        front_in: U256,
+        token: Address,
+        quote: Address,
+        victim: &PendingTxRaw,
+    ) -> (Result<EvmSandwichOutcome, SimEvmError>, f64) {
+        let t0 = std::time::Instant::now();
+        self.reset();
+        let r = run_sandwich_quote(&mut self.evm, front_in, token, quote, victim);
+        (r, t0.elapsed().as_secs_f64() * 1000.0)
+    }
+
     /// C1 — đo tax mua/bán bằng EVM thật trên fork đã warm (xem `tax.rs`).
     pub fn measure_tax_cached(
         &mut self,
@@ -890,6 +987,140 @@ impl BlockForkCache {
         let r = measure_tax_on_fork(&mut self.evm, token, quote, probe_in);
         (r, t0.elapsed().as_secs_f64() * 1000.0)
     }
+}
+
+// ============================================================================
+// Cụm `truth-victim-ok-and-memleak` (mục 1) — THÍ NGHIỆM PHÂN ĐỊNH `victim_ok=false`
+// ============================================================================
+
+/// Một biến thể `front_in` trong thí nghiệm phân định — xem
+/// `diagnose_victim_ok`.
+#[derive(Debug, Clone)]
+pub struct VictimDiagRow {
+    /// Nhãn biến thể theo đúng lệnh: `a:front=0`, `b:front=v2`, `c:50%`,
+    /// `c:25%`, `c:10%`.
+    pub label: String,
+    pub front_in: U256,
+    pub victim_ok: bool,
+    /// Token victim nhận được TRONG replay này (0 khi revert).
+    pub victim_out: U256,
+    pub victim_revert_reason: Option<String>,
+    /// Lãi/lỗ EVM ở mức `front_in` này, ĐƠN VỊ CỦA QUOTE. `0` ở biến thể (a)
+    /// vì không có chân nào của ta chạy.
+    pub profit_wei: i128,
+    /// Lỗi ở tầng sim (fork/revert chân của TA) — khác hẳn `victim_ok=false`.
+    pub err: Option<String>,
+    pub ms: f64,
+}
+
+/// Kết quả thí nghiệm + KẾT LUẬN tự động bằng số (không để người đọc tự đoán).
+#[derive(Debug, Clone)]
+pub struct VictimDiagReport {
+    pub fork_block: u64,
+    pub rows: Vec<VictimDiagRow>,
+    /// `front_in` LỚN NHẤT trong các biến thể đã thử mà victim VẪN SỐNG
+    /// (`None` = không mức nào sống, kể cả `front_in=0`).
+    pub max_front_victim_alive: Option<U256>,
+    /// Một trong: `"front_giet_victim"` (a sống, b chết),
+    /// `"state_fork_sai"` (a chết luôn — victim hỏng dù ta không đụng gì),
+    /// `"khong_tai_hien"` (b sống — lần chạy này victim không hỏng),
+    /// `"sim_error"` (không chạy được).
+    pub verdict: &'static str,
+}
+
+/// Cụm `truth-victim-ok-and-memleak` (mục 1) — CÂU HỎI SỐ 1 của lệnh: khi
+/// `shadow.sim` báo `victim_ok=false`, đó là do **chân front của ta giết
+/// victim** hay do **state fork sai** (ví victim không có tiền/allowance tại
+/// block fork)?
+///
+/// Thí nghiệm chạy 5 biến thể `front_in` trên **ĐÚNG MỘT fork** (
+/// `BlockForkCache`, `reset()` giữa mỗi lần nên state gốc y hệt nhau):
+/// - **(a)** `front_in = 0` — replay MỘT MÌNH victim, ta không đụng gì.
+/// - **(b)** `front_in` = đúng giá trị V2-math đã chọn (mức đang bị nghi).
+/// - **(c)** `50% / 25% / 10%` của (b) — tìm NGƯỠNG victim bắt đầu sống.
+///
+/// Phân định (`verdict`):
+/// - (a) victim SỐNG mà (b) CHẾT ⇒ `front_giet_victim` — lỗi ở ta, phải hạ
+///   `front_in` (mục 2 của lệnh).
+/// - (a) victim CHẾT ⇒ `state_fork_sai` — không liên quan chân front, phải
+///   sửa fork (nonce/balance/allowance tại block pin).
+/// - (b) victim SỐNG ⇒ `khong_tai_hien` — lần chạy này không tái hiện được.
+///
+/// KHÔNG chặn đường nóng: hàm `async`, gọi từ task nền của shadow.
+pub async fn diagnose_victim_ok(
+    provider: DynProvider,
+    fork_block: u64,
+    token: Address,
+    quote: Address,
+    victim: &PendingTxRaw,
+    front_in_v2: U256,
+) -> Result<VictimDiagReport, SimEvmError> {
+    diagnose_victim_ok_variants(provider, fork_block, token, quote, victim, &victim_diag_ladder(front_in_v2)).await
+}
+
+/// Thang 5 biến thể MẶC ĐỊNH (a/b/c của lệnh) quanh 1 mức `front_in`.
+pub fn victim_diag_ladder(front_in_v2: U256) -> Vec<(String, U256)> {
+    vec![
+        ("a:front=0".to_string(), U256::ZERO),
+        ("b:front=v2".to_string(), front_in_v2),
+        ("c:50%".to_string(), front_in_v2 / U256::from(2u64)),
+        ("c:25%".to_string(), front_in_v2 / U256::from(4u64)),
+        ("c:10%".to_string(), front_in_v2 / U256::from(10u64)),
+    ]
+}
+
+/// Bản nhận DANH SÁCH biến thể tuỳ ý của `diagnose_victim_ok` — cần cho thí
+/// nghiệm đối chứng "V2-math thô" vs "V2-math ĐÃ RÀNG BUỘC victim-ok" (mục 2)
+/// trên CÙNG một fork, vì so 2 mức `front_in` ở 2 fork khác nhau thì block đã
+/// trôi và kết luận vô nghĩa. `verdict` vẫn đọc theo 2 nhãn chuẩn
+/// `a:front=0` / `b:front=v2` nếu chúng có mặt.
+pub async fn diagnose_victim_ok_variants(
+    provider: DynProvider,
+    fork_block: u64,
+    token: Address,
+    quote: Address,
+    victim: &PendingTxRaw,
+    variants: &[(String, U256)],
+) -> Result<VictimDiagReport, SimEvmError> {
+    let mut fork = BlockForkCache::open(provider, fork_block).await?;
+    let mut rows: Vec<VictimDiagRow> = Vec::with_capacity(variants.len());
+    for (label, front_in) in variants.iter().map(|(l, f)| (l.clone(), *f)) {
+        let (res, ms) = fork.run_sandwich_quote_cached(front_in, token, quote, victim);
+        rows.push(match res {
+            Ok(o) => VictimDiagRow {
+                label: label.clone(),
+                front_in,
+                victim_ok: o.victim_success,
+                victim_out: o.victim_out,
+                victim_revert_reason: o.victim_revert_reason,
+                profit_wei: o.profit_wei,
+                err: None,
+                ms,
+            },
+            Err(e) => VictimDiagRow {
+                label: label.clone(),
+                front_in,
+                victim_ok: false,
+                victim_out: U256::ZERO,
+                victim_revert_reason: None,
+                profit_wei: 0,
+                err: Some(e.to_string()),
+                ms,
+            },
+        });
+    }
+
+    let alive_zero = rows.iter().find(|r| r.front_in.is_zero()).map(|r| r.victim_ok && r.err.is_none());
+    let alive_v2 = rows.iter().find(|r| r.label == "b:front=v2").map(|r| r.victim_ok && r.err.is_none());
+    let max_front_victim_alive =
+        rows.iter().filter(|r| r.victim_ok && r.err.is_none()).map(|r| r.front_in).max();
+    let verdict = match (alive_zero, alive_v2) {
+        (Some(false), _) => "state_fork_sai",
+        (Some(true), Some(true)) => "khong_tai_hien",
+        (Some(true), Some(false)) => "front_giet_victim",
+        _ => "sim_error",
+    };
+    Ok(VictimDiagReport { fork_block, rows, max_front_victim_alive, verdict })
 }
 
 // ============================================================================
@@ -2799,5 +3030,233 @@ sim_evm[token_received={} back_out={} profit={}] victim_success={} buy_tax_bps={
         }
         println!("in {printed} dong sim.evm. RPC_ERRORS: -32005={} khac={}", stats.n_32005(), stats.n_other());
         assert!(printed >= 1, "phai in duoc it nhat 1 dong sim.evm (mempool song)");
+    }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 1) — THÍ NGHIỆM PHÂN ĐỊNH
+    /// `victim_ok=false`, chạy DÀY trên victim THẬT thay vì chờ shadow ký được
+    /// bundle (RUN 4 chỉ ra 4 mẫu / 30 phút — không đủ ≥10 mẫu lệnh yêu cầu).
+    ///
+    /// **Vì sao lấy victim ĐÃ ĐÀO thay vì mempool**: tx đã đào cho biết
+    /// SỰ THẬT ngoài đời (`status`, `amountOut` thật) để đối chiếu, và fork tại
+    /// `mined_block - 1` là ĐÚNG state mà bot nhìn thấy lúc tx còn pending —
+    /// y hệt `fork_block` mà `spawn_shadow_bundle_sim` dùng. Điều kiện duy
+    /// nhất: `mined_block - 1` phải còn trong cửa sổ state (~128 block) của
+    /// node, nên chỉ quét các block SÁT đỉnh.
+    ///
+    /// 4 bundle RUN 4 (BAOCAO43) KHÔNG fork lại được: block 122169515/
+    /// 122169998/122171061/122171147 đã quá sâu, MỌI RPC trong `.env` trả
+    /// `missing trie node`/`not supported`/`Archive requests require a personal
+    /// token` — đo thật, dán ở BAOCAO44 ô 5. Với 4 hash đó dùng phân tích
+    /// KHÔNG cần archive (`status`, funding trong block, `amountOutMin` vs
+    /// `amountOut` thật).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn real_rpc_victim_ok_verdict_ladder() {
+        use alloy::consensus::Transaction as _;
+        use alloy::network::TransactionResponse as _;
+        use alloy::providers::ProviderBuilder;
+        use alloy::rpc::types::TransactionRequest;
+
+        let want: usize = std::env::var("LADDER_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let mut urls: Vec<String> = Vec::new();
+        if let Ok(v) = std::env::var("BSC_HTTP_SIM") {
+            urls.extend(v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        urls.extend(validate_rpc_urls());
+        println!("real_rpc_victim_ok_verdict_ladder: {} URL ung vien, muc tieu {want} case", urls.len());
+
+        // Chon node DUY NHAT vua co tx da dao vua con state block-1 (2 dieu
+        // kien khac nhau - node "not supported" o do sau 1 block van tra tx).
+        let mut chosen: Option<(String, DynProvider, u64)> = None;
+        for u in &urls {
+            let Ok(p) = ProviderBuilder::new().connect(u).await else { continue };
+            let p = p.erased();
+            let Ok(head) = p.get_block_number().await else { continue };
+            // Doc thu 1 storage slot tai head-3: node nao khong giu state se loi.
+            let probe = TransactionRequest::default()
+                .to(crate::venues::wbnb_addr())
+                .input(alloy::hex::decode("18160ddd").unwrap().into());
+            match p.call(probe).block(BlockId::number(head - 3)).await {
+                Ok(_) => {
+                    println!("  node GIU state head-3: {} (head={head})", crate::transport::redact_rpc_url(u));
+                    chosen = Some((u.clone(), p, head));
+                    break;
+                }
+                Err(e) => println!("  node KHONG giu state head-3: {} -> {e}", crate::transport::redact_rpc_url(u)),
+            }
+        }
+        let Some((url, provider, head)) = chosen else {
+            println!("MISSING: khong RPC nao trong .env giu state o do sau 3 block -> khong chay duoc thi nghiem");
+            return;
+        };
+        println!("== dung node {} , head={head} ==", crate::transport::redact_rpc_url(&url));
+
+        let router = Address::from_str(crate::venues::V2_ROUTER_ADDRESS).unwrap();
+        let factory = Address::from_str(crate::venues::V2_FACTORY_ADDRESS).unwrap();
+        let usdt = crate::venues::usdt_addr();
+        let wbnb_a = wbnb();
+
+        let mut rows_printed = 0usize;
+        let mut verdicts: std::collections::BTreeMap<&'static str, usize> = Default::default();
+        let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut scanned_blocks = 0u64;
+        let mut n_gated_total = 0usize;
+        let mut n_gated_victim_ok = 0usize;
+        let mut gated_reasons: std::collections::BTreeMap<String, usize> = Default::default();
+        // Luon BAM DINH dinh chain: xu ly block `head-1` va fork tai `head-2`.
+        // Neu quet lui ve qua khu thi do sau fork tang dan va vuot cua so state
+        // (~128 block) -> thi nghiem chet giua chung. Doi block moi thay vi lui.
+        let mut b = head - 1;
+        let t_start = std::time::Instant::now();
+        let budget = std::time::Duration::from_secs(
+            std::env::var("LADDER_BUDGET_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(900),
+        );
+        // Nguong "co y nghia kinh te" - bo dust, vi front_in toi uu cho dust
+        // cung la dust va khong tra loi duoc cau hoi nao.
+        let min_in_usdt = U256::from(100u64) * U256::from(10u64).pow(U256::from(18u64));
+        let min_in_wbnb = U256::from(10u64).pow(U256::from(17u64)); // 0.1 BNB
+
+        println!();
+        println!("{:<20} {:<5} {:>14} {:>16} {:>12} {:>8} | {:>5} {:>5} {:>5} {:>5} {:>5} {:>8} | {:>16} {:>12} {}",
+            "victim_hash", "quote", "amountOutMin", "front_in_v2", "impact_%", "mined",
+            "a:0", "b:v2", "c50", "c25", "c10", "d:gated", "front_gated", "profit_gated", "verdict/reason");
+
+        while rows_printed < want && t_start.elapsed() < budget {
+            // Cho block MOI (khong lui ve qua khu).
+            let now_head = provider.get_block_number().await.unwrap_or(b);
+            if now_head < b + 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                continue;
+            }
+            b = now_head - 1;
+            scanned_blocks += 1;
+            let blk = match provider.get_block_by_number(alloy::eips::BlockNumberOrTag::Number(b)).full().await {
+                Ok(Some(x)) => x,
+                _ => continue,
+            };
+            let txs: Vec<_> = blk.transactions.txns().cloned().collect();
+            for tx in txs {
+                if rows_printed >= want { break }
+                if tx.to() != Some(router) { continue }
+                let Ok(dec) = crate::decoder::decode_swap_calldata(tx.input(), tx.value()) else { continue };
+                let quote_in = dec.path.token_a;
+                if quote_in != usdt && quote_in != wbnb_a { continue }
+                let Ok(token) = dec.token() else { continue };
+                if dec.amount_in < if quote_in == usdt { min_in_usdt } else { min_in_wbnb } { continue }
+
+                // Reserve tai block-1 (dung state ma bot nhin thay luc pending).
+                let at = BlockId::number(b - 1);
+                let gp = crate::pool::build_get_pair_calldata(token, quote_in);
+                let Ok(ret) = provider.call(TransactionRequest::default().to(factory).input(gp.into())).block(at).await else { continue };
+                let Some(pair) = crate::pool::decode_address_return(&ret) else { continue };
+                if pair == Address::ZERO { continue }
+                let Ok(t0ret) = provider.call(TransactionRequest::default().to(pair).input(alloy::hex::decode("0dfe1681").unwrap().into())).block(at).await else { continue };
+                let Some(token0) = crate::pool::decode_address_return(&t0ret) else { continue };
+                let Ok(rret) = provider.call(TransactionRequest::default().to(pair).input(alloy::hex::decode("0902f1ac").unwrap().into())).block(at).await else { continue };
+                if rret.len() < 64 { continue }
+                let r0 = U256::from_be_slice(&rret[0..32]);
+                let r1 = U256::from_be_slice(&rret[32..64]);
+                let (rq, rt) = if token0 == quote_in { (r0, r1) } else { (r1, r0) };
+                if rq.is_zero() || rt.is_zero() { continue }
+
+                let cap = if quote_in == usdt {
+                    U256::from(3000u64) * U256::from(10u64).pow(U256::from(18u64))
+                } else {
+                    U256::from(5u64) * U256::from(10u64).pow(U256::from(18u64))
+                };
+                let reserves = crate::sim_v2::PoolReserves { reserve_wbnb: rq, reserve_token: rt };
+                let Some(q) = crate::sim_v2::search_max_front_in(reserves, dec.amount_in, cap, 0) else { continue };
+                // Bo case front_in dust (khong do duoc price impact co nghia).
+                if q.front_in < if quote_in == usdt { min_in_usdt } else { min_in_wbnb } { continue }
+
+                // Cum `truth-victim-ok-and-memleak` (muc 2) - mUC `front_in` MA
+                // BOT THAT SU CHON sau khi sua: co rang buoc victim phai song
+                // theo V2-math. Day moi la so can doi chieu voi EVM; muc tho
+                // `b:front=v2` giu lai lam DOI CHUNG (truoc khi sua).
+                let gated = crate::sim_v2::search_max_front_in_victim_ok(
+                    reserves, dec.amount_in, cap, 0, dec.amount_out_min,
+                );
+                let mut variants = victim_diag_ladder(q.front_in);
+                variants.push((
+                    "d:front=v2_gated".to_string(),
+                    gated.map(|g| g.front_in).unwrap_or(U256::ZERO),
+                ));
+
+                let victim_raw = crate::transport::pending_tx_from_rpc(&tx);
+                let rep = match diagnose_victim_ok_variants(provider.clone(), b - 1, token, quote_in, &victim_raw, &variants).await {
+                    Ok(r) => r,
+                    Err(e) => { println!("  {} fork loi: {e}", &format!("{:#x}", tx.tx_hash())[..18]); continue }
+                };
+
+                let get = |lbl: &str| rep.rows.iter().find(|r| r.label == lbl);
+                let fl = |lbl: &str| match get(lbl) {
+                    Some(r) if r.err.is_some() => "ERR".to_string(),
+                    Some(r) => (if r.victim_ok { "OK" } else { "X" }).to_string(),
+                    None => "-".to_string(),
+                };
+                let impact = q.front_in.to::<u128>() as f64 / rq.to::<u128>() as f64 * 100.0;
+                let best = rep.rows.iter().filter(|r| r.victim_ok && r.err.is_none() && !r.front_in.is_zero())
+                    .max_by_key(|r| r.front_in);
+                let profit_at_max = best.map(|r| r.profit_wei as f64 / 1e18).unwrap_or(0.0);
+                // Cum `truth-victim-ok-and-memleak`: "ERR" la loi o CHAN CUA TA
+                // (fork/front/back revert), KHAC han victim revert - phai in ra
+                // chu khong duoc gom chung vao mot chu "ERR" khong tra cuu duoc.
+                let reason = rep
+                    .rows
+                    .iter()
+                    .find(|r| r.label == "b:front=v2")
+                    .map(|r| match (&r.victim_revert_reason, &r.err) {
+                        (_, Some(e)) => format!("SIM_ERR: {}", e.chars().take(110).collect::<String>()),
+                        (Some(v), None) => v.clone(),
+                        (None, None) => "-".to_string(),
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                *verdicts.entry(rep.verdict).or_default() += 1;
+                *reasons.entry(reason.clone()).or_default() += 1;
+
+                let gated_row = get("d:front=v2_gated");
+                let gated_front = gated_row.map(|r| r.front_in.to::<u128>() as f64 / 1e18).unwrap_or(0.0);
+                let gated_profit = gated_row.map(|r| r.profit_wei as f64 / 1e18).unwrap_or(0.0);
+                if let Some(r) = gated_row {
+                    if !r.front_in.is_zero() {
+                        n_gated_total += 1;
+                        if r.victim_ok && r.err.is_none() {
+                            n_gated_victim_ok += 1;
+                        }
+                        match (&r.victim_revert_reason, &r.err) {
+                            (_, Some(e)) => {
+                                *gated_reasons
+                                    .entry(format!("SIM_ERR: {}", e.chars().take(110).collect::<String>()))
+                                    .or_default() += 1
+                            }
+                            (Some(v), None) => *gated_reasons.entry(v.clone()).or_default() += 1,
+                            (None, None) => {}
+                        }
+                    }
+                }
+                let _ = profit_at_max;
+                println!("{:<20} {:<5} {:>14.4} {:>16.4} {:>12.4} {:>8} | {:>5} {:>5} {:>5} {:>5} {:>5} {:>8} | {:>16.6} {:>12.6} {} | {}",
+                    &format!("{:#x}", tx.tx_hash())[..18],
+                    if quote_in == usdt { "usdt" } else { "wbnb" },
+                    dec.amount_out_min.to::<u128>() as f64 / 1e18,
+                    q.front_in.to::<u128>() as f64 / 1e18,
+                    impact, b,
+                    fl("a:front=0"), fl("b:front=v2"), fl("c:50%"), fl("c:25%"), fl("c:10%"), fl("d:front=v2_gated"),
+                    gated_front, gated_profit, rep.verdict, reason);
+                rows_printed += 1;
+            }
+        }
+
+        println!();
+        println!("== TONG KET {rows_printed} case / {scanned_blocks} block (node {} , tu block {} toi {b}) ==",
+            crate::transport::redact_rpc_url(&url), head - 1);
+        for (v, n) in &verdicts { println!("   verdict {v:<20} = {n}"); }
+        for (r, n) in &reasons { println!("   ly do revert (b:front=v2) {r:<50} = {n}"); }
+        println!();
+        println!("== MUC 2: front_in DA RANG BUOC victim-ok (d:front=v2_gated) ==");
+        println!("   so case co front_gated > 0      = {n_gated_total}");
+        println!("   trong do victim SONG trong EVM  = {n_gated_victim_ok}");
+        for (r, n) in &gated_reasons { println!("   ly do revert con lai {r:<50} = {n}"); }
+        assert!(rows_printed >= 1, "phai phan dinh duoc it nhat 1 case (khong duoc pass rong - luat #3)");
     }
 }

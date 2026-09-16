@@ -154,6 +154,86 @@ pub fn search_max_front_in(
     best
 }
 
+/// Cụm `truth-victim-ok-and-memleak` (mục 2) — `front_in` LỚN NHẤT trong
+/// `[0, max_front_wei]` mà victim VẪN SỐNG (`victim_out >= amount_out_min`).
+///
+/// `victim_out` giảm ĐƠN ĐIỆU theo `front_in`: front mua càng nhiều thì
+/// `reserve_token` càng cạn và `reserve_quote` càng đầy, nên giá victim phải
+/// trả chỉ có thể xấu đi. Tính đơn điệu đó là điều kiện đủ để nhị phân tìm
+/// đúng biên, không cần quét tuyến tính.
+///
+/// Trả `None` khi ngay cả `front_in` nhỏ nhất có ý nghĩa cũng đã giết victim
+/// (khi đó candidate là `victim_would_revert` thật sự, không cứu được).
+pub fn max_front_in_victim_ok(
+    reserves: PoolReserves,
+    victim_amount_in: U256,
+    max_front_wei: U256,
+    victim_amount_out_min: U256,
+) -> Option<U256> {
+    let victim_ok_at = |front_in: U256| -> bool {
+        match simulate_front_then_victim(reserves, front_in, victim_amount_in) {
+            Some((_, victim_out, _)) => victim_still_ok(victim_out, victim_amount_out_min),
+            // front_in = 0: khong co chan front, victim di mot minh.
+            None if front_in.is_zero() => get_amount_out(victim_amount_in, reserves.reserve_wbnb, reserves.reserve_token)
+                .map(|out| victim_still_ok(out, victim_amount_out_min))
+                .unwrap_or(false),
+            None => false,
+        }
+    };
+    // Khong front gi ma victim da hong -> khong phai loi cua ta, khong cuu duoc.
+    if !victim_ok_at(U256::ZERO) {
+        return None;
+    }
+    if victim_ok_at(max_front_wei) {
+        return Some(max_front_wei);
+    }
+    let mut lo = U256::ZERO; // luon victim_ok
+    let mut hi = max_front_wei; // luon KHONG victim_ok
+    for _ in 0..256 {
+        if hi <= lo + U256::from(1u64) {
+            break;
+        }
+        let mid = lo + (hi - lo) / U256::from(2u64);
+        if victim_ok_at(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(lo)
+}
+
+/// Cụm `truth-victim-ok-and-memleak` (mục 2) — `search_max_front_in` CÓ RÀNG
+/// BUỘC "victim phải sống".
+///
+/// # Vì sao cần (đo thật, không phải phòng xa)
+///
+/// `search_max_front_in` tối đa hoá `profit` mà KHÔNG biết gì về
+/// `amountOutMin` của victim; `pipeline` chỉ kiểm `victim_still_ok` SAU ĐÓ như
+/// một cổng nhị phân, nên mọi candidate mà mức `front_in` sinh lời nhất làm
+/// victim revert đều bị VỨT BỎ (`victim_would_revert`) thay vì hạ `front_in`
+/// xuống mức victim còn sống. Thí nghiệm `real_rpc_victim_ok_verdict_ladder`
+/// (BAOCAO44 ô 5) đo trên 14 victim THẬT: `front_in = 0` thì **14/14** victim
+/// sống, `front_in` theo V2-math thì **13/14** chết, 7 trong đó revert đúng
+/// chữ `PancakeRouter: INSUFFICIENT_OUTPUT_AMOUNT` — tức chính chân front của
+/// ta giết victim, không phải state fork sai như 1 trong 2 giả thuyết cũ ở
+/// `docs/STATE.md` mục 5b.
+///
+/// Trả `None` khi không có mức `front_in` nào vừa hợp lệ vừa giữ victim sống.
+pub fn search_max_front_in_victim_ok(
+    reserves: PoolReserves,
+    victim_amount_in: U256,
+    max_front_wei: U256,
+    gas_wei: u128,
+    victim_amount_out_min: U256,
+) -> Option<SandwichQuote> {
+    let bound = max_front_in_victim_ok(reserves, victim_amount_in, max_front_wei, victim_amount_out_min)?;
+    if bound.is_zero() {
+        return None;
+    }
+    search_max_front_in(reserves, victim_amount_in, bound, gas_wei)
+}
+
 /// `victim_would_revert` khi `amountOut` thật (sau khi bị front-run) thấp
 /// hơn `amountOutMin` CHÍNH victim đặt trong calldata (decoder.rs) — khác
 /// `min_swap_bnb` của `victims.txt` (đó là ngưỡng lọc vào pipeline, không
@@ -235,6 +315,76 @@ mod tests {
         let quote = search_max_front_in(reserves, victim_in, max_front, 0).expect("phai co quote");
         assert!(quote.front_in <= max_front, "front_in khong duoc vuot max_front_bnb");
         assert_eq!(quote.front_in, max_front, "loi nhuan con tang toi bien -> phai bi chan dung tai max_front");
+    }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 2) — hồi quy cho ĐÚNG hiện
+    /// tượng đã đo thật: mức `front_in` tối đa hoá lãi giết victim, cổng cũ
+    /// vứt bỏ candidate, cổng mới hạ `front_in` và VẪN có lãi.
+    #[test]
+    fn search_victim_ok_ha_front_in_thay_vi_vut_bo_candidate() {
+        // Pool 1000/1000, victim mua 50 -> khong bi front thi nhan 47.
+        let reserves = PoolReserves { reserve_wbnb: U256::from(1000u64), reserve_token: U256::from(1000u64) };
+        let victim_in = U256::from(50u64);
+        let max_front = U256::from(200u64);
+        let no_front = get_amount_out(victim_in, reserves.reserve_wbnb, reserves.reserve_token).unwrap();
+        // amountOutMin dat sat muc khong-bi-front (truot 5%) -> front lon giet victim.
+        let amount_out_min = no_front * U256::from(95u64) / U256::from(100u64);
+
+        let unconstrained = search_max_front_in(reserves, victim_in, max_front, 0).unwrap();
+        assert!(
+            !victim_still_ok(unconstrained.victim_out, amount_out_min),
+            "fixture phai tai hien duoc hien tuong: front toi uu lai giet victim"
+        );
+
+        let constrained = search_max_front_in_victim_ok(reserves, victim_in, max_front, 0, amount_out_min).unwrap();
+        assert!(victim_still_ok(constrained.victim_out, amount_out_min), "sau rang buoc victim PHAI song");
+        assert!(constrained.front_in < unconstrained.front_in, "front_in phai bi ha xuong");
+        assert!(constrained.profit_wei > 0, "van phai con lai, khong phai vut bo candidate");
+    }
+
+    /// Biên trả về phải là LỚN NHẤT còn giữ victim sống: thêm 1 đơn vị nữa là
+    /// victim chết. Đây là thứ phân biệt "nhị phân đúng biên" với "đoán bừa
+    /// một số nhỏ cho chắc" (đoán nhỏ thì mất lãi mà không ai biết).
+    #[test]
+    fn max_front_in_victim_ok_la_bien_that_su() {
+        let reserves = PoolReserves { reserve_wbnb: U256::from(1_000_000u64), reserve_token: U256::from(1_000_000u64) };
+        let victim_in = U256::from(50_000u64);
+        let max_front = U256::from(500_000u64);
+        let no_front = get_amount_out(victim_in, reserves.reserve_wbnb, reserves.reserve_token).unwrap();
+        let amount_out_min = no_front * U256::from(90u64) / U256::from(100u64);
+
+        let bound = max_front_in_victim_ok(reserves, victim_in, max_front, amount_out_min).unwrap();
+        let at_bound = simulate_front_then_victim(reserves, bound, victim_in).unwrap().1;
+        assert!(victim_still_ok(at_bound, amount_out_min), "tai bien victim phai con song");
+        let over = simulate_front_then_victim(reserves, bound + U256::from(1u64), victim_in).unwrap().1;
+        assert!(!victim_still_ok(over, amount_out_min), "vuot bien 1 don vi la victim phai chet");
+    }
+
+    /// `amountOutMin` cao hơn cả mức victim nhận được khi KHÔNG bị front-run
+    /// (victim tự đặt điều kiện không thể thoả) -> `None`, và pipeline phải
+    /// đọc thành `victim_would_revert` THẬT, không phải lỗi của ta.
+    #[test]
+    fn victim_tu_hong_thi_khong_co_bien_nao() {
+        let reserves = PoolReserves { reserve_wbnb: U256::from(1000u64), reserve_token: U256::from(1000u64) };
+        let victim_in = U256::from(50u64);
+        let no_front = get_amount_out(victim_in, reserves.reserve_wbnb, reserves.reserve_token).unwrap();
+        let impossible = no_front + U256::from(1u64);
+        assert!(max_front_in_victim_ok(reserves, victim_in, U256::from(200u64), impossible).is_none());
+        assert!(search_max_front_in_victim_ok(reserves, victim_in, U256::from(200u64), 0, impossible).is_none());
+    }
+
+    /// `amountOutMin = 0` (rất phổ biến trên BSC) -> ràng buộc không cắt gì,
+    /// kết quả PHẢI y hệt search cũ. Nếu không, cụm này đã âm thầm đổi hành vi
+    /// của phần lớn candidate.
+    #[test]
+    fn amount_out_min_bang_0_thi_khong_doi_gi_so_voi_search_cu() {
+        let reserves = PoolReserves { reserve_wbnb: U256::from(1_000_000u64), reserve_token: U256::from(5_000_000u64) };
+        let victim_in = U256::from(30_000u64);
+        let max_front = U256::from(100_000u64);
+        let old = search_max_front_in(reserves, victim_in, max_front, 0).unwrap();
+        let new = search_max_front_in_victim_ok(reserves, victim_in, max_front, 0, U256::ZERO).unwrap();
+        assert_eq!(old.front_in, new.front_in);
+        assert_eq!(old.profit_wei, new.profit_wei);
     }
 
     #[test]

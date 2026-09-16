@@ -152,7 +152,7 @@ fn encode_uint24_word(v: u32, out: &mut Vec<u8>) {
     out.extend_from_slice(&word);
 }
 
-fn build_get_pair_calldata(token_a: Address, token_b: Address) -> Vec<u8> {
+pub(crate) fn build_get_pair_calldata(token_a: Address, token_b: Address) -> Vec<u8> {
     let mut out = SEL_GET_PAIR.to_vec();
     encode_address_word(token_a, &mut out);
     encode_address_word(token_b, &mut out);
@@ -168,7 +168,7 @@ fn build_get_pool_calldata(token_a: Address, token_b: Address, fee: u32) -> Vec<
 }
 
 /// Giải mã return value 1 address (32 byte, right-aligned) của getPair/getPool.
-fn decode_address_return(data: &[u8]) -> Option<Address> {
+pub(crate) fn decode_address_return(data: &[u8]) -> Option<Address> {
     if data.len() < 32 {
         return None;
     }

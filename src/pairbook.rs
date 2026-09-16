@@ -174,7 +174,13 @@ pub struct VetResult {
     pub block: u64,
 }
 
-#[derive(Debug, Default)]
+/// `Clone` (cụm `truth-victim-ok-and-memleak`) — cần cho "reload KHÔNG giữ
+/// khoá ghi": `main.rs` nhân bản `PairBook` (vài trăm entry, rẻ), chạy
+/// `reload_if_due` (hàng trăm `eth_call`, vài phút) trên BẢN SAO khi KHÔNG
+/// giữ khoá nào, rồi mới tráo vào dưới một khoá ghi rất ngắn. Xem
+/// `main.rs` (task `pair.reload`) để biết vì sao đó là bug thật chứ không
+/// phải tối ưu phòng xa.
+#[derive(Debug, Default, Clone)]
 pub struct PairBook {
     /// Cụm `econ-truth-latency-vps` (0.a) — trạng thái BỀN qua nhiều lần
     /// `reload()`, khoá theo `LineKey` (xem doc-comment type đó): nguồn sự

@@ -357,8 +357,35 @@ async fn main() -> anyhow::Result<()> {
             // config hien hanh (hot-reload duoc, khong hardcode) truoc moi
             // lan reload - gate vet nam trong PairBook::reload chinh no.
             let require_vetted = pair_reload_state.config.read().await.pairs_require_vetted;
-            let mut book = pair_reload_state.pairbook.write().await;
-            let did_reload = book
+
+            // ---------------------------------------------------------------
+            // Cum `truth-victim-ok-and-memleak` - BUG THAT, sua o day:
+            //
+            // Truoc day dong nay la `let mut book = pairbook.write().await;`
+            // roi GOI THANG `book.reload_if_due(...).await`. `reload` giai
+            // quyet MOI dong `pairs.txt` bang `Factory.getPair` (1 `eth_call`
+            // moi dong, 133 dong) - tuc KHOA GHI `pairbook` bi giu suot CA
+            // VAI PHUT qua nhieu diem `.await`.
+            //
+            // `RwLock` cua tokio cong bang => trong suot thoi gian do MOI
+            // `pairbook.read()` deu bi chan, gom:
+            //   - duong nong `handle_paper_tx` (3 cho doc `pairbook` moi
+            //     candidate) => truc tiep lam phong `seen_to_decision_ms`,
+            //   - `GET /api/pairs` va `GET /api/mem` => treo han.
+            // Do THAT trong phien nay: `curl /api/pairs` TIMEOUT sau 6 giay
+            // trong khi `/api/health`, `/api/status`, `/api/victims` deu tra
+            // ve trong 0,6 ms; va task `mem_watch_task` chi ghi duoc 2 dong
+            // roi tat tieng.
+            //
+            // Sua: nhan ban `PairBook` (vai tram entry, rat re) -> chay reload
+            // tren BAN SAO khi KHONG giu khoa nao -> trao vao duoi 1 khoa ghi
+            // NGAN. Ket qua vet do `pairs_vet_task` ghi vao ban THAT trong
+            // luc reload chay duoc ap lai len ban sao truoc khi trao, nen
+            // khong mat (day la ly do phai co buoc `vet_snapshot` ben duoi
+            // chu khong phai trao thang).
+            // ---------------------------------------------------------------
+            let mut staged = { pair_reload_state.pairbook.read().await.clone() };
+            let did_reload = staged
                 .reload_if_due(
                     &pairs_path,
                     &resolver,
@@ -368,6 +395,15 @@ async fn main() -> anyhow::Result<()> {
                     require_vetted,
                 )
                 .await;
+            let mut book = pair_reload_state.pairbook.write().await;
+            if did_reload {
+                // Ap lai ket qua vet cua ban THAT (co the da duoc
+                // `pairs_vet_task` cap nhat trong luc reload chay tren ban sao).
+                for (pair, _token, _quote, result, age_sec, ok) in book.vet_snapshot() {
+                    staged.set_vet_result_with_age(pair, result, ok, age_sec);
+                }
+                *book = staged;
+            }
             // Cum `econ-truth-latency-vps` (0.c) - neu bat ky dong pending nao
             // vua loi vi "method khong ho tro" (-32000/not supported/method
             // not found) tren URL HTTP hien tai - danh dau URL do, chuyen URL
@@ -410,6 +446,11 @@ async fn main() -> anyhow::Result<()> {
     // duong nong) cho moi entry `pairs.txt` da co `vetted` - xem
     // `pairs_vet_task` duoi day.
     tokio::spawn(pairs_vet_task(app_state.clone(), sim_http_pool.clone()));
+
+    // Cum `truth-victim-ok-and-memleak` (muc 3) - do bo nho THAT cua chinh
+    // tien trinh moi phut. Lan chay 24h dau tren VPS bi OOM-kill o 7,6 GB ma
+    // KHONG co mot so do nao trong log de truy nguyen (BAOCAO43 o 5 muc 0).
+    tokio::spawn(mem_watch_task(app_state.clone(), Duration::from_secs(60)));
 
     // Cum `real-economics-mode2` (F-03) - do gas UNIT that 1 lan luc boot
     // bang revm tren 1 pair da vet trong pairs.txt (fallback config
@@ -1356,6 +1397,59 @@ fn record_funnel_terminal(funnel: &bsc_sandwich::web::FunnelCounters, outcome: &
 /// (mảng đầy đủ, dùng cho Chủ/Grok đọc nhanh không cần đọc `logs/bot.jsonl`).
 /// Bỏ qua cả vòng nếu chưa có provider HTTP hoặc chưa có `last_block` (boot
 /// chưa xong) — thử lại ở vòng kế tiếp, không panic/không giả số block.
+/// Cụm `truth-victim-ok-and-memleak` (mục 4) — `pairs_vet_task` lấy
+/// `eth_blockNumber` 1 lần mỗi ngần này pool (không phải mỗi pool).
+///
+/// 10 pool × ~300 ms nghỉ ≈ 3 giây ≈ 6–7 block BSC — còn rất xa cửa sổ state
+/// ~128 block của node, nên không làm sống lại bug fork-block-quá-cũ đã sửa ở
+/// cụm `decision-data-24h` (mục 6b), mà giảm 90% số lời gọi RPC nền chen vào
+/// hàng đợi của đường nóng.
+const VET_BLOCK_REFRESH_EVERY: usize = 10;
+
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — ghi `mem.rss_mb` mỗi
+/// `interval` (ship: 60 giây) kèm KÍCH THƯỚC từng container sống lâu.
+///
+/// Có 2 con số mà mọi phân tích rò rỉ sau này dựa vào, và cả 2 đều nằm trong
+/// cùng MỘT dòng log để không phải ghép file:
+/// - `rss_mb`/`rss_peak_mb`: bộ nhớ thường trú THẬT (`/proc/self/status`) —
+///   đúng đại lượng mà OOM-killer dùng để quyết định giết tiến trình.
+/// - `containers`: `len` của từng map/vec sống lâu. Nếu `rss_mb` tăng mà mọi
+///   `len` đứng yên thì rò rỉ KHÔNG ở các container đó (vd: allocator giữ
+///   arena sau những lần cấp phát lớn của handler HTTP đọc log) — phân biệt
+///   được 2 loại nguyên nhân này là toàn bộ mục đích của task.
+///
+/// `delta_mb_since_last` là mức tăng so với lần đo TRƯỚC — DoD của lệnh
+/// (`RSS tăng < 50 MB sau 10 phút đầu`) đọc thẳng từ đây.
+async fn mem_watch_task(app_state: AppState, interval: Duration) {
+    let mut last_rss: Option<f64> = None;
+    let mut first_rss: Option<f64> = None;
+    loop {
+        // `rss_mb` doc TRUOC moi khoa: day la con so quan trong nhat cua muc 3
+        // va no khong duoc phep phu thuoc vao bat ky khoa nao trong bot.
+        let rss = bsc_sandwich::mem::rss_mb();
+        let containers = bsc_sandwich::web::container_sizes(&app_state);
+        if first_rss.is_none() {
+            first_rss = rss;
+        }
+        app_state.logger.log(
+            "mem.rss_mb",
+            serde_json::json!({
+                "rss_mb": rss,
+                "rss_peak_mb": bsc_sandwich::mem::rss_peak_mb(),
+                "delta_mb_since_last": match (rss, last_rss) { (Some(a), Some(b)) => Some(a - b), _ => None },
+                "delta_mb_since_boot": match (rss, first_rss) { (Some(a), Some(b)) => Some(a - b), _ => None },
+                "uptime_sec": app_state.start_time.elapsed().as_secs(),
+                "containers": containers
+                    .iter()
+                    .map(|c| serde_json::json!({"name": c.name, "len": c.len, "cap": c.cap}))
+                    .collect::<Vec<_>>(),
+            }),
+        );
+        last_rss = rss;
+        tokio::time::sleep(interval).await;
+    }
+}
+
 async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPool>) {
     // Cum `decision-data-24h` (muc 3) - nap lai ket qua vet lan chay TRUOC
     // (neu con han) TRUOC khi vao vong lap, de cong (a) cua duong ky am ngay.
@@ -1418,6 +1512,11 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
             let mut err_by_class: std::collections::HashMap<&'static str, u64> = std::collections::HashMap::new();
             let mut err_pools: std::collections::HashSet<Address> = std::collections::HashSet::new();
             let targets_len = targets.len();
+            // Cum `truth-victim-ok-and-memleak` (muc 4) - dem de lay
+            // `eth_blockNumber` 1 lan moi `VET_BLOCK_REFRESH_EVERY` pool thay
+            // vi MOI pool (xem `VET_BLOCK_REFRESH_EVERY`).
+            let mut vet_i: usize = 0;
+            let mut block_now: u64 = 0;
             for (pair_addr, token, quote) in targets {
                 let quote_asset =
                     if quote == venues::usdt_addr() { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };
@@ -1440,12 +1539,23 @@ async fn pairs_vet_task(app_state: AppState, sim_http_pool: Arc<transport::RpcPo
                 // la binh thuong, va fork vao block node do CHUA CO tra loi
                 // "khong tim thay block N" (quan sat that ngay lan chay dau
                 // sau khi sua: 36 dong `pair.vet_error{class:"other"}`).
-                // 1 `eth_blockNumber` moi pool la re (task NEN, von da ngu
-                // 300 ms/pool) va luon dung node dang dung.
-                let block_now = match provider.get_block_number().await {
-                    Ok(b) => b,
-                    Err(_) => app_state.last_block.read().await.unwrap_or(current_block).saturating_sub(2),
-                };
+                //
+                // Cum `truth-victim-ok-and-memleak` (muc 4) - SUA LAI TAN SUAT:
+                // "1 `eth_blockNumber` moi pool la re" hoa ra KHONG re. p95
+                // `seen_to_decision` nhay tu 321/344 ms (BAOCAO40/42) len
+                // 752 ms (BAOCAO43 RUN 4) ngay sau thay doi do, vi 126 lan
+                // goi/vong tren CUNG pool RPC ma duong nong dung se xep hang
+                // sau chung. Lay block 1 lan moi `VET_BLOCK_REFRESH_EVERY`
+                // pool: 10 pool x ~300 ms ~= 3 s ~= 6-7 block BSC, con XA cua
+                // so state ~128 block, nen van giu nguyen ket qua sua o cum
+                // `decision-data-24h` muc 6b (0 loi vet) voi 1/10 so loi goi.
+                if vet_i % VET_BLOCK_REFRESH_EVERY == 0 || block_now == 0 {
+                    block_now = match provider.get_block_number().await {
+                        Ok(b) => b,
+                        Err(_) => app_state.last_block.read().await.unwrap_or(current_block).saturating_sub(2),
+                    };
+                }
+                vet_i += 1;
                 match bsc_sandwich::sim_evm::measure_tax_evm(provider.clone(), block_now, token, quote, probe_in)
                     .await
                 {
@@ -1869,6 +1979,9 @@ fn build_tx_log_meta(raw: &PendingTxRaw) -> TxLogMeta {
         victim_in_competitor_cluster: None,
         bribe_wei: None,
         net_pos_after_bribe_wei: None,
+        // Cum `truth-victim-ok-and-memleak` (muc 6) - dien dan trong
+        // `handle_paper_tx` ngay sau khi decode xong (xem `decoded.amount_out_min`).
+        amount_out_min: alloy::primitives::U256::ZERO,
     }
 }
 
@@ -1983,6 +2096,13 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // duong nong).
     meta.quote = Some("wbnb".to_string());
     meta.amount_in = Some(raw.value.to_string());
+    // Cum `truth-victim-ok-and-memleak` (muc 6) - `amountOutMin` THAT cua
+    // victim di kem MOI dong `sim.result` (nguon cua moi so `net_pos`), de
+    // `victim_ok_v2` trong log tu chung minh duoc. Decode thuan + re; loi
+    // decode giu ZERO (= khong co rang buoc), dung voi tx chua qua decoder.
+    meta.amount_out_min = bsc_sandwich::decoder::decode_swap_calldata(&raw.input, raw.value)
+        .map(|d| d.amount_out_min)
+        .unwrap_or(alloy::primitives::U256::ZERO);
     // Cum `econ-truth-latency-vps` (muc 1) - nhanh WBNB: amount_in DA la BNB,
     // quy doi = chinh no (khong can reserve nao).
     meta.amount_in_bnb_equiv = Some(raw.value.to_string());
@@ -2134,6 +2254,10 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
                 meta.amount_in = bsc_sandwich::decoder::decode_swap_calldata(&raw.input, raw.value)
                     .ok()
                     .map(|d| d.amount_in.to_string());
+                // Cum `truth-victim-ok-and-memleak` (muc 6) - cung ly do nhanh WBNB.
+                meta.amount_out_min = bsc_sandwich::decoder::decode_swap_calldata(&raw.input, raw.value)
+                    .map(|d| d.amount_out_min)
+                    .unwrap_or(alloy::primitives::U256::ZERO);
                 let provider_guard = app_state.provider.read().await;
                 let usdt_outcome = match provider_guard.as_ref() {
                     None => PipelineOutcome::Skip(pipeline::PipelineSkip::NoPool),
@@ -2540,26 +2664,101 @@ fn spawn_shadow_bundle_sim(
             },
         };
         let t0 = std::time::Instant::now();
-        match bsc_sandwich::sim_evm::simulate_sandwich_quote(provider, fork_block, front_in, token, quote_addr, &victim)
-            .await
+        match bsc_sandwich::sim_evm::simulate_sandwich_quote(
+            provider.clone(),
+            fork_block,
+            front_in,
+            token,
+            quote_addr,
+            &victim,
+        )
+        .await
         {
-            Ok(o) => app_state.logger.log(
-                "shadow.sim",
-                serde_json::json!({
-                    "victim_hash": format!("{victim_hash:#x}"),
-                    "token": format!("{token:#x}"),
-                    "quote": quote_asset.as_str(),
-                    "fork_block": fork_block,
-                    "front_in_wei": o.front_in.to_string(),
-                    "profit_sim_wei": o.profit_wei.to_string(),
-                    // Don vi = quote cua pool (BNB hoac USDT), xem `quote`.
-                    "profit_sim_native": o.profit_wei as f64 / 1e18,
-                    "victim_ok": o.victim_success,
-                    "buy_tax_bps": o.buy_tax_bps,
-                    "sell_tax_bps": o.sell_tax_bps,
-                    "sim_ms": t0.elapsed().as_secs_f64() * 1000.0,
-                }),
-            ),
+            Ok(o) => {
+                app_state.logger.log(
+                    "shadow.sim",
+                    serde_json::json!({
+                        "victim_hash": format!("{victim_hash:#x}"),
+                        "token": format!("{token:#x}"),
+                        "quote": quote_asset.as_str(),
+                        "fork_block": fork_block,
+                        "front_in_wei": o.front_in.to_string(),
+                        "profit_sim_wei": o.profit_wei.to_string(),
+                        // Don vi = quote cua pool (BNB hoac USDT), xem `quote`.
+                        "profit_sim_native": o.profit_wei as f64 / 1e18,
+                        "victim_ok": o.victim_success,
+                        // Cum `truth-victim-ok-and-memleak` (muc 1) - LY DO
+                        // victim revert + so token victim THAT SU nhan duoc.
+                        "victim_revert_reason": o.victim_revert_reason,
+                        "victim_out_wei": o.victim_out.to_string(),
+                        "buy_tax_bps": o.buy_tax_bps,
+                        "sell_tax_bps": o.sell_tax_bps,
+                        "sim_ms": t0.elapsed().as_secs_f64() * 1000.0,
+                    }),
+                );
+                // Cum `truth-victim-ok-and-memleak` (muc 1) - CAU HOI SO 1:
+                // moi lan victim_ok=false, chay NGAY thi nghiem 3 bien the
+                // tren CUNG fork_block do (a: front=0, b: front=v2,
+                // c: 50/25/10%). Chay tai cho vi chi vai giay sau la khong
+                // con node nao giu state block nay (da do that: moi RPC cong
+                // khai deu tra "missing trie node"/"not supported" o do sau
+                // > ~128 block), nen KHONG the phan tich lai tu log sau.
+                if !o.victim_success {
+                    let t1 = std::time::Instant::now();
+                    match bsc_sandwich::sim_evm::diagnose_victim_ok(
+                        provider,
+                        fork_block,
+                        token,
+                        quote_addr,
+                        &victim,
+                        front_in,
+                    )
+                    .await
+                    {
+                        Ok(rep) => {
+                            let rows: Vec<serde_json::Value> = rep
+                                .rows
+                                .iter()
+                                .map(|r| {
+                                    serde_json::json!({
+                                        "label": r.label,
+                                        "front_in_wei": r.front_in.to_string(),
+                                        "victim_ok": r.victim_ok,
+                                        "victim_out_wei": r.victim_out.to_string(),
+                                        "victim_revert_reason": r.victim_revert_reason,
+                                        "profit_sim_wei": r.profit_wei.to_string(),
+                                        "err": r.err,
+                                        "ms": r.ms,
+                                    })
+                                })
+                                .collect();
+                            app_state.logger.log(
+                                "shadow.victim_diag",
+                                serde_json::json!({
+                                    "victim_hash": format!("{victim_hash:#x}"),
+                                    "token": format!("{token:#x}"),
+                                    "quote": quote_asset.as_str(),
+                                    "fork_block": rep.fork_block,
+                                    "verdict": rep.verdict,
+                                    "max_front_victim_alive_wei":
+                                        rep.max_front_victim_alive.map(|v| v.to_string()),
+                                    "rows": rows,
+                                    "diag_ms": t1.elapsed().as_secs_f64() * 1000.0,
+                                }),
+                            );
+                        }
+                        Err(e) => app_state.logger.log(
+                            "shadow.victim_diag",
+                            serde_json::json!({
+                                "victim_hash": format!("{victim_hash:#x}"),
+                                "fork_block": fork_block,
+                                "error": e.to_string(),
+                                "diag_ms": t1.elapsed().as_secs_f64() * 1000.0,
+                            }),
+                        ),
+                    }
+                }
+            }
             Err(e) => app_state.logger.log(
                 "shadow.sim",
                 serde_json::json!({

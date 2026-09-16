@@ -244,6 +244,19 @@ impl TaxCache {
     pub fn entries(&self) -> impl Iterator<Item = (&TaxKey, &TaxMeasurement)> {
         self.entries.iter()
     }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — số entry đang giữ, cho
+    /// `GET /api/mem`. Cache này chặn theo TTL khi ĐỌC (`get_fresh`) nhưng
+    /// KHÔNG xoá entry hết hạn, nên số này chỉ tăng theo số `(token, quote)`
+    /// KHÁC NHAU từng gặp — ở mode 2 nó bị chặn bởi `pairs.txt` (126 dòng),
+    /// nên không phải nghi phạm rò rỉ; vẫn báo cáo để không phải đoán.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 /// Kết hợp `buy_bps`/`sell_bps` (mỗi chiều đo riêng, đơn vị basis point)

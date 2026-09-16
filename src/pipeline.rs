@@ -540,10 +540,23 @@ fn evaluate_candidate(
         return PipelineOutcome::Skip(PipelineSkip::GasCap);
     }
     let front_cap = RiskGuard::front_cap_after_gas_reserve(cfg.effective_front_cap_wei(), cfg.gas_reserve_bnb_wei);
-    let quote = match sim_v2::search_max_front_in(reserves, amount_in, front_cap, gas_cost_wei) {
+    // Cụm `truth-victim-ok-and-memleak` (mục 2) — search CÓ RÀNG BUỘC
+    // "victim phải sống": trước đây `search_max_front_in` tối đa hoá lãi mà
+    // không biết `amount_out_min`, rồi `victim_still_ok` chỉ VỨT BỎ candidate
+    // nếu mức lãi nhất làm victim revert. Đo thật trên 14 victim
+    // (`real_rpc_victim_ok_verdict_ladder`, BAOCAO44): 13/14 chết ở mức
+    // V2-math, 14/14 sống ở `front_in=0` ⇒ đúng là chân front của ta giết
+    // victim. Giờ hạ `front_in` xuống biên victim còn sống thay vì bỏ cuộc.
+    let quote = match sim_v2::search_max_front_in_victim_ok(reserves, amount_in, front_cap, gas_cost_wei, amount_out_min) {
         Some(q) => q,
+        // `None` phân biệt 2 nguyên nhân: không có mức front_in nào giữ được
+        // victim sống (kể cả rất nhỏ) -> `victim_would_revert` THẬT.
+        None if sim_v2::max_front_in_victim_ok(reserves, amount_in, front_cap, amount_out_min).is_none() => {
+            return PipelineOutcome::Skip(PipelineSkip::VictimWouldRevert)
+        }
         None => return PipelineOutcome::Skip(PipelineSkip::Unprofitable),
     };
+    // Bat buoc con dung sau khi da rang buoc - neu sai thi la loi search.
     if !sim_v2::victim_still_ok(quote.victim_out, amount_out_min) {
         return PipelineOutcome::Skip(PipelineSkip::VictimWouldRevert);
     }
@@ -904,10 +917,17 @@ fn evaluate_candidate_quote(
     }
 
     let front_cap = RiskGuard::front_cap_after_gas_reserve(front_cap_raw, cfg.gas_reserve_bnb_wei);
-    let quote_result = match sim_v2::search_max_front_in(reserves, amount_in, front_cap, gas_cost_in_quote_wei) {
-        Some(q) => q,
-        None => return PipelineOutcome::Skip(PipelineSkip::Unprofitable),
-    };
+    // Cụm `truth-victim-ok-and-memleak` (mục 2) — CÙNG ràng buộc "victim phải
+    // sống" như `evaluate_candidate`, áp cho CẢ 2 quote asset (lệnh: "áp cả 2
+    // quote"). Xem doc-comment `sim_v2::search_max_front_in_victim_ok`.
+    let quote_result =
+        match sim_v2::search_max_front_in_victim_ok(reserves, amount_in, front_cap, gas_cost_in_quote_wei, amount_out_min) {
+            Some(q) => q,
+            None if sim_v2::max_front_in_victim_ok(reserves, amount_in, front_cap, amount_out_min).is_none() => {
+                return PipelineOutcome::Skip(PipelineSkip::VictimWouldRevert)
+            }
+            None => return PipelineOutcome::Skip(PipelineSkip::Unprofitable),
+        };
 
     if !sim_v2::victim_still_ok(quote_result.victim_out, amount_out_min) {
         return PipelineOutcome::Skip(PipelineSkip::VictimWouldRevert);
@@ -1104,8 +1124,28 @@ pub fn decide_paper(victims: &VictimBook, tax_cache: &TaxCache, cfg: &Config, in
         return PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax);
     }
 
-    let quote = match sim_v2::search_max_front_in(input.reserves, decoded.amount_in, cfg.effective_front_cap_wei(), cfg.gas_wei()) {
+    // Cụm `truth-victim-ok-and-memleak` (mục 2) — cùng ràng buộc, áp cả cho
+    // `decide_paper` (đường wallet-mode, `wallet_scan_enabled=false` khi ship
+    // nhưng vẫn phải nhất quán nếu Chủ bật lại bằng cờ).
+    let quote = match sim_v2::search_max_front_in_victim_ok(
+        input.reserves,
+        decoded.amount_in,
+        cfg.effective_front_cap_wei(),
+        cfg.gas_wei(),
+        decoded.amount_out_min,
+    ) {
         Some(q) => q,
+        None
+            if sim_v2::max_front_in_victim_ok(
+                input.reserves,
+                decoded.amount_in,
+                cfg.effective_front_cap_wei(),
+                decoded.amount_out_min,
+            )
+            .is_none() =>
+        {
+            return PipelineOutcome::Skip(PipelineSkip::VictimWouldRevert)
+        }
         None => return PipelineOutcome::Skip(PipelineSkip::Unprofitable),
     };
 
@@ -1373,6 +1413,12 @@ pub struct TxLogMeta {
     /// F-02 — `profit_wei - bribe_wei` (đã DÙNG để gate `Simulated`, không
     /// tính lại khác công thức). `None` cho `Skip`.
     pub net_pos_after_bribe_wei: Option<String>,
+    /// Cụm `truth-victim-ok-and-memleak` (mục 6) — `amountOutMin` THẬT của
+    /// victim (từ calldata), để `sim.result` tự chứng minh được
+    /// `victim_ok_v2` thay vì bắt người đọc tin. `U256::ZERO` khi caller
+    /// không biết (đường log không đi qua decoder) — khi đó `victim_ok_v2`
+    /// luôn `true` một cách tầm thường, đúng nghĩa "không có ràng buộc".
+    pub amount_out_min: U256,
 }
 
 /// Cụm pair-mode — bản `log_outcome` có thêm field `source` ("wallet"/"pair"/
@@ -1475,6 +1521,17 @@ pub fn log_outcome_v2(
                     // Cum `competitor-recon-and-strategy` (F-02)
                     "bribe_wei": meta.bribe_wei,
                     "net_pos_after_bribe_wei": meta.net_pos_after_bribe_wei,
+                    // Cum `truth-victim-ok-and-memleak` (muc 6) - moi dong
+                    // `sim.result` (nguon cua MOI so `net_pos`) phai tu noi
+                    // victim co song theo V2-math hay khong. Sau muc 2 gia tri
+                    // nay luon `true` theo CAU TRUC (`front_in` da bi rang
+                    // buoc de victim song, va `victim_still_ok` van duoc kiem
+                    // lai sau do), nhung ghi RA SO thay vi tin vao lap luan:
+                    // neu no tung `false` o mot dong nao, day la bang chung
+                    // sai o `search_max_front_in_victim_ok`.
+                    "victim_ok_v2": crate::sim_v2::victim_still_ok(q.victim_out, meta.amount_out_min),
+                    "victim_out_wei": q.victim_out.to_string(),
+                    "amount_out_min_wei": meta.amount_out_min.to_string(),
                 }),
             );
         }
@@ -2858,6 +2915,8 @@ mod tests {
             back_out,
             profit_wei,
             victim_success,
+            victim_revert_reason: if victim_success { None } else { Some("fixture".to_string()) },
+            victim_out: U256::ZERO,
             buy_tax_bps: None,
             sell_tax_bps: None,
         }

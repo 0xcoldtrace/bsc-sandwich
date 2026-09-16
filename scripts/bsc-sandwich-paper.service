@@ -1,0 +1,79 @@
+# Cụm `truth-victim-ok-and-memleak` (mục 5) — unit systemd THẬT cho bot paper
+# trên VPS, thay `nohup` / `systemd-run --collect` (2 cách cũ, xem
+# `scripts/deploy_vps.sh --run`).
+#
+# Vì sao đổi: lần chạy paper 24 h đầu tiên (BAOCAO43) chạy bằng `nohup` và bị
+# OOM-kill ở phút 656. `nohup` không có: (a) giới hạn bộ nhớ, nên kernel chọn
+# giết tiến trình theo cách của nó; (b) tự khởi động lại, nên bot nằm chết
+# 8 giờ mà không ai biết; (c) chỗ chứa log chuẩn, nên `bot.jsonl` phình tới
+# 214 MB không ai xoay vòng.
+#
+# Cài bằng `scripts/install_systemd_vps.sh` (KHÔNG cài tay để 2 nơi không lệch).
+#
+# ---------------------------------------------------------------------------
+# VÌ SAO CÓ CẢ `MemoryHigh` LẪN `MemoryMax`
+# `MemoryMax` là trần CỨNG: chạm là cgroup-OOM giết bot, `Restart=always` dựng
+# lại sau 10 giây. `MemoryHigh` là trần MỀM: chạm thì cgroup bị bóp lại và đẩy
+# vào swap chứ CHƯA bị giết — tức bot chậm đi nhưng vẫn sống, và dòng
+# `mem.rss_mb` (ghi mỗi phút) cho ta thấy sự cố TRƯỚC khi nó thành cú giết.
+# Đặt `MemoryHigh` thấp hơn hẳn `MemoryMax` là có chủ ý: muốn có cảnh báo sớm
+# quan sát được, không chỉ có một cú chết đột ngột như lần OOM ở BAOCAO43.
+#
+# Máy production đo được 2026-09-16 (`VPS-511043-157`): `MemTotal` 7948 MB,
+# `MemAvailable` 7325 MB — RAM lành, không có balloon. `MemoryMax=6G` vì vậy
+# nằm dưới mức RAM thật và sẽ thực sự chặn được trước khi kernel phải can
+# thiệp. (CẢNH BÁO cho phiên sau: `~/.ssh/config` trên WSL có host tên
+# `bsc-vps` ghi chú "BOT TIEN THAT CHAY O DAY" nhưng đó là máy KHÁC, KHÔNG có
+# repo và đang bị VMware balloon lấy mất ~5,6 GB. Máy production là máy mở
+# bằng `key/bsc_vps_ed25519`.)
+# ---------------------------------------------------------------------------
+
+[Unit]
+Description=BSC sandwich bot (PAPER / dry-run, KHONG gui tx)
+After=network-online.target
+Wants=network-online.target
+# Bot chi co y nghia khi dong ho dung (deadline/TTL tinh theo unix time).
+After=systemd-timesyncd.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/bsc-sandwich
+# `.env` chua PRIVATE_KEY -> systemd doc truc tiep, KHONG bao gio in ra log.
+EnvironmentFile=/root/bsc-sandwich/.env
+ExecStart=/root/bsc-sandwich/target/release/bsc_sandwich /root/bsc-sandwich/config.toml
+
+# --- tu song lai (dieu kien #1 cua lenh) ---
+Restart=always
+RestartSec=10
+# Khong bo cuoc du co khoi dong lai lien tuc: bot co the chet lien tiep khi
+# RPC sap, va bo cuoc dung luc do la dieu TE NHAT co the xay ra.
+StartLimitIntervalSec=0
+
+# --- tran bo nho (dieu kien #2 cua lenh) ---
+# Cham 6G -> cgroup OOM giet RIENG bot, `Restart=always` dung day no len lai
+# trong 10 giay. Khac han OOM-killer cua kernel: no chon nan nhan theo diem so
+# toan he thong va co the giet thu khac (vd sshd, mat luon duong vao may).
+MemoryMax=6G
+MemoryHigh=2G
+MemoryAccounting=yes
+# Giet CA cay tien trinh con neu co (hien tai bot khong fork, nhung neu sau
+# nay co thi mot tien trinh con song sot se giu nguyen phan RAM da ro ri).
+KillMode=control-group
+TimeoutStopSec=30
+
+# --- log ---
+# stdout/stderr -> journald (da co logrotate rieng cua journald). `bot.jsonl`
+# la file rieng do bot tu ghi, xoay vong boi `scripts/bsc-sandwich.logrotate`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bsc-sandwich
+
+# --- siet quyen (bot chi can doc repo + ghi logs/state) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/root/bsc-sandwich/logs /root/bsc-sandwich/state
+
+[Install]
+WantedBy=multi-user.target

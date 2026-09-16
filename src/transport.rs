@@ -566,9 +566,20 @@ pub async fn fetch_expected_nonce(provider: &dyn Provider, from: Address) -> Res
 /// candidate cùng ví hiếm nhưng có thể xảy ra trong 1 block). KHÔNG tự khoá
 /// (khác `RpcPool`) — theo đúng quy ước repo (`AppStateInner` bọc `RwLock`
 /// từ NGOÀI, xem `risk_guard`/`tax_cache`), caller tự `.read()/.write()`.
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — số BLOCK gần nhất được giữ.
+/// Key của cache có `block`, nên entry của block cũ KHÔNG BAO GIỜ trúng lại;
+/// giữ chúng chỉ tốn RAM. Trước cụm này không có bước xoá nào ⇒ mỗi ví victim
+/// mới trong mỗi block mới là 1 entry sống mãi (đo thật trên VPS: OOM-kill ở
+/// 7,6 GB sau 656 phút, xem BAOCAO43 ô 5 mục 0). 4 block BSC ≈ 12 giây, thừa
+/// cho khoảng cách giữa lúc thấy tx pending và lúc quyết định (p95 ~350 ms).
+pub const NONCE_CACHE_BLOCKS: usize = 4;
+
 #[derive(Debug, Default)]
 pub struct NonceCache {
     entries: std::collections::HashMap<(Address, u64), u64>,
+    /// Các block đang có entry, tăng dần — dùng để xoá theo block (xem
+    /// `NONCE_CACHE_BLOCKS`).
+    blocks: std::collections::BTreeSet<u64>,
 }
 
 impl NonceCache {
@@ -582,6 +593,22 @@ impl NonceCache {
 
     pub fn insert(&mut self, from: Address, block: u64, nonce: u64) {
         self.entries.insert((from, block), nonce);
+        self.blocks.insert(block);
+        while self.blocks.len() > NONCE_CACHE_BLOCKS {
+            let Some(oldest) = self.blocks.iter().next().copied() else { break };
+            self.blocks.remove(&oldest);
+            self.entries.retain(|(_, b), _| *b != oldest);
+        }
+    }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — số entry đang sống, cho
+    /// `GET /api/mem` + log `mem.rss_mb`.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -596,7 +623,7 @@ impl NonceCache {
 /// `funnel.simulated` vs số dòng `sim.result` thật quan sát ở BAOCAO39 (27 vs
 /// 14, xem `docs/TASKS.md`). Cùng khuôn cap+xoá-theo-tuổi như
 /// `poll_txpool_pending::seen_set` cũ.
-const SEEN_HASH_CAP: usize = 50_000;
+pub const SEEN_HASH_CAP: usize = 50_000;
 
 #[derive(Debug, Default)]
 pub struct SeenHashSet {
@@ -625,6 +652,16 @@ impl SeenHashSet {
         }
         true
     }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — số hash đang giữ, cho
+    /// `GET /api/mem` (trần = `SEEN_HASH_CAP`).
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
 }
 
 /// Cụm `hotpath-fix-then-decoder-ur` (A4b) — cache `(pair, quote, block) ->
@@ -651,9 +688,23 @@ impl SeenHashSet {
 /// báo `best_net_bnb` hàng chục nghìn BNB, và `gas_cost_usdt_wei` bị CHIA
 /// cho 720 (gas rẻ giả → profit USDT bị thổi lên). Key có `quote` làm 2 chiều
 /// thành 2 entry riêng, không thể lẫn.
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — số BLOCK gần nhất được giữ.
+///
+/// **Đây là chỗ RÒ RỈ NẶNG NHẤT đã tìm ra**: doc-comment cũ của
+/// `ReserveCache` viết nguyên văn *"block đổi -> entry cũ đơn giản là
+/// cache-miss (key gồm cả block), KHÔNG cần dọn dẹp chủ động"* — đúng về mặt
+/// ĐÚNG/SAI nhưng sai về bộ nhớ: cache-miss không giải phóng gì cả. Nguồn ghi
+/// KHÔNG phải đường nóng mà là `sync_reserves_task` (`main.rs`): nó ghi 1
+/// entry cho MỖI sự kiện `Sync` của MỖI pool trong `pairs.txt` ở MỖI block —
+/// 126 pool × ~2,2 block/s ⇒ tới ~10 triệu entry sau 11 giờ, không bao giờ
+/// xoá. Giữ 8 block (≈18 s) là thừa cho mục đích của cache (nhiều tx cùng
+/// pool trong CÙNG 1 block).
+pub const RESERVE_CACHE_BLOCKS: usize = 8;
+
 #[derive(Debug, Default)]
 pub struct ReserveCache {
     entries: std::collections::HashMap<(Address, Address, u64), crate::sim_v2::PoolReserves>,
+    blocks: std::collections::BTreeSet<u64>,
 }
 
 impl ReserveCache {
@@ -667,6 +718,21 @@ impl ReserveCache {
 
     pub fn insert(&mut self, pair: Address, quote: Address, block: u64, reserves: crate::sim_v2::PoolReserves) {
         self.entries.insert((pair, quote, block), reserves);
+        self.blocks.insert(block);
+        while self.blocks.len() > RESERVE_CACHE_BLOCKS {
+            let Some(oldest) = self.blocks.iter().next().copied() else { break };
+            self.blocks.remove(&oldest);
+            self.entries.retain(|(_, _, b), _| *b != oldest);
+        }
+    }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — số entry đang sống.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -714,6 +780,16 @@ impl MinedTxIndex {
             sorted.remove(0);
         }
         self.blocks = sorted.into();
+    }
+
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — TỔNG số hash đang giữ
+    /// (cộng mọi block trong cửa sổ), cho `GET /api/mem`.
+    pub fn len(&self) -> usize {
+        self.blocks.iter().map(|(_, h)| h.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// `true` khi hash ĐÃ thấy trong 1 block gần đây (victim KHÔNG còn pending).

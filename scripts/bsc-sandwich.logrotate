@@ -1,0 +1,23 @@
+# Cụm `truth-victim-ok-and-memleak` (mục 5) — xoay vòng `logs/bot.jsonl`.
+#
+# Vì sao cần: file này lên 214 MB trong 11 giờ chạy (BAOCAO43). Ngoài chuyện
+# đầy đĩa (VPS chỉ còn 7,6 GB trống), nó còn là NGUỒN TĂNG RSS trực tiếp —
+# 3 handler HTTP (`/api/econ`, `/api/compete`, `/api/shadow`) từng đọc TOÀN BỘ
+# file vào RAM mỗi lời gọi. Handler đã được sửa để chỉ đọc phần đuôi
+# (`web.rs::read_log_tail`), nhưng xoay vòng vẫn cần để đĩa không đầy.
+#
+# `copytruncate` (KHÔNG phải `create`): bot giữ file handle mở suốt đời và
+# KHÔNG xử lý SIGHUP để mở lại file. Nếu logrotate `mv` file đi rồi tạo file
+# mới, bot vẫn ghi vào inode CŨ và log mới biến mất im lặng — đúng loại lỗi
+# không ai phát hiện cho tới khi cần đọc log.
+/root/bsc-sandwich/logs/bot.jsonl {
+    hourly
+    rotate 12
+    size 200M
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su root root
+}

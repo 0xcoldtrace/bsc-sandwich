@@ -10,6 +10,7 @@ pub mod config;
 pub mod decoder;
 pub mod executor;
 pub mod logger;
+pub mod mem;
 pub mod pairbook;
 pub mod pipeline;
 pub mod pool;

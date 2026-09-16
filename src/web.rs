@@ -198,6 +198,12 @@ struct ValidateGroupStats {
 }
 
 const VALIDATE_GROUP_SAMPLE_CAP: usize = 200;
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — trần `rows` của
+/// `ValidateStats`/`CompeteStats`, tách thành hằng số có TÊN để `GET /api/mem`
+/// báo cáo được đúng con số đang áp dụng (trước đó là số `50` viết thẳng
+/// trong vòng `while`, không ai ngoài hàm đó biết).
+pub const VALIDATE_ROWS_CAP: usize = 50;
+pub const COMPETE_ROWS_CAP: usize = 50;
 
 impl ValidateGroupStats {
     fn push(&mut self, lech_pct: f64) {
@@ -252,6 +258,12 @@ impl ValidateStats {
     /// (`main.rs::spawn_victim_validator`) đã tính cả 2 giá trị này trước khi
     /// gọi, `push` giờ tự phân nhóm và tự tính `within_1pct` ĐÚNG cho MỖI
     /// nhóm thay vì 1 cờ `ok` gộp sẵn dễ lẫn ý nghĩa (nguồn gốc bug F-27).
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — `(rows, mẫu isolated, mẫu
+    /// non_isolated)` đang giữ, cho `GET /api/mem`.
+    pub fn sizes(&self) -> (usize, usize, usize) {
+        (self.rows.len(), self.isolated.lech_pct_samples.len(), self.non_isolated.lech_pct_samples.len())
+    }
+
     pub fn push(&mut self, row: Value, is_isolated: bool, lech_pct: f64) {
         if is_isolated {
             self.isolated.push(lech_pct);
@@ -259,7 +271,7 @@ impl ValidateStats {
             self.non_isolated.push(lech_pct);
         }
         self.rows.push_back(row);
-        while self.rows.len() > 50 {
+        while self.rows.len() > VALIDATE_ROWS_CAP {
             self.rows.pop_front();
         }
     }
@@ -294,7 +306,7 @@ async fn compete(State(state): State<AppState>) -> Json<Value> {
     // Nguồn số liệu giống hệt `/api/econ` (cùng `compute_econ_from_rows`, cùng
     // bộ lọc `boot_wall_clock`) để 2 endpoint không bao giờ lệch nhau.
     let log_path = state.logger.path().to_path_buf();
-    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let content = read_log_tail(&log_path).await;
     let all_lines: Vec<&str> = content.lines().collect();
     let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
     let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
@@ -324,7 +336,7 @@ async fn shadow_status(State(state): State<AppState>) -> Json<Value> {
     let shadow_self_address = state.shadow_wallet.as_ref().map(|(addr, _)| redact_address(&format!("{addr:#x}")));
 
     let log_path = state.logger.path().to_path_buf();
-    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let content = read_log_tail(&log_path).await;
     let all_lines: Vec<&str> = content.lines().collect();
     let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
     let boot_ts = state.boot_wall_clock.to_rfc3339();
@@ -585,6 +597,11 @@ impl FunnelCounters {
 /// quanh thời điểm victim, khả năng cạnh tranh) — kiểm tra Ở MỨC 1 vị trí kề
 /// (không quét toàn block), ghi rõ giới hạn này (không phải "không có bot
 /// cạnh tranh nào khác trong block", chỉ là "không thấy ở vị trí LIỀN KỀ").
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — trần THẬT cho 2 container của
+/// `CompeteStats` (trước cụm này chỉ có trong doc-comment, không có trong code).
+const TOP_BOTS_CAP: usize = 20;
+const COMPETITOR_GAS_SAMPLE_CAP: usize = 500;
+
 #[derive(Debug, Default)]
 pub struct CompeteStats {
     checked: AtomicU64,
@@ -602,19 +619,46 @@ impl CompeteStats {
         Self::default()
     }
 
+    /// Cụm `truth-victim-ok-and-memleak` (mục 3) — `(rows, top_bots, mẫu gas)`
+    /// đang giữ, cho `GET /api/mem`.
+    pub fn sizes(&self) -> (usize, usize, usize) {
+        (
+            self.rows.lock().map(|r| r.len()).unwrap_or(0),
+            self.top_bots.lock().map(|b| b.len()).unwrap_or(0),
+            self.competitor_gas_gwei_samples.lock().map(|v| v.len()).unwrap_or(0),
+        )
+    }
+
     pub fn record(&self, row: Value, competitor_addr: Option<&str>, competitor_gas_gwei: Option<f64>) {
         self.checked.fetch_add(1, Ordering::Relaxed);
         if let Some(addr) = competitor_addr {
             self.possible_competitor.fetch_add(1, Ordering::Relaxed);
             let mut bots = self.top_bots.lock().unwrap();
             *bots.entry(addr.to_string()).or_insert(0) += 1;
+            // Cum `truth-victim-ok-and-memleak` (muc 3): doc-comment cu noi
+            // "giu toi da 20 dia chi" nhung KHONG he co buoc cat -> map nay
+            // lon dan theo so dia chi bot KHAC NHAU gap trong ca doi bot.
+            // Cat that: giu 20 dia chi DEM CAO NHAT (con so hien thi la
+            // "top bot", nen cat theo count la dung y nghia).
+            if bots.len() > TOP_BOTS_CAP {
+                let mut v: Vec<(String, u64)> = bots.drain().collect();
+                v.sort_by(|a, b| b.1.cmp(&a.1));
+                v.truncate(TOP_BOTS_CAP);
+                *bots = v.into_iter().collect();
+            }
             if let Some(g) = competitor_gas_gwei {
-                self.competitor_gas_gwei_samples.lock().unwrap().push(g);
+                // Vec nay truoc day push VO HAN (chi dung de tinh trung binh).
+                let mut samples = self.competitor_gas_gwei_samples.lock().unwrap();
+                samples.push(g);
+                if samples.len() > COMPETITOR_GAS_SAMPLE_CAP {
+                    let extra = samples.len() - COMPETITOR_GAS_SAMPLE_CAP;
+                    samples.drain(0..extra);
+                }
             }
         }
         let mut rows = self.rows.lock().unwrap();
         rows.push_back(row);
-        while rows.len() > 50 {
+        while rows.len() > COMPETE_ROWS_CAP {
             rows.pop_front();
         }
     }
@@ -640,6 +684,134 @@ impl CompeteStats {
     }
 }
 
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — LIỆT KÊ MỌI container sống lâu
+/// của bot kèm kích thước hiện tại và TRẦN của nó, ở MỘT chỗ duy nhất.
+///
+/// Hàm này là nguồn sự thật dùng chung cho cả `GET /api/mem` và task log
+/// `mem.rss_mb` mỗi phút (`main.rs::mem_watch_task`) — cố ý KHÔNG viết 2 bản,
+/// vì hai bản sẽ lệch nhau ngay lần thêm container tiếp theo và khi đó số
+/// trong log lại không khớp số trên dashboard.
+///
+/// `cap = None` nghĩa là container đó **chưa có trần** và phải bị coi là nghi
+/// phạm rò rỉ cho tới khi có trần — không được đọc thành "an toàn".
+pub fn container_sizes(state: &AppState) -> Vec<crate::mem::ContainerSize> {
+    use crate::mem::ContainerSize as C;
+    // MỌI lần đọc dùng `try_read()` — xem doc-comment `ContainerSize::len` để
+    // biết vì sao (task đo bộ nhớ KHÔNG được phép xếp hàng sau khoá ghi của
+    // `pairs_vet_task`, vòng vet giữ khoá 3–4 phút).
+    let (val_rows, val_iso, val_non) = match state.validate_log.try_read() {
+        Ok(g) => {
+            let (a, b, c) = g.sizes();
+            (Some(a), Some(b), Some(c))
+        }
+        Err(_) => (None, None, None),
+    };
+    let (cmp_rows, cmp_bots, cmp_gas) = {
+        let (a, b, c) = state.compete_stats.sizes();
+        (Some(a), Some(b), Some(c))
+    };
+    vec![
+        C {
+            name: "transport::ReserveCache.entries",
+            len: state.reserve_cache.try_read().ok().map(|g| g.len()),
+            cap: Some(crate::transport::RESERVE_CACHE_BLOCKS),
+            cap_unit: "block",
+        },
+        C {
+            name: "transport::NonceCache.entries",
+            len: state.nonce_cache.try_read().ok().map(|g| g.len()),
+            cap: Some(crate::transport::NONCE_CACHE_BLOCKS),
+            cap_unit: "block",
+        },
+        C {
+            name: "transport::SeenHashSet",
+            len: state.seen_hashes.try_read().ok().map(|g| g.len()),
+            cap: Some(crate::transport::SEEN_HASH_CAP),
+            cap_unit: "hash",
+        },
+        C {
+            name: "transport::MinedTxIndex",
+            len: state.mined_index.try_read().ok().map(|g| g.len()),
+            cap: Some(crate::transport::MINED_INDEX_DEPTH),
+            cap_unit: "block",
+        },
+        C {
+            name: "competitor::ClusterIndex.funded",
+            len: state.competitor_cluster.try_read().ok().map(|g| g.funded_now()),
+            cap: Some(crate::competitor::FUNDED_WINDOW_BLOCKS),
+            cap_unit: "block",
+        },
+        C { name: "web::ValidateStats.rows", len: val_rows, cap: Some(VALIDATE_ROWS_CAP), cap_unit: "dong" },
+        C {
+            name: "web::ValidateStats.isolated.samples",
+            len: val_iso,
+            cap: Some(VALIDATE_GROUP_SAMPLE_CAP),
+            cap_unit: "mau",
+        },
+        C {
+            name: "web::ValidateStats.non_isolated.samples",
+            len: val_non,
+            cap: Some(VALIDATE_GROUP_SAMPLE_CAP),
+            cap_unit: "mau",
+        },
+        C { name: "web::CompeteStats.rows", len: cmp_rows, cap: Some(COMPETE_ROWS_CAP), cap_unit: "dong" },
+        C { name: "web::CompeteStats.top_bots", len: cmp_bots, cap: Some(TOP_BOTS_CAP), cap_unit: "dia chi" },
+        C {
+            name: "web::CompeteStats.gas_samples",
+            len: cmp_gas,
+            cap: Some(COMPETITOR_GAS_SAMPLE_CAP),
+            cap_unit: "mau",
+        },
+        C {
+            name: "web::skip_counts",
+            len: state.skip_counts.try_read().ok().map(|g| g.len()),
+            cap: None,
+            cap_unit: "enum skip (chan boi so enum, khong phai thoi gian)",
+        },
+        C {
+            name: "main::candidate_seen",
+            len: state.candidate_seen.try_read().ok().map(|g| g.len()),
+            cap: None,
+            cap_unit: "pool (chan boi pairs.txt o mode 2)",
+        },
+        C {
+            name: "tax::TaxCache",
+            len: state.tax_cache.try_read().ok().map(|g| g.len()),
+            cap: None,
+            cap_unit: "(token,quote)",
+        },
+        C {
+            name: "pairbook::PairBook",
+            len: state.pairbook.try_read().ok().map(|g| g.len()),
+            cap: None,
+            cap_unit: "dong pairs.txt",
+        },
+        C {
+            name: "victims::VictimBook",
+            len: state.victims.try_read().ok().map(|g| g.len()),
+            cap: None,
+            cap_unit: "dong victims.txt",
+        },
+    ]
+}
+
+/// `GET /api/mem` — cụm `truth-victim-ok-and-memleak` (mục 3). Trả `VmRSS`/
+/// `VmHWM` THẬT của tiến trình + bảng container ở trên. `rss_mb = null` nghĩa
+/// là không đọc được `/proc/self/status` (không phải Linux) — KHÔNG trả 0 giả.
+async fn mem_status(State(state): State<AppState>) -> Json<Value> {
+    let containers = container_sizes(&state);
+    Json(json!({
+        "rss_mb": crate::mem::rss_mb(),
+        "rss_peak_mb": crate::mem::rss_peak_mb(),
+        "uptime_sec": state.start_time.elapsed().as_secs(),
+        "containers": containers
+            .iter()
+            .map(|c| json!({"name": c.name, "len": c.len, "cap": c.cap, "cap_unit": c.cap_unit}))
+            .collect::<Vec<_>>(),
+        "khong_co_tran": containers.iter().filter(|c| c.cap.is_none()).map(|c| c.name).collect::<Vec<_>>(),
+    }))
+}
+
 pub type AppState = Arc<AppStateInner>;
 
 pub fn build_router(state: AppState) -> Router {
@@ -655,6 +827,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/econ", get(econ))
         .route("/api/validate", get(validate_list))
         .route("/api/compete", get(compete))
+        .route("/api/mem", get(mem_status))
         .route("/api/shadow", get(shadow_status))
         .route("/api/tax", get(tax_cache_list).post(tax_inject))
         .route("/api/control", post(control))
@@ -865,6 +1038,55 @@ async fn funnel(State(state): State<AppState>) -> Json<Value> {
 
 /// Trần số dòng CUỐI đọc từ `logs/bot.jsonl` — tránh phình bộ nhớ với log
 /// chạy rất lâu (VPS nhiều ngày); đủ dư cho 1 lần `paper_run.sh` (60 phút).
+/// Cụm `truth-victim-ok-and-memleak` (mục 3) — TRẦN BYTE khi đọc
+/// `logs/bot.jsonl` trong các handler HTTP.
+///
+/// # Vì sao cần
+///
+/// 3 handler (`/api/econ`, `/api/compete`, `/api/shadow`) gọi
+/// `tokio::fs::read_to_string` trên TOÀN BỘ `bot.jsonl` rồi mới cắt
+/// `ECON_MAX_LINES` dòng cuối. Trên VPS file đó đã lên **214 MB** trước khi
+/// bot bị OOM-kill ⇒ mỗi lời gọi API cấp phát 214 MB (cộng thêm `Vec<&str>`
+/// và `Vec<Value>` parse ra). Bộ nhớ đó được giải phóng về allocator nhưng
+/// glibc KHÔNG trả lại cho hệ điều hành các arena lớn đã dùng, nên `VmRSS`
+/// chỉ có lên chứ không xuống — dashboard tự refresh là đủ để đẩy RSS lên
+/// hàng GB mà không có "container" nào phình ra cả. Đây là lý do vì sao chỉ
+/// nhìn các map/vec sống lâu thì không giải thích hết 7,6 GB.
+///
+/// 256 MiB là dư cho `ECON_MAX_LINES` dòng ở mọi kích thước dòng thực tế;
+/// quan trọng là nó là TRẦN CỐ ĐỊNH, không tăng theo tuổi của file log.
+const LOG_TAIL_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Đọc **phần đuôi** của file log (tối đa `LOG_TAIL_MAX_BYTES`) thay vì cả
+/// file. Cắt bỏ dòng đầu tiên khi đã bỏ qua phần đầu file, vì lát cắt theo
+/// byte gần như chắc chắn rơi vào GIỮA một dòng JSON và dòng cụt đó sẽ parse
+/// lỗi (im lặng) — cắt hẳn cho sạch.
+async fn read_log_tail(path: &std::path::Path) -> String {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    let Ok(mut f) = tokio::fs::File::open(path).await else { return String::new() };
+    let len = match f.metadata().await {
+        Ok(m) => m.len(),
+        Err(_) => return String::new(),
+    };
+    let truncated = len > LOG_TAIL_MAX_BYTES;
+    if truncated && f.seek(std::io::SeekFrom::End(-(LOG_TAIL_MAX_BYTES as i64))).await.is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::with_capacity(len.min(LOG_TAIL_MAX_BYTES) as usize);
+    if f.read_to_end(&mut buf).await.is_err() {
+        return String::new();
+    }
+    let content = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        match content.find('\n') {
+            Some(i) => content[i + 1..].to_string(),
+            None => String::new(),
+        }
+    } else {
+        content
+    }
+}
+
 const ECON_MAX_LINES: usize = 2_000_000;
 
 /// 5 bucket `victim_in` (BNB) đúng CLAUDE.md mục 3.a.
@@ -983,7 +1205,7 @@ impl BucketAcc {
 
 async fn econ(State(state): State<AppState>) -> Json<Value> {
     let log_path = state.logger.path().to_path_buf();
-    let content = tokio::fs::read_to_string(&log_path).await.unwrap_or_default();
+    let content = read_log_tail(&log_path).await;
     let all_lines: Vec<&str> = content.lines().collect();
     let start = all_lines.len().saturating_sub(ECON_MAX_LINES);
     let rows: Vec<Value> = all_lines[start..].iter().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
@@ -1062,6 +1284,37 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     let mut competitor_simulated: u64 = 0;
     let mut competitor_sum_net_bnb: f64 = 0.0;
     let mut competitor_pools: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Cụm `truth-victim-ok-and-memleak` (mục 6) — LƯỢT QUÉT TRƯỚC: bản đồ
+    // `victim_hash -> victim_ok` do EVM (revm 3 chân, `shadow.sim`) trả về.
+    //
+    // Phải quét trước vì `shadow.sim` chạy trong task NỀN nên dòng của nó nằm
+    // SAU dòng `sim.result` tương ứng trong file log (đo thật RUN 4: cách
+    // nhau 4–9 giây). Một lượt quét tuyến tính sẽ luôn "chưa biết" tại thời
+    // điểm gặp `sim.result`.
+    //
+    // Ý nghĩa vận hành (lệnh mục 6): `net_pos` là số cơ hội CÓ LÃI theo công
+    // thức đóng V2. Nhưng RUN 4 cho thấy 4/4 bundle có `profit_net` dương lại
+    // `victim_ok=false` trong EVM — tức khoản lãi đó KHÔNG TỒN TẠI. Vì vậy
+    // mọi `net_pos` phải đi kèm 2 cổng, và số tiền chỉ được tính khi CẢ HAI
+    // `true`.
+    let mut evm_victim_ok: HashMap<String, bool> = HashMap::new();
+    for row in rows {
+        if row["event"].as_str() == Some("shadow.sim") {
+            if let (Some(h), Some(ok)) = (row["victim_hash"].as_str(), row["victim_ok"].as_bool()) {
+                evm_victim_ok.insert(h.to_string(), ok);
+            }
+        }
+    }
+    // `net_pos` phân rã theo 2 cổng victim-ok (mục 6).
+    let mut net_pos_total_v2_ok: u64 = 0;
+    let mut net_pos_total_v2_false: u64 = 0;
+    let mut net_pos_total_v2_unknown: u64 = 0;
+    let mut net_pos_evm_ok: u64 = 0;
+    let mut net_pos_evm_false: u64 = 0;
+    let mut net_pos_evm_unknown: u64 = 0;
+    let mut sum_net_bnb_ca_hai_cong_ok: f64 = 0.0;
+    let mut net_pos_ca_hai_cong_ok: u64 = 0;
 
     for row in rows {
         let event = row["event"].as_str().unwrap_or("");
@@ -1254,6 +1507,29 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
                     }
                 }
             }
+            // Cụm `truth-victim-ok-and-memleak` (mục 6) — phân rã `net_pos`
+            // theo 2 cổng victim-ok. `victim_ok_v2` là `None` với log sinh ra
+            // TRƯỚC cụm này (field chưa tồn tại) — đếm vào `unknown`, KHÔNG
+            // suy diễn thành `true`.
+            if net_native.map(|n| n > 0.0).unwrap_or(false) {
+                match row["victim_ok_v2"].as_bool() {
+                    Some(true) => net_pos_total_v2_ok += 1,
+                    Some(false) => net_pos_total_v2_false += 1,
+                    None => net_pos_total_v2_unknown += 1,
+                }
+                let evm = row["hash"].as_str().and_then(|h| evm_victim_ok.get(h).copied());
+                match evm {
+                    Some(true) => net_pos_evm_ok += 1,
+                    Some(false) => net_pos_evm_false += 1,
+                    None => net_pos_evm_unknown += 1,
+                }
+                if row["victim_ok_v2"].as_bool() == Some(true) && evm == Some(true) {
+                    net_pos_ca_hai_cong_ok += 1;
+                    if let (Some(net), Some(rate)) = (net_native, quote_to_bnb_rate) {
+                        sum_net_bnb_ca_hai_cong_ok += net * rate;
+                    }
+                }
+            }
             if let (Some(front), Some(net)) = (front_native, net_native) {
                 if net > 0.0 && front > 0.0 {
                     let q = row["quote"].as_str().unwrap_or("unknown").to_string();
@@ -1340,10 +1616,13 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
     let decode_fail_smartrouter = decode_fail_by_router.get("SmartRouter").copied().unwrap_or(0);
 
     let summary_line = format!(
-        "candidate={} net_pos={} net_pos_non_cluster={} best_net_bnb={} p50_ms={} p95_ms={} stale_pct={:.2} decode_fail_smartrouter={}",
+        "candidate={} net_pos={} net_pos_non_cluster={} net_pos_v2ok={} net_pos_evmok={} net_pos_ca_hai_cong_ok={} best_net_bnb={} p50_ms={} p95_ms={} stale_pct={:.2} decode_fail_smartrouter={}",
         candidate_count,
         net_pos_total,
         net_pos_total_non_cluster,
+        net_pos_total_v2_ok,
+        net_pos_evm_ok,
+        net_pos_ca_hai_cong_ok,
         best_net_bnb_total.map(|b| format!("{b:.6}")).unwrap_or_else(|| "-".to_string()),
         p50.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
         p95.map(|v| format!("{v:.2}")).unwrap_or_else(|| "-".to_string()),
@@ -1387,6 +1666,21 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         // luận kinh tế (xem `PoolAcc::net_pos_non_cluster`).
         "net_pos_total_non_cluster": net_pos_total_non_cluster,
         "sum_net_bnb_total_non_cluster": sum_net_bnb_total_non_cluster,
+        // Cụm `truth-victim-ok-and-memleak` (mục 6) — MỖI `net_pos` phải kèm
+        // 2 cổng victim-ok, và số tiền chỉ được tính khi CẢ HAI `true`.
+        // `unknown` = dữ liệu không có (log cũ chưa có field, hoặc
+        // `shadow.sim` chưa chạy cho hash đó) — KHÔNG được đọc thành `true`.
+        "victim_ok": {
+            "v2_ok": net_pos_total_v2_ok,
+            "v2_false": net_pos_total_v2_false,
+            "v2_unknown": net_pos_total_v2_unknown,
+            "evm_ok": net_pos_evm_ok,
+            "evm_false": net_pos_evm_false,
+            "evm_unknown": net_pos_evm_unknown,
+            "ca_hai_cong_ok": net_pos_ca_hai_cong_ok,
+            "sum_net_bnb_ca_hai_cong_ok": sum_net_bnb_ca_hai_cong_ok,
+            "ghi_chu": "So tien DUY NHAT duoc phep ket luan kinh te la sum_net_bnb_ca_hai_cong_ok. net_pos tran trui va net_pos_non_cluster KHONG kiem tra victim co thuc thi duoc khong.",
+        },
         "best_net_bnb": best_net_bnb_total,
         "summary_line": summary_line,
         // Cụm `competitor-recon-and-strategy` (F-02) — bribe MÔ PHỎNG đã trừ
@@ -1595,6 +1889,59 @@ mod tests {
     /// bất kỳ đâu: bucket, pool, tổng, và `summary_line` đều phải kèm con số
     /// ĐÃ LOẠI victim thuộc cụm đối thủ. Dữ liệu thật 10.92 h trên VPS: 481/497
     /// cơ hội có lãi là ví burner của chính cụm đối thủ.
+    #[test]
+    /// Cụm `truth-victim-ok-and-memleak` (mục 6) — `net_pos` phải tách theo
+    /// 2 cổng victim-ok, và TIỀN chỉ được cộng khi CẢ HAI `true`.
+    ///
+    /// Fixture tái hiện đúng tình huống RUN 4 (BAOCAO43): dòng có
+    /// `profit_net` DƯƠNG nhưng `shadow.sim` sau đó báo `victim_ok=false` —
+    /// khoản lãi đó không tồn tại và không được phép lọt vào con số kết luận.
+    /// `shadow.sim` cố ý đặt SAU `sim.result` trong danh sách để test luôn
+    /// việc phải quét trước (task nền ghi log sau, đo thật cách 4–9 giây).
+    #[test]
+    fn compute_econ_net_pos_luon_kem_2_cong_victim_ok() {
+        let sim = |hash: &str, v2ok: Option<bool>, profit: i64| {
+            let mut v = json!({
+                "event": "sim.result",
+                "hash": hash,
+                "pair": "0xpool",
+                "quote": "wbnb",
+                "amount_in": wei(0.06),
+                "amount_in_bnb_equiv": wei(0.06),
+                "front_in_wei": wei(0.05),
+                "profit_net_wei": profit,
+            });
+            if let Some(b) = v2ok {
+                v["victim_ok_v2"] = json!(b);
+            }
+            v
+        };
+        let shadow = |hash: &str, ok: bool| json!({"event": "shadow.sim", "victim_hash": hash, "victim_ok": ok});
+        let rows = vec![
+            sim("0xaa", Some(true), 4_000_000_000_000_000i64),  // ca 2 cong OK
+            sim("0xbb", Some(true), 6_000_000_000_000_000i64),  // EVM noi victim CHET
+            sim("0xcc", Some(true), 1_000_000_000_000_000i64),  // chua co shadow.sim
+            sim("0xdd", None, 2_000_000_000_000_000i64),        // log CU, khong co field
+            shadow("0xaa", true),
+            shadow("0xbb", false),
+        ];
+        let econ = compute_econ_from_rows(&rows, None);
+        let v = &econ["victim_ok"];
+
+        assert_eq!(econ["net_pos_total"], 4, "4 dong deu co profit duong");
+        assert_eq!(v["v2_ok"], 3);
+        assert_eq!(v["v2_unknown"], 1, "log cu khong co field -> unknown, KHONG suy dien thanh true");
+        assert_eq!(v["evm_ok"], 1);
+        assert_eq!(v["evm_false"], 1);
+        assert_eq!(v["evm_unknown"], 2);
+        assert_eq!(v["ca_hai_cong_ok"], 1, "chi 0xaa qua duoc CA HAI cong");
+        assert!(
+            (v["sum_net_bnb_ca_hai_cong_ok"].as_f64().unwrap() - 0.004).abs() < 1e-9,
+            "chi duoc cong tien cua 0xaa (0.004 BNB), khong duoc cong 0xbb du profit_net cao hon"
+        );
+        assert!(econ["summary_line"].as_str().unwrap().contains("net_pos_ca_hai_cong_ok=1"));
+    }
+
     #[test]
     fn compute_econ_tach_net_pos_non_cluster_moi_cho_co_net_pos() {
         let row = |pair: &str, cluster: bool, profit: i64| {
