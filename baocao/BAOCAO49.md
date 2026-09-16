@@ -15,7 +15,7 @@ nếu có v3 thì lấy, pancakeswap v2 v3, uniswap v3”.
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: xem dòng `Commit:` cuối file.
+Commit nội dung: `bd4bff98f84cf84b02d007bf5158a6972587442d`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -135,4 +135,5 @@ Không sim_arb V3, không đo cơ hội, không contract, không sendRaw, không
 
 ---
 
-Commit: (điền sau git commit)
+Commit: `bd4bff98f84cf84b02d007bf5158a6972587442d` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này, không đổi code.
