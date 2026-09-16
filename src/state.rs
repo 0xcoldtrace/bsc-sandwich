@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// Theo CLAUDE.md mục "State / log":
+/// Theo AGENTS.md mục "State / log":
 /// IDLE -> WATCHING -> HIT -> SIM_LOCK -> LOGGED
 /// Live: SENDING_FRONT -> SENDING_BACK
 /// STOPPED --reset--> IDLE

@@ -1,7 +1,7 @@
 # docs/TASKS.md — Roadmap & trạng thái cụm
 
-Nguồn roadmap gốc: `CLAUDE.md` mục "Roadmap — được làm cùng lúc". File này
-chỉ theo dõi cụm nào đã xong / còn nợ, không thay thế luật trong CLAUDE.md.
+Nguồn roadmap gốc: `AGENTS.md` mục "Roadmap — được làm cùng lúc". File này
+chỉ theo dõi cụm nào đã xong / còn nợ, không thay thế luật trong AGENTS.md.
 Mô tả kỹ thuật đầy đủ từng cụm (quyết định, số liệu, code path) nằm ở
 `docs/STATE.md` (mục cùng tên cụm) — bảng dưới đây chỉ tóm tắt trạng thái.
 
@@ -49,7 +49,7 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | `vps-lowthreshold-retest` | 27 | 6d50a31 | XONG (phát hiện Alchemy WS không stream pending BSC) |
 | `vps-latencyprobe-retest` | 28 | 6d50a31 | XONG (phát hiện BSC_WS local chết hẳn) |
 | `usdt-quote-asset` | 29 | 6d50a31 | MỘT PHẦN — hàm quote-aware sẵn sàng, CHƯA nối vào `main.rs` live loop lúc đó (nối ở cụm sau) |
-| `quote-live-wiring-funnel-diagnostics` | 30 | 6d50a31 | MỘT PHẦN — (2)(3)(4) xong; (1) CLAUDE.md diff BLOCKED (thiếu nội dung); (5) VPS BLOCKED (không có SSH) |
+| `quote-live-wiring-funnel-diagnostics` | 30 | 6d50a31 | MỘT PHẦN — (2)(3)(4) xong; (1) AGENTS.md diff BLOCKED (thiếu nội dung); (5) VPS BLOCKED (không có SSH) |
 | `foundation-fix-then-real-sim` cụm A (sửa nền) | 31 | 6d50a31 | XONG |
 | `foundation-fix-then-real-sim` cụm B1+B2 (sim EVM qua revm) | 31 | 6d50a31 | MỘT PHẦN — cơ chế đúng, verify RPC thật; CHƯA nối vào pipeline (đó là ý định cụm C, xem "Hoãn, lý do") |
 | `foundation-fix-then-real-sim` cụm B4 (validate 3 sandwich thật qua BscScan) | 31 | 6d50a31 | BLOCKED — sandbox không có BscScan API/trình duyệt |
@@ -84,10 +84,10 @@ chép, mà là giới hạn lịch sử git thật của repo).
   `pipeline.rs`) đã bị XOÁ HẲN ở BAOCAO14 sau khi phát hiện toán học front
   mua trước/back bán sau victim bán luôn lỗ. Kiến trúc đúng cho chiều này
   là back-run (cần tồn kho token/flashloan) — NGOÀI SCOPE "1 signer, cấm
-  flashloan" của CLAUDE.md, cần lệnh riêng nếu Chủ muốn làm.
+  flashloan" của AGENTS.md, cần lệnh riêng nếu Chủ muốn làm.
 - **Cụm C/D của `foundation-fix-then-real-sim` / `evm-validate-fixed-then-wire`**
   (nối EVM thật vào ĐƯỜNG NÓNG mỗi tx) — HOÃN VĨNH VIỄN, đã bị
-  `strategy-lock-mode2` THAY THẾ (không phải song song, xem CLAUDE.md mục
+  `strategy-lock-mode2` THAY THẾ (không phải song song, xem AGENTS.md mục
   "Chiến lược đã chốt"). Cơ chế `sim_evm.rs`/revm bên dưới cụm này KHÔNG bỏ
   đi — chuyển sang phục vụ vet nền/pre-sign/validator.
 
@@ -249,8 +249,8 @@ chép, mà là giới hạn lịch sử git thật của repo).
 - **`pair.vet_error "missing trie node"`** trên các node public không lưu đủ
   state: một phần pool không bao giờ vet được qua RPC hiện có → không bao giờ
   ký được cho pool đó. Cần node archive riêng (hoặc `BSC_HTTP_SIM` trả phí).
-- **`CompetitorVictim` + `SanityReject` chưa có trong bảng skip của CLAUDE.md**
-  — 2 reason mới do lệnh A2/A3 yêu cầu; Chủ cần cập nhật CLAUDE.md (phiên này
+- **`CompetitorVictim` + `SanityReject` chưa có trong bảng skip của AGENTS.md**
+  — 2 reason mới do lệnh A2/A3 yêu cầu; Chủ cần cập nhật AGENTS.md (phiên này
   KHÔNG được sửa file đó).
 - **Dashboard tĩnh** (`web/app.js`) vẫn chưa vẽ các khối mới (`shadow`,
   `bribe`, `competitor`, `buckets_front_in_bnb`) — API đã đủ.

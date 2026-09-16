@@ -2,7 +2,7 @@
 # Cụm `strategy-lock-mode2` (2026-09-15) — bước LỌC THÔ cho quy trình vet tay
 # `pairs.txt` (mode 2, pair-mode). Gọi GoPlus Security `token_security` API
 # công khai (chain 56, KHÔNG cần API key) cho MỌI địa chỉ token trong
-# `pairs.txt`, phân loại PASS/REVIEW/FAIL theo đúng tiêu chí CLAUDE.md mục
+# `pairs.txt`, phân loại PASS/REVIEW/FAIL theo đúng tiêu chí AGENTS.md mục
 # "Chiến lược đã chốt" (verified, không tax, không honeypot, không blacklist,
 # không cooldown/anti-MEV, không pausable, không rebase).
 #
@@ -145,7 +145,7 @@ while IFS=$'\t' read -r addr a b c d e f g h i2 j k l m n o p; do
   reasons=()
   verdict="PASS"
 
-  # FAIL - loai thang, dung tieu chi CLAUDE.md (khong tax/honeypot/blacklist/
+  # FAIL - loai thang, dung tieu chi AGENTS.md (khong tax/honeypot/blacklist/
   # cooldown-anti-MEV/pausable).
   [ "$honeypot" = "1" ] && { verdict="FAIL"; reasons+=("honeypot"); }
   [ "$cannot_sell" = "1" ] && { verdict="FAIL"; reasons+=("cannot_sell_all"); }
@@ -154,7 +154,7 @@ while IFS=$'\t' read -r addr a b c d e f g h i2 j k l m n o p; do
   [ "$pausable" = "1" ] && { verdict="FAIL"; reasons+=("transfer_pausable"); }
   [ "$take_back" = "1" ] && { verdict="FAIL"; reasons+=("can_take_back_ownership"); }
   [ "$hidden_owner" = "1" ] && { verdict="FAIL"; reasons+=("hidden_owner"); }
-  # tax > 5% coi la FAIL ro rang (CLAUDE.md: "khong tax" - nguong nay chi de
+  # tax > 5% coi la FAIL ro rang (AGENTS.md: "khong tax" - nguong nay chi de
   # loc THO, Chu tu quyet dinh nguong chat hon khi soat tay).
   if [[ "$buy_tax" =~ ^[0-9.]+$ ]] && awk "BEGIN{exit !($buy_tax > 0.05)}"; then
     verdict="FAIL"; reasons+=("buy_tax=${buy_tax}")

@@ -1,6 +1,6 @@
 //! Cụm 7.3 (executor gửi tx thật) CHƯA làm trong phiên này. File này chứa
 //! cổng kiểm tra điều kiện live (đọc, không gửi gì) + load signer từ `.env`
-//! (đọc private key, KHÔNG ký/gửi gì) — đúng CLAUDE.md mục "Live". Không có
+//! (đọc private key, KHÔNG ký/gửi gì) — đúng AGENTS.md mục "Live". Không có
 //! hàm gửi giao dịch (`send_raw_transaction` hay tương đương) nào tồn tại
 //! trong repo — cấm bịa executor trước 7.3.
 //!
@@ -37,7 +37,7 @@ use serde_json::json;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Trả true chỉ khi TẤT CẢ điều kiện Live trong CLAUDE.md đều thoả. Vì
+/// Trả true chỉ khi TẤT CẢ điều kiện Live trong AGENTS.md đều thoả. Vì
 /// `dry_run=true` theo config ship mặc định, hàm này luôn false cho tới khi
 /// chủ tự đổi cờ (không phải Claude Code tự bật).
 ///

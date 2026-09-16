@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     // Cum `5.3` — pool nhieu URL HTTP doc (eth_call/getBlock/txpool_content):
     // uu tien BSC_HTTP_LIST (phay) hoac BSC_HTTP+BSC_HTTP_2..16, fallback
     // vps.json khi rong. Loc bo URL kenh gui/private (maxbackrun/fullprivacy/
-    // privacy trong host) khoi pool DOC nay (CLAUDE.md lenh 5.3 muc A4) — cac
+    // privacy trong host) khoi pool DOC nay (AGENTS.md lenh 5.3 muc A4) — cac
     // URL do van co the dung cho kenh gui live sau nay (7.x), chua lam o day.
     // Khong dua http_pool vao AppStateInner (web.rs) — truyen tay qua tham so
     // ham de khong phai sua struct dinh nghia o file khac ngoai pham vi lenh.
@@ -587,7 +587,7 @@ async fn connect_rpc(app_state: AppState, http_pool: Arc<transport::RpcPool>, pe
     // Cum 5.2+5.3 - fallback chain WSS (nhieu URL, lag/rot thi thu WSS KE
     // trong danh sach truoc) -> txpool_content (qua http_pool, failover URL
     // HTTP ke khi loi) -> chi con inject_only. Khong halt bot o bat ky nhanh
-    // nao (CLAUDE.md).
+    // nao (AGENTS.md).
     tokio::spawn(subscribe_pending_txs(app_state, ws_urls, http_pool, pending_poll_interval));
 }
 
@@ -841,7 +841,7 @@ async fn subscribe_competitor_funding(app_state: AppState, ws_urls: Vec<String>)
 /// nhận block header tới khi lỗi/rớt (best-effort, KHÔNG tự động nhảy sang
 /// URL khác giữa chừng — khác `subscribe_pending_txs` nơi pending-tx quan
 /// trọng hơn). Hết `ws_urls` (rỗng hoặc mọi URL đều lỗi) -> log `rpc.skip`,
-/// KHÔNG halt bot (CLAUDE.md: "Không halt vì WSS im (ship)") — `last_block`
+/// KHÔNG halt bot (AGENTS.md: "Không halt vì WSS im (ship)") — `last_block`
 /// vẫn có giá trị từ HTTP `get_block_number` lúc boot/health-check.
 async fn subscribe_ws_heads(app_state: AppState, ws_urls: Vec<String>) {
     // Cụm `verify-cluster-as-victim` — BUG THẬT, đo được trong chính phiên
@@ -934,7 +934,7 @@ async fn subscribe_ws_heads_once(app_state: &AppState, ws_urls: &[String], conne
 /// (khác `5.2`: trước đây rớt là rơi thẳng xuống txpool, giờ còn URL WSS nào
 /// chưa thử thì thử tiếp trước). Hết TOÀN BỘ `ws_urls` mới rơi xuống
 /// `poll_txpool_pending` (HTTP qua `http_pool`, tự failover URL kế khi lỗi).
-/// Không nhánh nào halt bot (CLAUDE.md) — thất bại hết thì `pending_source`
+/// Không nhánh nào halt bot (AGENTS.md) — thất bại hết thì `pending_source`
 /// giữ nguyên `InjectOnly`, bot vẫn nhận `state/inject_tx.jsonl`.
 async fn subscribe_pending_txs(app_state: AppState, ws_urls: Vec<String>, http_pool: Arc<transport::RpcPool>, poll_interval: Duration) {
     for url in &ws_urls {
@@ -1046,7 +1046,7 @@ struct TxpoolContentPendingOnly {
 /// pool không còn URL nào connect được (`advance_and_reconnect` trả `None`)
 /// mới coi là hết đường — vẫn KHÔNG dừng task (health-check task riêng có
 /// thể hồi phục pool sau), chỉ log rõ lý do — đúng "Không halt vì 1 node
-/// chết" (CLAUDE.md `5.3`).
+/// chết" (AGENTS.md `5.3`).
 ///
 /// `pending_txpool_max_per_poll` (config, ship `32`) giới hạn số hash MỚI
 /// (chưa `seen`) được xử lý mỗi vòng — `txpool_content` trả TOÀN BỘ pool
@@ -1956,7 +1956,7 @@ async fn funnel_report_task(app_state: AppState, interval: Duration) {
 /// `halt.triggered`/`halt.cleared` mỗi lần CHUYỂN trạng thái (không lặp lại
 /// mỗi tick khi vẫn đang halt) + cập nhật `bot_state` cho `/api/status`
 /// (`STOPPED` khi halt, quay về `WATCHING` khi xoá file — đúng state machine
-/// CLAUDE.md `STOPPED --reset--> IDLE`... thực tế ở đây coi xoá halt.lock là
+/// AGENTS.md `STOPPED --reset--> IDLE`... thực tế ở đây coi xoá halt.lock là
 /// "chạy lại bình thường", không phải nhánh `reset.req` riêng, xem
 /// `state.rs`).
 /// V-06 — logic THUẦN "trạng thái trước -> trạng thái hiện tại" ra quyết
@@ -2093,7 +2093,7 @@ fn log_tx_seen(logger: &BotLogger, source: &str, raw: &PendingTxRaw) {
 /// resolve reserve pool V2 THẬT qua RPC (chỉ khi qua được precheck rẻ tiền,
 /// tránh tốn `eth_call` cho tx rõ ràng không phải candidate), gọi
 /// `pipeline::decide_paper`, log kết quả, tăng `skip_counts`. Bọc bằng
-/// `pending_semaphore` để giới hạn ≤ 4 tx xử lý đồng thời (CLAUDE.md lệnh
+/// `pending_semaphore` để giới hạn ≤ 4 tx xử lý đồng thời (AGENTS.md lệnh
 /// `5.1`) — mỗi lệnh gọi giữ ĐÚNG 1 permit tới khi xong (RAII qua
 /// `OwnedSemaphorePermit`, tự trả khi hàm return ở bất kỳ nhánh nào).
 ///
@@ -2189,7 +2189,7 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
 
     let cfg = app_state.config.read().await.clone();
     if !cfg.dry_run {
-        // "Paper loop (dry_run only)" - CLAUDE.md cam moi hanh vi ngoai
+        // "Paper loop (dry_run only)" - AGENTS.md cam moi hanh vi ngoai
         // dry_run o cum nay (khong co logic gui tx that o day de tat, chi
         // dam bao khong chay nham logic paper khi chu da chuyen sang live).
         return;
@@ -2512,7 +2512,7 @@ async fn handle_paper_tx(app_state: AppState, raw: PendingTxRaw) {
     // bằng EVM THẬT khi `sim_engine="evm"`. Chỉ chạy khi bước sim công thức
     // đóng đã ra `Simulated` (số candidate tới đây rất ít sau các gate rẻ),
     // và ta biết `(token, quote)`. `decide_paper_v2` (công thức đóng) giờ chỉ
-    // còn vai trò ƯỚC LƯỢNG KHOẢNG `front_in` (đúng CLAUDE.md).
+    // còn vai trò ƯỚC LƯỢNG KHOẢNG `front_in` (đúng AGENTS.md).
     let (outcome, source) = if cfg.sim_engine_is_evm() {
         if let (PipelineOutcome::Simulated(_), Some(token)) = (&outcome, token_hint) {
             let quote = if source == "usdt" { pipeline::QuoteAsset::Usdt } else { pipeline::QuoteAsset::Wbnb };

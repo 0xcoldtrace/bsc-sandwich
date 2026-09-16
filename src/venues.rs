@@ -155,7 +155,7 @@ pub fn registry_snapshot(scan_v2: bool, scan_v3: bool, scan_v4: bool, live_v2: b
     ]
 }
 
-/// Enum reason bắt buộc theo CLAUDE.md mục "Skip".
+/// Enum reason bắt buộc theo AGENTS.md mục "Skip".
 ///
 /// `not_quote_pair` — cụm `usdt-quote-asset` (BAOCAO29): dùng bởi entrypoint
 /// quote-aware MỚI (`pipeline::decide_paper_quote`, song song `decide_paper`/

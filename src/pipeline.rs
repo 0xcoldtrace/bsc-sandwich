@@ -17,7 +17,7 @@
 //! đã BỊ BỎ HẲN khỏi pipeline (quyết định phiên BAOCAO14, xem `docs/STATE.md`)
 //! — thứ tự lệnh gốc (front mua trước, back bán sau victim bán) chứng minh
 //! toán học luôn lỗ; hướng fix đúng cần đảo front/back + giữ tồn kho
-//! token/flashloan, ngoài scope "1 signer, không flashloan" của CLAUDE.md.
+//! token/flashloan, ngoài scope "1 signer, không flashloan" của AGENTS.md.
 //! Decoder vẫn decode đúng chiều bán đó nhưng pipeline coi `not_wbnb_pair`
 //! (không sim, không code chiều này dưới bất kỳ hình thức nào).
 
@@ -66,7 +66,7 @@ pub enum PipelineSkip {
     /// pin quoter/sim cho nhánh nào bị SmartRouter/UR gộp gọi qua
     /// `exactInputSingle`/`exactInput`/UR `V3_SWAP_EXACT_IN` ở TẦNG PIPELINE
     /// này) — KHÔNG được đưa vào `resolve_v2_reserves` (bug cũ: V3 bị sim
-    /// nhầm bằng pool V2, xem CLAUDE.md lệnh A4).
+    /// nhầm bằng pool V2, xem AGENTS.md lệnh A4).
     VenueUnpinned,
     ThinLiq,
     NoPool,
@@ -174,7 +174,7 @@ impl PipelineSkip {
 /// (mạng tắc nghẽn bất thường) → trả `u128::MAX` (sentinel CHẮC CHẮN vượt bất
 /// kỳ trần `cfg.gas_wei()` nào) để gate `gas_cap` ở `evaluate_candidate`/
 /// `evaluate_candidate_quote` tự động kích hoạt, không cần thêm nhánh so sánh
-/// riêng cho lý do (e) trong CLAUDE.md — gộp cả 2 điều kiện (c)+(e) vào ĐÚNG 1
+/// riêng cho lý do (e) trong AGENTS.md — gộp cả 2 điều kiện (c)+(e) vào ĐÚNG 1
 /// chỗ trả `gas_cap`.
 pub fn compute_gas_cost_wei(
     gas_units_front: u64,
@@ -266,7 +266,7 @@ pub struct PaperDecision<'a> {
 /// `max_roundtrip_tax_bps`/`gas_wei`/`tax_cache_blocks`) — không có literal
 /// ngưỡng nào hardcode ở đây; chủ đổi `config.toml` (kể cả hot-reload giữa
 /// 2 lần gọi) là lần `decide_paper` SAU dùng số mới ngay, không cần build
-/// lại. Thứ tự kiểm tra khớp CLAUDE.md mục "Decode được phép"/"Skip":
+/// lại. Thứ tự kiểm tra khớp AGENTS.md mục "Decode được phép"/"Skip":
 /// decode -> path WBNB -> victims.txt (not_in_list/below_min) -> thin_liq
 /// (pool quá mỏng so `min_reserve_wbnb`) -> tax cache (honeypot_or_tax, cả
 /// khi CHƯA đo lẫn khi đo được nhưng vượt `max_roundtrip_tax`) -> sim
@@ -335,7 +335,7 @@ pub fn precheck_without_reserves(
 /// thành `no_pool` ở tầng gọi này — khác `pool::resolve_v2_pair` (vẫn tách
 /// `Err(String)` lỗi RPC khỏi `Ok(Err(NoPool))` "chắc chắn không có pool" cho
 /// caller thấp hơn); ở live loop, cả hai đều dẫn tới cùng hành động: không đủ
-/// dữ liệu để sim, skip đúng enum `no_pool` đã có sẵn trong CLAUDE.md.
+/// dữ liệu để sim, skip đúng enum `no_pool` đã có sẵn trong AGENTS.md.
 ///
 /// Cụm pair-mode: trả THÊM `pair_addr` (khác `5.1` chỉ trả `PoolReserves`) —
 /// `decide_paper_v2` cần biết đúng địa chỉ pool để tra `PairBook::contains`
@@ -449,7 +449,7 @@ pub struct PaperDecisionV2<'a> {
 /// Cụm `exec-path-traps` (F-14) — ước lượng thời gian block BSC (giây),
 /// KHÔNG phải số đo thật per-block (không có `Provider` ở tầng thuần này) —
 /// dùng để tính buffer `2 * BSC_BLOCK_TIME_SEC` giây trước khi coi 1
-/// `deadline` là "sắp hết hạn" đủ để từ chối candidate. Khớp CLAUDE.md mục
+/// `deadline` là "sắp hết hạn" đủ để từ chối candidate. Khớp AGENTS.md mục
 /// Math "BSC ~3s/block".
 const BSC_BLOCK_TIME_SEC: u64 = 3;
 
@@ -527,7 +527,7 @@ fn evaluate_candidate(
     }
     // Cong RiskGuard (7.1/pair-mode) - da lo lien tiep du nguong (do TANG EXECUTOR
     // THAT 7.x goi record_result, xem doc-comment RiskGuard) -> coi nhu unprofitable,
-    // dung lai enum san co, khong them skip reason moi ngoai CLAUDE.md.
+    // dung lai enum san co, khong them skip reason moi ngoai AGENTS.md.
     if risk.consecutive_loss_exceeded(cfg.max_consecutive_loss) {
         return PipelineOutcome::Skip(PipelineSkip::Unprofitable);
     }
@@ -594,7 +594,7 @@ fn evaluate_candidate(
 /// == true` (cụm `universal-pair-scan`, ship `false`) -> universal mode
 /// (CÙNG ngưỡng GLOBAL `pairs_min_swap_bnb`, không thêm ngưỡng riêng); không
 /// khớp gì (hoặc universal đang tắt) -> `not_in_list`. Trả kèm `source`
-/// ("wallet"/"pair"/"universal"/"none") để log field `source` (CLAUDE.md lệnh
+/// ("wallet"/"pair"/"universal"/"none") để log field `source` (AGENTS.md lệnh
 /// pair-mode/universal-pair-scan). Thứ tự ưu tiên GIỮ NGUYÊN khi nhiều hơn 1
 /// mode bật cùng lúc: wallet > pair (đã liệt kê) > universal (mới) >
 /// not_in_list — `wallet_scan_enabled`/`pair_scan_enabled` (cụm
@@ -712,7 +712,7 @@ pub fn decide_paper_v2(
 /// đúng lệnh "sim_engine=v2 vẫn build theo v2"). Khi `cfg.sim_engine ==
 /// "evm"` (ship mặc định), hàm này KHÔNG build gì nữa dù `decide_paper_v2` ra
 /// `Simulated` — `Simulated` lúc đó CHỈ là ước lượng công thức đóng, CHƯA
-/// được EVM thật xác nhận (xem `docs/STATE.md`/`CLAUDE.md` mục Math). Build
+/// được EVM thật xác nhận (xem `docs/STATE.md`/`AGENTS.md` mục Math). Build
 /// thật cho đường `evm` dời sang `build_paper_txs_from_evm_decision` (dưới),
 /// gọi SAU khi `decide_with_evm` đã chạy — đo THẬT phiên trước sửa: 501
 /// `tx.build` / 1 `simulated` (audit F-26), vì hàm này build TRƯỚC khi EVM
@@ -847,7 +847,7 @@ pub async fn resolve_reserves_for_quote(
 }
 
 /// Cụm `usdt-quote-asset` — lõi đánh giá 1 candidate quote-aware, KHÔNG có
-/// wallet-mode (đúng CLAUDE.md diff "KHÔNG thêm cột cho wallet-mode ở cụm
+/// wallet-mode (đúng AGENTS.md diff "KHÔNG thêm cột cho wallet-mode ở cụm
 /// này" — không có `min_threshold_wei`/`victims.txt` nào ở nhánh này, mọi
 /// candidate qua được decode+thin_liq+tax đều được sim, giống kiểu
 /// "universal"). Ngưỡng/gas theo ĐÚNG quote asset:
@@ -856,12 +856,12 @@ pub async fn resolve_reserves_for_quote(
 ///   `min_profit_wei`.
 /// - `Usdt`: `min_reserve_usdt_wei`/`max_front_usdt_wei` (KHÔNG gộp
 ///   `max_exposure_bnb` — field đó là BNB, ngoài phạm vi lệnh USDT lần này),
-///   `gas_wei=0` khi tính `profit_wei` (ĐÚNG CLAUDE.md "profit_usdt =
+///   `gas_wei=0` khi tính `profit_wei` (ĐÚNG AGENTS.md "profit_usdt =
 ///   backUSDT - frontUSDT THUẦN, không trừ gas vào số này"), so với
 ///   `min_profit_usdt_wei`. Gas VẪN được chặn riêng qua
 ///   `RiskGuard::front_cap_after_gas_reserve` (trừ `gas_reserve_bnb_wei` khỏi
 ///   trần front — field BNB có sẵn, KHÔNG quy đổi/không price oracle, đúng
-///   CLAUDE.md "gate độc lập, y hệt cơ chế hiện tại").
+///   AGENTS.md "gate độc lập, y hệt cơ chế hiện tại").
 fn evaluate_candidate_quote(
     quote: QuoteAsset,
     token: Address,
@@ -907,7 +907,7 @@ fn evaluate_candidate_quote(
         }
     }
 
-    // Cụm `real-economics-mode2` (mục 1.d, sửa CLAUDE.md Math "profit_usdt
+    // Cụm `real-economics-mode2` (mục 1.d, sửa AGENTS.md Math "profit_usdt
     // không trừ gas") — trần gas LUÔN so bằng ĐƠN VỊ BNB (gas trả bằng BNB
     // bất kể quote asset nào của pool), `gas_cost_in_quote_wei` (đã quy đổi
     // sẵn bởi caller cho USDT qua reserve WBNB/USDT thật tại block, xem
@@ -1184,7 +1184,7 @@ pub struct EvmDecision {
 /// EVM thật trên `fork` (fork tại block hiện tại, dùng chung cho mọi tx cùng
 /// block).
 ///
-/// Quy tắc (đúng CLAUDE.md — công thức đóng không thấy tax/honeypot):
+/// Quy tắc (đúng AGENTS.md — công thức đóng không thấy tax/honeypot):
 /// - EVM lỗi hoàn toàn -> `sim_error` (KHÔNG rơi về `sim_v2` âm thầm).
 /// - `victim_success == false` -> `victim_would_revert` (victim thật sẽ revert
 ///   nếu bị front-run ở mức này -> không được phép sandwich).
@@ -1210,7 +1210,7 @@ pub fn decide_with_evm(
 
     let (max_front, gas_wei, min_profit) = match quote_asset {
         QuoteAsset::Wbnb => (cfg.effective_front_cap_wei(), cfg.gas_wei(), cfg.min_profit_wei()),
-        // Quote USDT: profit THUAN USDT, KHONG tru gas (CLAUDE.md muc Math).
+        // Quote USDT: profit THUAN USDT, KHONG tru gas (AGENTS.md muc Math).
         QuoteAsset::Usdt => (cfg.max_front_usdt_wei(), 0u128, cfg.min_profit_usdt_wei()),
     };
     let front_cap = RiskGuard::front_cap_after_gas_reserve(max_front, cfg.gas_reserve_bnb_wei);
@@ -1317,7 +1317,7 @@ pub fn log_sim_evm(
     );
 }
 
-/// Ghi `tx.skip`/`sim.result` vào `logs/bot.jsonl` (CLAUDE.md mục "State /
+/// Ghi `tx.skip`/`sim.result` vào `logs/bot.jsonl` (AGENTS.md mục "State /
 /// log"). CHƯA wire vào vòng lặp pending-tx thật (không tồn tại ở phiên này)
 /// — hàm này chỉ được gọi thủ công/test, chứng minh log hoạt động đúng
 /// schema cho khi `5.1` nối pending-tx thật.
@@ -1349,7 +1349,7 @@ pub fn log_outcome(logger: &BotLogger, from: Address, token_hint: Option<Address
 }
 
 /// Cụm `foundation-fix-then-real-sim` (A4) — thông tin thô kèm log
-/// `tx.skip`/`sim.result` (hash/to/venue/selector/fee, CLAUDE.md lệnh A4 mục
+/// `tx.skip`/`sim.result` (hash/to/venue/selector/fee, AGENTS.md lệnh A4 mục
 /// "log thêm hash,to,venue,selector") — hoàn toàn phục vụ quan sát/debug,
 /// KHÔNG ảnh hưởng quyết định pipeline. `fee` chỉ `Some` khi venue là V3
 /// (đọc thật từ `decoder::SwapVenue::V3{fee}`, dùng cho log `venue_unpinned`
@@ -3143,7 +3143,7 @@ mod tests {
     }
 
     /// `scan_quote_usdt=false` (ship mac dinh) -> swap quote USDT phai
-    /// `not_quote_pair`, KHONG duoc coi la candidate (dung CLAUDE.md
+    /// `not_quote_pair`, KHONG duoc coi la candidate (dung AGENTS.md
     /// "scan_quote_usdt=false -> hanh vi WBNB khong doi gi", ngam y USDT
     /// KHONG duoc bat len khi cha chua bat co).
     #[test]
@@ -3244,7 +3244,7 @@ mod tests {
         assert!(matches!(outcome, PipelineOutcome::Skip(PipelineSkip::HoneypotOrTax)), "got {outcome:?}");
     }
 
-    /// Cụm `real-economics-mode2` (mục 1.d) — CLAUDE.md Math ĐÃ SỬA: bỏ luật
+    /// Cụm `real-economics-mode2` (mục 1.d) — AGENTS.md Math ĐÃ SỬA: bỏ luật
     /// cũ "profit_usdt không trừ gas" (test cũ
     /// `usdt_quote_profit_has_no_gas_subtracted_matches_gas_wei_zero_exactly`
     /// đã XOÁ, hành vi đó không còn đúng). Giờ `gas_cost_in_quote_wei` (đã

@@ -83,7 +83,7 @@ ssh "${SSH_OPTS[@]}" "${SSH_USER}@${HOST}" '
 
 echo "== 3/4: copy source (khong target/state/logs/artifacts/.env) qua tar+ssh =="
 # Cum `econ-truth-latency-vps` (muc 5) - GIU LAI .git (truoc day loai tru) -
-# docs/RUN.md/CLAUDE.md yeu cau xac nhan "VPS cung git commit voi WSL" bang
+# docs/RUN.md/AGENTS.md yeu cau xac nhan "VPS cung git commit voi WSL" bang
 # `git rev-parse HEAD` CHAY TREN VPS - thieu .git thi lenh do bao loi "not a
 # git repository", khong the nao verify duoc (phat hien that khi deploy phien
 # nay). .git chi ~5MB, khong dang ke so voi thoi gian build release.

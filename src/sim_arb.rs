@@ -22,7 +22,7 @@
 //!
 //! Chân `bridge` là pool V2 WBNB/USDT THẬT (reserve đọc on-chain tại cùng
 //! block) — KHÔNG price oracle, KHÔNG quy đổi bằng tỉ giá bịa, đúng luật
-//! CLAUDE.md mục Math về `profit_usdt`.
+//! AGENTS.md mục Math về `profit_usdt`.
 //!
 //! # Vì sao ternary search là đủ
 //!

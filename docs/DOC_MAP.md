@@ -1,8 +1,8 @@
 # docs/DOC_MAP.md — Bản đồ toàn bộ file trong repo
 
-## Thứ tự đọc cho Claude Code (đầu mỗi phiên, theo CLAUDE.md)
+## Thứ tự đọc cho Claude Code (đầu mỗi phiên, theo AGENTS.md)
 
-1. `CLAUDE.md` — luật, không đổi trừ khi lệnh bảo sửa.
+1. `AGENTS.md` — luật, không đổi trừ khi lệnh bảo sửa.
 2. `docs/STATE.md` — mục "TRẠNG THÁI HIỆN TẠI" ở đầu file trước, rồi tới
    quyết định kỹ thuật chi tiết theo tên cụm cần biết.
 3. `docs/TASKS.md` — cụm nào xong, cụm nào nợ, cụm nào hoãn.
@@ -23,7 +23,7 @@
 
 | File | Mô tả |
 |---|---|
-| `CLAUDE.md` | Luật vận hành đầy đủ cho Claude Code — không tự sửa trừ khi được lệnh. |
+| `AGENTS.md` | Luật vận hành đầy đủ cho Claude Code — không tự sửa trừ khi được lệnh. |
 | `README.md` | Hướng dẫn vận hành chính cho Chủ (không cần biết Rust). |
 | `DEX_REGISTRY.md` | Venue PancakeSwap đã pin (V2/V3/V4-Infinity) — địa chỉ, `eth_getCode`, nguồn. |
 | `Cargo.toml` / `Cargo.lock` | Khai báo dependency Rust + version khoá thực tế. |
@@ -67,7 +67,7 @@
 | `src/pool.rs` | Resolve pool V2/V3/V4-Infinity qua `eth_call`/`eth_getLogs` thật. |
 | `src/sim_v2.rs` | Công thức đóng V2 (đường nóng mode 2, `sim_engine="v2"`). |
 | `src/sim_v3.rs` | Sim V3 qua `QuoterV2.quoteExactInputSingle` đã pin. |
-| `src/sim_evm.rs` | Sim EVM thật qua `revm` — dùng cho vet nền/pre-sign/validator (KHÔNG dùng trên đường nóng, xem CLAUDE.md "Chiến lược đã chốt"). |
+| `src/sim_evm.rs` | Sim EVM thật qua `revm` — dùng cho vet nền/pre-sign/validator (KHÔNG dùng trên đường nóng, xem AGENTS.md "Chiến lược đã chốt"). |
 | `src/tax.rs` | Cache tax roundtrip theo block + hàm `eth_call` đo (giới hạn kỹ thuật, xem `docs/STATE.md`). |
 | `src/pipeline.rs` | Lõi quyết định paper (`decide_paper`/`decide_paper_v2`/quote-aware) — decode → gate → sim → outcome. |
 | `src/calldata.rs` | Encode calldata front-buy/back-sell V2 Router (dùng cho `7.2`/`7.3` paper-build). |
@@ -85,7 +85,7 @@
 
 | File | Mô tả |
 |---|---|
-| `web/index.html` | Khung trang dashboard (các khối theo CLAUDE.md mục "Web"). |
+| `web/index.html` | Khung trang dashboard (các khối theo AGENTS.md mục "Web"). |
 | `web/app.js` | Gọi `/api/*`, render bảng/số liệu. |
 | `web/style.css` | Style tối giản. |
 
@@ -106,7 +106,7 @@
 |---|---|
 | `victims.example.txt` | Mode 1 (wallet-mode) tắt mặc định; `victims.txt` giữ lại 1 dòng comment ghi định dạng cũ, không cần file ví dụ riêng nữa. |
 | `scripts/vps_paper_run.sh` | Chỉ là alias forward sang `scripts/paper_run.sh` (đã dùng chung cho cả WSL lẫn VPS từ cụm `wsl-env-rules-paperrun`) — không còn lý do giữ 2 tên cho cùng 1 script. |
-| `scripts/deploy_vps.ps1` | Bản PowerShell/Windows — dev đã chuyển hẳn sang WSL (`CLAUDE.md`: "dev = WSL"), không còn máy Windows nào chạy script này. |
+| `scripts/deploy_vps.ps1` | Bản PowerShell/Windows — dev đã chuyển hẳn sang WSL (`AGENTS.md`: "dev = WSL"), không còn máy Windows nào chạy script này. |
 | `scripts/run_rpc_probe.ps1` | Cùng lý do trên (bản Windows của `run_rpc_probe.sh`). |
 
 `docs/VPS_RUN.md` đã đổi tên thành `docs/RUN.md` từ cụm `strategy-lock-mode2`

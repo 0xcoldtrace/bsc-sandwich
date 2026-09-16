@@ -16,7 +16,7 @@
 //!   `IBinPoolManager.sol`, đọc trực tiếp) qua `eth_getLogs` trên
 //!   `CLPoolManager`/`BinPoolManager` đã pin để tìm `PoolKey` thật của pool.
 //!   Không tìm thấy log nào cho cặp `{token, WBNB}` -> vẫn `hooks_unread`,
-//!   skip đúng pool đó, không tắt V2/V3 (theo CLAUDE.md mục "Decode được
+//!   skip đúng pool đó, không tắt V2/V3 (theo AGENTS.md mục "Decode được
 //!   phép" / enum skip).
 //!
 //! `eth_call` dùng selector suy từ `keccak256(chữ_ký_hàm)` (không hardcode
@@ -113,7 +113,7 @@ const BIN_INITIALIZE_EVENT_SIG: &str = "Initialize(bytes32,address,address,addre
 static CL_INITIALIZE_TOPIC0: LazyLock<B256> = LazyLock::new(|| keccak256(CL_INITIALIZE_EVENT_SIG.as_bytes()));
 static BIN_INITIALIZE_TOPIC0: LazyLock<B256> = LazyLock::new(|| keccak256(BIN_INITIALIZE_EVENT_SIG.as_bytes()));
 
-/// Số block quét mỗi lần gọi `eth_getLogs` — giới hạn "hợp lý" theo CLAUDE.md
+/// Số block quét mỗi lần gọi `eth_getLogs` — giới hạn "hợp lý" theo AGENTS.md
 /// ("không quét toàn chain từ block 0"). Giá trị `5_000` chọn THẤP HƠN mọi
 /// giới hạn thật đo được trong phiên `v4-pool-resolve` (2026-09-15): node
 /// công khai `bsc-rpc.publicnode.com` cho quét free-tier tới `10_000` block
@@ -450,7 +450,7 @@ async fn scan_initialize_logs(
 /// `BinPoolManager` đã pin (`DEX_REGISTRY.md`) qua `eth_getLogs` trong
 /// `[from_block, to_block]` (caller truyền — xem `scan_initialize_logs`),
 /// dựng lại `PoolKey` thật cho cặp `{token, WBNB}`. Không tìm thấy log nào
-/// -> `Ok(Err(HooksUnread))` (đúng luật CLAUDE.md, skip đúng pool đó). Tìm
+/// -> `Ok(Err(HooksUnread))` (đúng luật AGENTS.md, skip đúng pool đó). Tìm
 /// thấy NHIỀU pool cùng cặp (khác fee tier/hook) -> trả TẤT CẢ, KHÔNG tự
 /// chọn 1 cái — tầng sim (cụm khác, chưa làm phiên này) tự chọn max profit.
 /// Lỗi RPC (mạng/node) tách riêng ở `Err(String)` ngoài, giống

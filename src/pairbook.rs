@@ -41,7 +41,7 @@ use crate::logger::BotLogger;
 use crate::pool;
 use crate::venues::{USDT_ADDRESS, WBNB_ADDRESS};
 
-/// Resolve tối đa 10 dòng đồng thời (CLAUDE.md lệnh pair-mode), timeout 3s/dòng.
+/// Resolve tối đa 10 dòng đồng thời (AGENTS.md lệnh pair-mode), timeout 3s/dòng.
 const MAX_CONCURRENT_RESOLVE: usize = 10;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -106,7 +106,7 @@ pub struct PendingRetry {
     pub last_error: String,
 }
 
-/// Backoff 5s/15s/60s (CLAUDE.md lệnh mục 0.a) theo số lần lỗi LIÊN TIẾP đã
+/// Backoff 5s/15s/60s (AGENTS.md lệnh mục 0.a) theo số lần lỗi LIÊN TIẾP đã
 /// có (`attempts`, 0 = chưa từng thử) — THUẦN, test được không cần `Instant`
 /// thật trôi qua.
 fn retry_backoff(attempts: u32) -> Duration {
@@ -316,7 +316,7 @@ impl PairBook {
     /// có thể tắt) VÀ KHÔNG nằm trong `vet_failed` (vet nền vẫn có thể loại
     /// pool bất kỳ lúc nào) → coi là "tax OK", đường nóng KHÔNG cần tra
     /// `TaxCache` (cache đó chỉ còn ý nghĩa khi `pairs_require_vetted=false`,
-    /// xem CLAUDE.md mục "Chiến lược đã chốt"/"BUG cổng tax"). `pair` KHÔNG
+    /// xem AGENTS.md mục "Chiến lược đã chốt"/"BUG cổng tax"). `pair` KHÔNG
     /// có trong map (vd wallet-mode/universal-mode) → `false`, giữ nguyên
     /// hành vi tra `TaxCache` cũ cho 2 nhánh đó.
     pub fn is_tax_ok(&self, pair: &Address) -> bool {
@@ -455,7 +455,7 @@ impl PairBook {
 
     /// Chi tiết từng dòng đang pending: `(token_hoac_addr, quote, attempts,
     /// last_error, last_attempt_sec_ago)` — dùng cho `GET /api/pairs`
-    /// ("4 dòng đang lỗi: ghi token + lý do", CLAUDE.md lệnh mục 0 DoD).
+    /// ("4 dòng đang lỗi: ghi token + lý do", AGENTS.md lệnh mục 0 DoD).
     pub fn pending_entries(&self) -> Vec<(Address, Address, u32, String, u64)> {
         self.line_state
             .iter()

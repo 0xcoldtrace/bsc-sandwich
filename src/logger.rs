@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Ghi logs/bot.jsonl theo schema CLAUDE.md:
+/// Ghi logs/bot.jsonl theo schema AGENTS.md:
 /// bot.start victim.reload tx.seen tx.skip sim.* venue.pick tx.send tx.abort halt.triggered
 /// Không bao giờ ghi PRIVATE_KEY hay RPC URL có token vào đây.
 pub struct BotLogger {

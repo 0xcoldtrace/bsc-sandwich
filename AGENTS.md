@@ -1,18 +1,18 @@
-# CLAUDE.md — SANDWICH BOT BSC
+# AGENTS.md — BSC MEV BOT (backrun-arb, flash 0 phí)
 
-Bạn là Claude Code. **Mỗi phiên là trắng.** Không nhớ chat cũ. Không nói “như lát trước”. Chỉ tin file repo + khối lệnh lần này.
+Bạn là **Thợ** (hiện tại: Grok; trước 2026-09-16 là Claude Code, khi đó file này tên `CLAUDE.md` — các BAOCAO cũ nhắc `CLAUDE.md` là nhắc file này). **Mỗi phiên là trắng.** Không nhớ chat cũ. Không nói “như lát trước”. Chỉ tin file repo + khối lệnh lần này. Luật trong file này không đổi theo người làm Thợ.
 
 ## Ai làm gì
 
 | Ai | Việc |
 |---|---|
-| **Điều hành** (Grok, hoặc Claude trong chat của Chủ — gọi chung là "Grok" trong file này) | Người điều hành duy nhất. Ra khối lệnh tự chứa, đọc BAOCAO, ĐẠT/FAIL, ra lệnh tiếp. Không đụng code. |
-| **Chủ** | Copy Grok → Code. Copy BAOCAO / lỗi → Grok. Điền `victims.txt`, `.env`, bật cờ live, deploy VPS. Không tự ĐẠT. |
-| **Claude Code** | Thợ. Làm hết cụm trong lệnh; **được kéo thêm việc dính liền trong cùng phiên** để khỏi nợ lát. Một file BAOCAO. Không điều hành. Không sửa file này trừ khi lệnh bảo sửa. |
+| **Điều hành** = **Claude** (trong chat của Chủ) | Người điều hành duy nhất. Ra khối lệnh tự chứa, đọc BAOCAO, ĐẠT/FAIL, ra lệnh tiếp. Không đụng code. Trong file này mọi chỗ ghi "Điều hành" là Claude. |
+| **Chủ** | Copy lệnh Claude → Thợ. Copy BAOCAO / lỗi → Claude. Điền `.env`, `pairs.txt`, khóa ví, cờ live, deploy VPS, chạy tool vet. Không tự ĐẠT. |
+| **Thợ** = **Grok** (agent code, phiên trắng) | Làm hết cụm trong lệnh; **được kéo thêm việc dính liền trong cùng phiên** để khỏi nợ lát. Một file BAOCAO. Không điều hành. Không sửa file này trừ khi lệnh bảo sửa. Không tự ĐẠT. |
 
-Không có Claude Desktop. Chủ đưa báo cáo cho Grok là đủ.
+Chủ đưa BAOCAO cho Claude là đủ. Thợ đọc repo, không đọc chat của Chủ.
 
-Máy: **dev = WSL `~/bsc-sandwich`** (Claude Code chạy ở đây, ext4 native, không qua `/mnt/c`). **Production = VPS** — chỉ nhận binary/commit đã qua paper run trên WSL. Hai máy phải cùng git commit; lệch = MISSING.
+Máy: **dev = WSL `~/bsc-sandwich`** (Thợ chạy ở đây, ext4 native, không qua `/mnt/c`). **Production = VPS** (host + user do Chủ dán trong khối lệnh; key `key/bsc_vps_ed25519`; **KHÔNG ghi IP vào file/BAOCAO**). VPS chỉ nhận commit đã qua paper run trên WSL; hai máy phải cùng git commit, lệch = MISSING. `config.toml` trên VPS là file RIÊNG — binary mới có field mới thì phải cập nhật `config.toml` VPS CÙNG LÚC, nếu không bot VPS fail load (bài học BAOCAO46).
 
 ## Phiên Code trắng
 
@@ -32,9 +32,10 @@ Hết phiên không có `baocao/BAOCAO{NN}.md` = FAIL.
 - Stack **Rust** + tokio. RPC: **alloy hoặc ethers-rs, đúng 1** — ghi `docs/STATE.md` khi khởi tạo. Cấm npm app / viem / ethers.js / Python runtime.
 - `victims.txt`: `0xAbc...,0.01` (`address,min_swap_bnb`) — **mode 1, TẮT mặc định** (`wallet_scan_enabled=false`, xem "Chiến lược đã chốt").
 - `pairs.txt` là nguồn candidate DUY NHẤT đang bật (**mode 2, pair-mode**) — token do Chủ vet tay, xem "Chiến lược đã chốt" + định dạng dòng bên dưới.
-- Pair: token/WBNB hoặc token/USDT — quote asset xác định THEO GIAO DỊCH
-  NẠN NHÂN: victim mua bằng WBNB/BNB → front-run bằng WBNB/BNB; victim mua
-  bằng USDT → front-run bằng USDT (không trộn quote trong 1 path). USDT
+- Pair: token/WBNB hoặc token/USDT. Chiến lược hiện tại là **backrun-arb** (xem
+  "Chiến lược đã chốt"): bot KHÔNG đứng trước victim, chỉ đứng ngay SAU swap
+  lớn và cân bằng giá giữa ≥2 pool của cùng token. Đường sandwich cũ giữ code,
+  tắt bằng `strategy="backrun"`. USDT
   `0x55d398326f99059fF775485246999027B3197955` — pin + getCode khi làm
   registry, ngang hàng WBNB.
 - Venue: **mọi phiên bản PancakeSwap AMM đang live trên BSC** — V2, V3, V4/Infinity, **và bản mới hơn nếu đã deploy** (docs chính thức + `eth_getCode > 0` trên chain 56). Đây là mục tiêu sản phẩm, không phải optional.
@@ -79,7 +80,7 @@ chỉ khác → lỗi dòng, không sim.
 - V4/Infinity / bản mới hơn: decoder theo docs đã pin (CL/LB/hooks đúng family).
 - Chỉ nhận **victim đang mua** (`path[0]` = quote). Victim bán → `sell_direction`. 3+ token → `not_quote_pair`. Quote hợp lệ: WBNB luôn; USDT khi `scan_quote_usdt=true`.
 
-Cấm: Uniswap factory, flashloan, steal approval, honeypot drain. Hook không đọc được → skip **pool đó**, không tắt bot, không bỏ family.
+Cấm: Uniswap factory, steal approval, honeypot drain. Flashloan CHỈ từ nguồn đã pin trong `DEX_REGISTRY.md` (xem "Chiến lược đã chốt"), trả trong cùng tx, không lãi thì revert. Hook không đọc được → skip **pool đó**, không tắt bot, không bỏ family.
 
 ### Math
 
@@ -143,7 +144,7 @@ Nhiều pool WBNB: sim version `scan_*=true` đã pin, chọn **1 profit max**.
 
 Skip: `not_in_list | below_min | decode_fail | not_wbnb_pair | not_quote_pair | sell_direction | not_pancake_router | venue_unpinned | no_pool | rpc_error | thin_liq | deadline | nonce_stale | nonce_future | victim_would_revert | unprofitable | honeypot_or_tax | hooks_unread | sim_error | gas_cap | sanity_reject | competitor_victim`
 (`sanity_reject` + `competitor_victim` thêm ở cụm
-`bugfix-presign-and-contract-plan` A2/A3, ghi vào CLAUDE.md ở cụm
+`bugfix-presign-and-contract-plan` A2/A3, ghi vào AGENTS.md ở cụm
 `decision-data-24h` mục 6 theo lệnh Chủ. `sanity_reject`: kết quả sim vi phạm
 1 trong 3 trần vô lý — `front_in > 10%` reserve, `profit > 2%` reserve, hoặc
 `victim_in > 100%` reserve (đo thật 30 phút: 106/106 dòng pass, cổng không cắt
@@ -164,33 +165,57 @@ trả `address(0)`, chắc chắn không pool) — trước đó 2 tình huống
 
 ---
 
-## Chiến lược đã chốt (2026-09-15)
+## Chiến lược đã chốt
 
-Chủ CHỐT chiến lược (cụm `strategy-lock-mode2`), áp dụng cho mọi phiên sau:
+### 2026-09-16 — KẾ HOẠCH B: BACKRUN-ARB bằng flash loan 0 phí (đang hiệu lực)
 
-1. **CHỈ mode 2 (pair-mode, `pairs.txt`).** Mode 1 (`victims.txt`) và mode 3
-   (universal) TẮT bằng cờ (`wallet_scan_enabled=false`,
-   `pair_scan_universal=false`), KHÔNG xoá code — có thể bật lại sau bằng
-   cờ nếu Chủ đổi ý.
-2. **Token trong `pairs.txt` do CHỦ VET TAY**: verified, không tax, không
-   honeypot, không blacklist, không cooldown/anti-MEV, không pausable,
-   không rebase, có pool V2 với WBNB hoặc USDT reserve ≥ 20 BNB (hoặc
-   ≥ 10.000 USDT). Bước lọc thô: `scripts/vet_goplus.sh` (GoPlus Security
-   API, lọc nhanh trước khi Chủ tự soát tay). Bước xác nhận: bot đo
-   `measure_tax_evm` NỀN (không chặn đường nóng). Token CHƯA VET → bot
-   KHÔNG được sim (`pairs_require_vetted=true`).
-3. **Đường nóng KHÔNG đo tax/honeypot mỗi tx.** Sim đường nóng =
-   lãi/lỗ theo công thức V2 (phí pool 0.25%) + gas thật. `sim_engine`
-   ship = `"v2"` (thay `"evm"` — đường nóng không mở fork EVM mỗi tx nữa,
-   vì token đã qua vet ở mục 2).
-4. **`revm` giữ lại đúng 3 việc**: (a) vet NỀN định kỳ cho `pairs.txt`
-   (`pairs_vet_task`, mỗi `pairs_vet_interval_sec`), (b) đo lại token NGAY
-   TRƯỚC KHI KÝ ở live (`7.x`, chưa làm ở cụm này), (c) validator
-   `validate.victim` (so dự đoán vs thật). KHÔNG fork per-tx trong đường
-   nóng — đây là điểm khác biệt cốt lõi so với chiến lược cũ
-   (`evm-validate-fixed-then-wire`/`foundation-fix-then-real-sim`).
+Căn cứ (BAOCAO43–45, số thật trên VPS): sandwich victim người-thật ≈ 0 lãi
+(victim đặt slippage 1–5 % → `front_in` bị ép, lãi ~0,00002 BNB/case); 96,8 %
+lãi mô phỏng là kẹp ví burner của cụm bot `0xB406…` — cần chen trước victim,
+3 000 USDT vốn xoay, cửa sổ ngắn. Chủ CHỐT bỏ sandwich.
 
----
+1. **Chiến lược = backrun-arb nguyên tử.** Sau MỌI swap lớn (≥ 0,5 BNB quy
+   đổi, kể cả của cụm `0xB406`) trên token có **≥ 2 venue**: vay flash → mua
+   pool rẻ → bán pool đắt (+ chân USDT↔WBNB nếu khác quote) → trả nợ → giữ
+   chênh, tất cả trong 1 tx; không lãi → revert (mất gas, không mất bribe nếu
+   bundle không được chọn). Không có `victim_ok`, không cần vốn xoay.
+2. **Nguồn flash** (đọc on-chain TRƯỚC mỗi lần dùng, không giả định; pin đủ
+   trong `DEX_REGISTRY.md`): (1) PancakeSwap Infinity Vault
+   `0x238a358808379702088667322f80aC48bAd5e6c4` — `lock()` → `lockAcquired` →
+   `take` → arb → trả token + `sync` + `settle`, delta = 0, phí 0, trần vay =
+   `balanceOf(vault)` (KHÔNG phải `reservesOfApp`, BAOCAO46); (2) Aave V3 Pool
+   `0x6807dc923806fE8Fd134338EABCA509979a7e0cB`, 5 bps; (3) Pancake V2 flash
+   swap `pancakeCall`, ~25,06 bps; (4) Balancer V2 Vault
+   `0xBA12222222228d8Ba445958a75a0704d566BF2C8` phí 0 nhưng trên BSC gần
+   RỖNG (0,0004 WBNB, BAOCAO46) + wind-down vote 25–29/9/2026 → không chờ.
+   `flash::choose_flash_source` chọn nguồn rẻ nhất còn đủ sâu tại block.
+3. **Vị trí sau victim lấy qua builder**, không đua latency: 48 Club Puissant
+   `eth_sendBundle` (`https://puissant-builder.48.club/`, không auth,
+   `backrunTarget` = hash victim, bribe = transfer BNB tới
+   `0x4848489f0b2BEdd788c696e2D79b6b69D7484848`); BlockRazor Block Builder
+   (`https://virginia.builder.blockrazor.io`, header `Authorization`, bribe =
+   transfer BNB tới `0x1266C6bE60392A8Ff346E8d5ECCd3E69dD9c5F20`). Bundle =
+   `[victim_raw, backrun_tx]`. Bribe chỉ chuyển khi tx thành công.
+4. **Đường nóng** giữ nguyên nền mode 2: `pairs.txt` vet tay, decoder, Sync
+   cache, presign không fork, V2 math (đã được EVM xác nhận sát trên mẫu lớn
+   — BAOCAO45). Thêm: `state/multi_venue.json` (token → các pool), `sim_arb`
+   (route 2–3 chân, cỡ vay tối ưu, chi phí = phí pool + phí flash + gas +
+   bribe), `flash_source_task`. `strategy = "backrun"` (ship);
+   `"sandwich"` giữ code, tắt.
+5. **Go/No-Go cho contract (B1)**: ≥ 30 cơ hội/ngày VÀ p50 lãi ≥ 5 USDT sau
+   bribe, đo trên ≥ 6 giờ thật (B0). Không đạt → mở venue thứ 2 (Infinity CL /
+   V3) trước, không viết contract.
+6. **Vốn**: ví tay chỉ giữ BNB cho gas + bribe; lãi về ví kho ngay trong tx;
+   contract không giữ vốn.
+
+### 2026-09-15 — mode 2 (nền, vẫn áp dụng cho phần lọc/vet)
+
+1. Chỉ pair-mode (`pairs.txt`); mode 1/3 tắt bằng cờ, không xoá code.
+2. Token do Chủ VET (Tool 1 `discover_v2` → Tool 2 `vet_bsc_token` → điền
+   `vetted YYYY-MM-DD`; xem `docs/GHICHU_VET.md`); bot vet lại nền bằng revm
+   (`pairs_vet_task`); chưa vet → không sim.
+3. Đường nóng không đo tax mỗi tx; `sim_engine="v2"`.
+4. `revm` giữ 3 việc: vet nền, kiểm tra trước ký, validator; không fork per-tx.
 
 ## 0.ANTI
 
@@ -222,9 +247,12 @@ Pin = `DEX_REGISTRY.md` + source_url + ngày + `eth_getCode > 0` trong BAOCAO.
    rỗng rồi báo FAIL/SKIP im lặng. Thiếu RPC thật để chạy → ghi `MISSING`
    rõ ràng ở BAOCAO, không tự suy diễn kết quả.
 
-4. **Subagent chỉ được ĐỌC.** Claude Code không giao cho subagent/fork bất
-   kỳ việc ghi/xoá/git nào. Subagent chỉ để đọc và tóm tắt; mọi thay đổi
-   file do phiên chính làm và ghi vào BAOCAO.
+4. **Subagent chỉ được ĐỌC.** Thợ không giao cho subagent/fork bất kỳ việc
+   ghi/xoá/git nào. Subagent chỉ để đọc và tóm tắt; mọi thay đổi file do
+   phiên chính làm và ghi vào BAOCAO.
+5. **Ngừng an toàn khi Chủ yêu cầu.** Nhận lệnh "dừng an toàn" → commit
+   phần đã làm, viết BAOCAO chữ `CHƯA XONG`, ô 10 liệt kê ĐỦ mục chưa làm
+   (không bỏ im lặng mục nào), không để file dở giữa chừng.
 
 ---
 
@@ -245,13 +273,15 @@ Pin = `DEX_REGISTRY.md` + source_url + ngày + `eth_getCode > 0` trong BAOCAO.
 10. CÒN NỢ / LÁT SAU: chỉ việc thật sự chưa làm được
 ```
 
-Grok ĐẠT khi có ô 5. Code không viết ĐẠT.
+Claude (Điều hành) ĐẠT khi có ô 5. Thợ không viết ĐẠT.
 
 ---
 
 ## Config — thiếu field = fail load
 
-`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted gas_units_front gas_units_back gas_price_max_gwei`
+`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted gas_units_front gas_units_back gas_price_max_gwei bribe_pct_of_profit bribe_min_bnb bribe_max_bnb bribe_mode live_mode allow_competitor_victims strategy arb_max_borrow_bnb arb_max_borrow_usdt flash_source_interval_sec multi_venue_path gas_units_arb_infinity gas_units_arb_v2flash`
+
+Danh sách trên là nguồn sự thật THỨ HAI; nguồn thứ nhất là `src/config.rs` — thêm field ở code thì thêm vào đây và vào `config.toml` cả WSL lẫn VPS cùng lúc. Cụm `planB-backrun-opportunity` (BAOCAO46) thêm 7 field cuối; `gas_units_arb_*` hiện là ước lượng thô, CHƯA đo revm (nợ B0).
 
 Cụm `real-economics-mode2` thêm 3 field: `gas_units_front`/`gas_units_back`
 (số gas UNIT fallback cho front-buy/back-sell khi chưa đo được thật bằng
@@ -280,7 +310,7 @@ allow_live && !dry_run && bot_armed
 ```
 
 Chủ bật cờ là đủ. Không cần câu văn bản.  
-`PRIVATE_TX_URL` rỗng = public. Cấm bịa relay. **Sandwich chỉ gửi dạng bundle nguyên tử `[front, victim_raw, back]`** qua relay hỗ trợ bundle (48 Club Puissant `eth_sendBundle`, BlockRazor `eth_sendMevBundle`); cấm gửi lẻ front/back qua RPC thường (audit F-01).
+`PRIVATE_TX_URL` rỗng = public. Cấm bịa relay. **Mọi tx MEV chỉ gửi dạng bundle** qua builder đã pin: backrun = `[victim_raw, backrun_tx]` (48 Club `backrunTarget`, BlockRazor bundle); sandwich (đã tắt) = `[front, victim_raw, back]`. Bribe = transfer BNB tới EOA builder trong chính tx, chỉ khi thành công. Cấm gửi lẻ qua RPC thường (audit F-01). `live_mode`: `off` | `shadow` (ký, không gửi) | `live`. `.env` thêm `BLOCKRAZOR_AUTH` (optional), `BSC_HTTP_SIM`, `BSC_HTTP_BG`.
 
 `state/halt.lock` **dừng cả paper loop** (không spawn, `halt.triggered` 1 lần, state `STOPPED`), không chỉ khóa cổng live (cụm 1, audit V-06). Xoá file → `halt.cleared`, chạy lại.
 
@@ -335,7 +365,10 @@ GET /api/pairs
 GET /api/tax         # cache tax (token,quote,buy/sell bps,honeypot,TTL) ; POST inject
 GET /api/funnel      # delta mỗi phút theo gate order thật
 GET /api/validate    # validator nhúng: pred vs real, tách isolated / non-isolated
-GET /api/compete      # cụm econ-truth-latency-vps — compete.check: tx liền kề victim có chạm cùng pool + gas so với victim
+GET /api/compete     # compete.check + cluster_rate (cụm đối thủ 0xB406)
+GET /api/econ        # bucket victim_in, top_pools, net_pos_non_cluster, victim_ok 2 cổng
+GET /api/mem         # RSS + kích thước mọi container sống lâu (chống OOM)
+GET /api/flash       # (B0) chiều sâu + phí 4 nguồn flash tại block
 POST /api/control    # body {action: halt|disarm|reset} → ghi state file
 ```
 
@@ -345,7 +378,7 @@ Web làm cùng phiên với `0.3` (logger/state) hoặc ngay sau Gói A — **kh
 
 ## Cây file — phiên đầu ĐƯỢC TẠO nếu thiếu
 
-`CLAUDE.md Cargo.toml config.toml vps.json .env.example .gitignore .gitattributes README.md DEX_REGISTRY.md docs/STATE.md docs/TASKS.md docs/DOC_MAP.md docs/RUN.md baocao/ README victims.txt pairs.txt src/ web/ scripts/ key/ (gitignored)`
+`AGENTS.md Cargo.toml config.toml vps.json .env.example .gitignore .gitattributes README.md DEX_REGISTRY.md docs/STATE.md docs/TASKS.md docs/DOC_MAP.md docs/RUN.md baocao/ README victims.txt pairs.txt src/ web/ scripts/ key/ (gitignored)`
 
 `victims.example.txt` ĐÃ XOÁ (cụm `docs-cleanup-mode2`, 2026-09-15) — mode 1
 (wallet-mode) tắt mặc định, `victims.txt` giữ lại 1 dòng comment ghi rõ mode
@@ -354,7 +387,7 @@ riêng).
 
 `vps.json`: `chain_id=56`, RPC placeholder. Boot `eth_chainId==0x38`.
 
-Đọc đầu phiên: CLAUDE.md → STATE → TASKS → REGISTRY → config → BAOCAO mới nhất (nếu có).
+Đọc đầu phiên: AGENTS.md → STATE → TASKS → REGISTRY → config → BAOCAO mới nhất (nếu có).
 
 ---
 
@@ -380,23 +413,38 @@ Không nhảy **7.x live send** trước khi paper `4.1/5.1` có output. V4 khô
 `7.2` pin calldata  
 `7.3` executor — **CHỈ sau cụm 6 dưới đây**
 
-### Sau audit độc lập 2026-09-15 (`baocao/BAOCAO_AUDIT_2026-09-15.md`) — thứ tự bắt buộc
+### Sau audit độc lập 2026-09-15 — ĐÃ XONG (BAOCAO34–45)
 
-Mã F-xx/V-xx trỏ tới bảng phát hiện trong file audit. Mỗi cụm = 1 lệnh = 1 commit = 1 BAOCAO.
+Cụm 0 → `exec-path-traps` → `strategy-lock-mode2` → `real-economics-mode2` →
+`decoder-universal-router` → `econ-truth-latency-vps` → `competitor-recon` →
+`presign`/`bugfix` → `decision-data-24h` → `truth-victim-ok-and-memleak` →
+`verify-cluster-as-victim`. Kết quả: hạ tầng đo được sự thật; sandwich bị
+loại bằng số (xem "Chiến lược đã chốt"). Nợ còn: `/api/econ` O(log), p95 nhóm
+đi tới sim 848 ms, `sim_engine="evm"` dùng trần gas, tỉ lệ thắng cuộc đua.
 
-- **Cụm 0** `wsl-env-rules-paperrun` — XONG (BAOCAO34, commit `e24a834`).
-- **Cụm 1** `exec-path-traps` — F-26 tx.build sau EVM, F-06 từ chối `to=0x0`, F-07 back-sell theo balanceOf, F-04 record_result, F-05 version_pinned, F-08 slippage 2 field, F-13 nonce, F-14 deadline, F-15 to=None, F-16 venue cross-check, F-20 checked_add, V-06 halt dừng paper.
-- **`strategy-lock-mode2`** — XONG (BAOCAO36) — Chủ CHỐT mode 2 only + vet tay + `sim_engine="v2"`, xem "Chiến lược đã chốt". Đổi tên/thứ tự 2 cụm dưới đây theo quyết định này.
-- **Cụm 2** `real-economics-mode2` (ĐỔI TÊN từ `real-economics` — lý do: chiến lược đã chốt là V2 math + gas thật trên `pairs.txt` đã vet, không phải "EVM mỗi tx") — F-03 gas thật (`eth_gasPrice` × gas đo), histogram `victim_in` trên pair-mode, validator (đối chiếu dự đoán V2 vs thật), vet nền định kỳ (`pairs_vet_task`, đã có khung ở `strategy-lock-mode2`, cụm này đo/tinh chỉnh thật). **Kết quả cụm này quyết định chiến lược thực thi (sandwich vs backrun) trước khi làm cụm 6.**
-- **Cụm 3** `fork-actor-perf` — **HẠ ƯU TIÊN xuống SAU cụm 6** (đổi từ vị trí cũ ngay sau cụm 2) — lý do: đường nóng mode 2 KHÔNG còn fork EVM mỗi tx (`strategy-lock-mode2` mục 3+4), nên fork-actor/backpressure chỉ còn phục vụ 3 việc nền/live (vet định kỳ, đo lại trước ký, validator) — không còn nghẽn hot path để tối ưu gấp. F-11 fork actor theo block (thread riêng, reset slot-level), F-12 backpressure, RPC riêng cho fork, timeout 500 ms, phân loại `sim_error`. Mục tiêu p50 < 50 ms, p95 < 500 ms, `sim_error` < 5% — áp dụng cho 3 việc nền/live đó, không phải đường nóng.
-- **Cụm 4** `decoder-coverage` — GIỮ NGUYÊN vị trí — F-09 multicall, SmartRouter không deadline, UR đa lệnh, sentinel CONTRACT_BALANCE, payerIsUser. Mục tiêu `venue_v3 > 0`, `decode_fail < 2%`.
-- **Cụm 5** `test-hygiene` — F-17 `real_rpc_*` không pass rỗng, F-22/F-23/F-25 dead code & doc, F-21 redact subdomain.
-- **Cụm 6** `strategy-exec` — F-01 bundle `[front, victim, back]`, F-02 mô hình gas-price/bribe, executor contract nguyên tử (nếu chọn sandwich) HOẶC backrun-only (bỏ front leg). Chỉ bắt đầu sau khi Chủ chốt chiến lược bằng số liệu cụm 2. `fork-actor-perf` (cụm 3 cũ) làm SAU cụm này.
-- **Deploy VPS**: theo commit hash, `sha256sum` binary ghi vào BAOCAO; VPS chạy unit systemd thật `Restart=always`, logrotate, SSH key-only, ufw chỉ 22. Chi tiết `docs/RUN.md` (đổi tên từ `docs/VPS_RUN.md`, cụm `strategy-lock-mode2`).
+### KẾ HOẠCH B (từ 2026-09-16) — thứ tự bắt buộc, mỗi cụm 1 lệnh = 1 commit = 1 BAOCAO
+
+- **B0 `planB-backrun-opportunity`** — ĐANG LÀM (BAOCAO46 CHƯA XONG: xong
+  `flash.rs`, `sim_arb.rs`, 7 field config; CHƯA: `multi_venue.json`,
+  `flash_source_task`, kiểm chéo revm ≥20 case, bảng đo ≥6 h, gas_units đo
+  thật, registry pin, ArbExecutor design, Go/No-Go).
+- **B1 `arb-executor-contract`** — chỉ khi B0 Go. Solidity 0.8, không proxy, 4
+  entry flash vào 1 `_route`, `minProfit` revert, bribe khi thành công,
+  `onlyExecutor`, owner withdraw/pause, không giữ vốn. Foundry fork test.
+  **Audit độc lập vòng 2 trước deploy.**
+- **B2 `arb-exec-wiring`** — bot: swap lớn → route → ký 1 tx → bundle
+  `[victim_raw, backrun]` → `bundle.result` (API trạng thái 48 Club) →
+  RiskGuard. Shadow 24 h.
+- **B3 `live-small`** — ví tay 0,2 BNB gas+bribe, không vốn giao dịch. Đo tỉ
+  lệ bundle được chọn + lãi thật/ngày, 1 tuần. Đây là con số thật đầu tiên.
+- **B4 `venue-infinity-v3`** — mở venue thứ 2/3 (Infinity CL, V3 tier) khi B0
+  chỉ ra token thiếu venue; decoder PoolKey/hooks.
+- **Deploy VPS**: theo commit, `sha256` binary, unit systemd `Restart=always`
+  + `MemoryMax`, logrotate; `config.toml` VPS cập nhật cùng binary.
 
 ### Cùng phiên — khỏi nợ
 
-Claude **được và nên** làm nốt việc dính nếu đang mở đúng module:
+Thợ **được và nên** làm nốt việc dính nếu đang mở đúng module:
 
 - Repo trống → `0.1+0.2+0.3` + web xem info + tạo cây file + example victims trong **một** phiên.
 - Registry: `1.1+1.2+1.3` **một phiên**. Phải đụng cả V2, V3, V4/Infinity/mới nhất. Family không có getCode → DISABLED + URL đã mở, không được “cắt cho nhanh”.
@@ -410,23 +458,23 @@ Claude **được và nên** làm nốt việc dính nếu đang mở đúng mod
 
 Một phiên = một BAOCAO, ô 1 ghi hết cụm (`0.1+0.2+0.3`). Kẹt RPC: làm nốt phần độc lập, phần kẹt ghi MISSING — không giả output.
 
-Grok khi ra lệnh: giao cả cụm, đừng cắt 0.2 ra phiên khác nếu 0.1 chưa chạy.
+Điều hành khi ra lệnh: giao cả cụm, đừng cắt 0.2 ra phiên khác nếu 0.1 chưa chạy.
 
 ---
 
-## Mẫu lệnh Grok → copy sang Code
+## Mẫu lệnh Điều hành (Claude) → Chủ copy sang Thợ (Grok)
 
 ```
-ĐỌC: CLAUDE.md, docs/STATE.md, docs/TASKS.md, DEX_REGISTRY.md, config.toml, baocao mới nhất (nếu có).
+ĐỌC: AGENTS.md, docs/STATE.md, docs/TASKS.md, DEX_REGISTRY.md, config.toml, baocao mới nhất (nếu có).
 
 LÁT: [cụm 0.1+0.2+0.3] — làm nốt việc dính trong cùng phiên (test/docs/logger của cụm này).
 stack = Rust. Không npm/viem.
 
 ĐƯỢC ĐỤNG: src/, docs/, baocao/, file khung, Cargo.toml, config.toml, vps.json
-CẤM: CLAUDE.md, victims.txt thật, .env, cờ live
+CẤM: AGENTS.md, victims.txt thật, .env, cờ live
 
 LÀM: [gạch]
-KHÔNG LÀM: send thật, đổi stack, pair không-WBNB
+KHÔNG LÀM: send thật, đổi stack, contract khi B0 chưa Go
 NỢ: không tách test/logger ra phiên sau.
 
 ĐẠT CẦN DÁN: cargo test/run + ≥15 dòng output; máy chạy (WSL/VPS) + sha256
@@ -437,13 +485,16 @@ VIẾT: baocao/BAOCAO{NN}.md đủ 10 ô + dòng `Commit: <hash>`. Chữ: CHỜ 
 FAIL | CHƯA XONG. Cấm chữ ĐẠT.
 ```
 
-Chủ → Grok:
+Chủ → Claude:
 
 ```
 BAOCAO{NN}
 [dán]
 Review. Đạt → khối cụm sau. Fail → cùng cụm, chỉ ô thiếu. Không viết lại repo.
 ```
+
+Lưu ý cho Thợ là Grok: đọc `docs/DOC_MAP.md` trước để biết thứ tự file; mọi
+lệnh shell chạy trong WSL `~/bsc-sandwich`; VPS chỉ qua `ssh -i key/bsc_vps_ed25519 root@<host Chủ đưa>`; không có host trong lệnh → phần VPS ghi MISSING.
 
 ---
 
@@ -457,9 +508,8 @@ V3 / V4 / Infinity / bản mới: pin khi registry có getCode. Không deploy BS
 
 ---
 
-BSC 56. RUST. GROK ĐIỀU HÀNH. CODE PHIÊN TRẮNG. DEV = WSL, PROD = VPS, CÙNG COMMIT.
+BSC 56. RUST. CLAUDE ĐIỀU HÀNH, GROK LÀ THỢ, PHIÊN TRẮNG. DEV = WSL, PROD = VPS, CÙNG COMMIT.
 CỤM CÙNG PHIÊN, KHÔNG NỢ VỤN. MỖI CỤM 1 COMMIT. SỐ LIỆU PHẢI CÓ MÁY + HASH.
-VICTIMS.TXT `0x...,0.01`. TOKEN/WBNB HOẶC TOKEN/USDT. PANCAKE V2+V3+V4+MỚI NHẤT (PIN). UR PATH WBNB OK.
+KẾ HOẠCH B: BACKRUN-ARB, FLASH 0 PHÍ (INFINITY VAULT), BUNDLE QUA BUILDER, KHÔNG SANDWICH.
+PAIRS VET TAY. HOT PATH V2 MATH + GAS THẬT. REVM = VET/KIỂM/VALIDATOR. KHÔNG CONTRACT TRƯỚC KHI B0 GO.
 DRY-RUN. KHÔNG BỊA. KHÔNG TỰ LIVE.
-MODE 2 ONLY. PAIRS VET TAY. HOT PATH V2 MATH + GAS THẬT. REVM = VET/PRE-SIGN/VALIDATOR.
-

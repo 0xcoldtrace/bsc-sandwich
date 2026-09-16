@@ -3,7 +3,7 @@
 //!
 //! Nếu không kết nối được (chưa có `.env`/`BSC_HTTP` thật, hoặc placeholder
 //! trong `vps.json`) thì trả `Err` cho caller tự log `rpc.skip` — boot vẫn
-//! chạy, không panic, không halt (CLAUDE.md: "Không halt vì WSS im (ship)").
+//! chạy, không panic, không halt (AGENTS.md: "Không halt vì WSS im (ship)").
 //!
 //! `ProviderBuilder::connect(url)` (alias cũ `on_builtin`) tự nhận diện
 //! scheme http(s)/ws(s) nên dùng chung một hàm cho cả `BSC_HTTP` và `BSC_WS`.
@@ -49,7 +49,7 @@ impl std::error::Error for ConnectError {}
 
 /// Kết nối (http/https/ws/wss tự nhận diện qua scheme) rồi xác nhận
 /// `eth_chainId == 56`. Sai chain là lỗi rõ ràng (`ChainMismatch`), không
-/// âm thầm coi như đã kết nối thành công theo đúng CLAUDE.md mục 2.1.
+/// âm thầm coi như đã kết nối thành công theo đúng AGENTS.md mục 2.1.
 pub async fn connect_and_verify(url: &str) -> Result<DynProvider, ConnectError> {
     let connect_fut = ProviderBuilder::new().connect(url);
     let provider = tokio::time::timeout(CONNECT_TIMEOUT, connect_fut)
@@ -304,7 +304,7 @@ impl RpcPool {
     }
 
     /// Thử kết nối, bắt đầu từ `idx` hiện tại, quay đúng 1 vòng qua toàn bộ
-    /// danh sách (`quay vòng` — CLAUDE.md lệnh `5.3`). Mỗi URL lỗi (sai chain
+    /// danh sách (`quay vòng` — AGENTS.md lệnh `5.3`). Mỗi URL lỗi (sai chain
     /// / timeout / transport) log `rpc.failover` (redact, không lộ token).
     /// URL đầu tiên connect được thì lưu lại (`idx` + `provider`), log
     /// `rpc.connect`, trả `Some`. Hết danh sách -> `None`, KHÔNG panic.
@@ -1798,7 +1798,7 @@ mod tests {
 
     /// `#[ignore]` — RPC thật. Quét TỪ block mới nhất LÙI VỀ tối đa 30 block
     /// tìm ĐỦ 1 tx type 0 (Legacy) VÀ 1 tx type 2 (EIP-1559) THẬT (BSC có cả
-    /// 2 loại lưu thông — EIP-1559 đã bật, xem CLAUDE.md), verify
+    /// 2 loại lưu thông — EIP-1559 đã bật, xem AGENTS.md), verify
     /// `fetch_raw_tx_verified` tái tạo ĐÚNG cả 2 (khớp `keccak256(raw)==hash`),
     /// và `RawTxSource` phản ánh đúng route đã dùng (RPC hỗ trợ
     /// `eth_getRawTransactionByHash` hay phải fallback tái tạo từ v/r/s).

@@ -495,7 +495,7 @@ Xem chi tiết đầy đủ (checklist bảo mật + các bước) tại `docs/R
 
 ---
 
-Xem thêm: `CLAUDE.md` (luật vận hành đầy đủ, không tự sửa trừ khi được lệnh),
+Xem thêm: `AGENTS.md` (luật vận hành đầy đủ, không tự sửa trừ khi được lệnh),
 `DEX_REGISTRY.md` (venue đã pin), `docs/STATE.md` (quyết định kỹ thuật),
 `docs/TASKS.md` (việc còn lại), `docs/DOC_MAP.md` (bản đồ toàn bộ file),
 `docs/RUN.md` (vận hành WSL + VPS chi tiết), `baocao/BAOCAO{NN}.md` (báo cáo

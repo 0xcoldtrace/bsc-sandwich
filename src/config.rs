@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 pub const REQUIRED_CHAIN_ID: u64 = 56;
 const WEI_PER_BNB: f64 = 1_000_000_000_000_000_000.0;
 
-/// Toàn bộ field bắt buộc theo CLAUDE.md mục "Config — thiếu field = fail load".
+/// Toàn bộ field bắt buộc theo AGENTS.md mục "Config — thiếu field = fail load".
 /// Không có field nào mang `#[serde(default)]` — thiếu field trong config.toml
 /// khiến `toml::from_str` trả lỗi ngay, đúng luật "thiếu field = fail load".
 #[derive(Debug, Clone, Deserialize)]
@@ -134,13 +134,13 @@ pub struct Config {
 
     /// Cụm `usdt-quote-asset` (BAOCAO29) — bật quét quote asset thứ 2 (USDT)
     /// song song WBNB. Ship `false` (AN TOÀN — hành vi WBNB không đổi gì khi
-    /// tắt, đúng CLAUDE.md "scan_quote_usdt=false → hành vi WBNB không đổi
+    /// tắt, đúng AGENTS.md "scan_quote_usdt=false → hành vi WBNB không đổi
     /// gì"). Field bắt buộc (thiếu = fail load, cùng khuôn mọi field khác).
     pub scan_quote_usdt: bool,
 
     /// Cụm `usdt-quote-asset` — ngưỡng lợi nhuận tối thiểu cho pool quote
     /// USDT, ĐƠN VỊ USDT (KHÔNG phải BNB, KHÔNG quy đổi/không price oracle —
-    /// đúng CLAUDE.md mục Math "profit_usdt = backUSDT - frontUSDT THUẦN").
+    /// đúng AGENTS.md mục Math "profit_usdt = backUSDT - frontUSDT THUẦN").
     /// Hot-reload/validate cùng luật `min_profit_bnb` (âm/không hữu hạn =
     /// fail load, `0` hợp lệ).
     pub min_profit_usdt: f64,
@@ -158,7 +158,7 @@ pub struct Config {
     /// `Simulated`/`victim_would_revert`/lợi nhuận:
     /// - `"evm"` (ship): fork block hiện tại qua `revm` + `AlloyDB`, chạy
     ///   calldata router THẬT (`sim_evm.rs`). Thấy được fee-on-transfer/
-    ///   honeypot/hooks thật — đúng CLAUDE.md mục Math ("quyết định cuối cùng
+    ///   honeypot/hooks thật — đúng AGENTS.md mục Math ("quyết định cuối cùng
     ///   dùng EVM THẬT, công thức đóng chỉ ước lượng khoảng `front_in`").
     /// - `"v2"`: giữ NGUYÊN hành vi công thức đóng `sim_v2` như mọi phiên
     ///   trước — đường lùi an toàn nếu RPC không kham nổi tải EVM.
@@ -270,7 +270,7 @@ pub struct Config {
     /// load signer, không ký), `"shadow"` (KÝ THẬT bằng `PRIVATE_KEY` trong
     /// `.env`, KHÔNG BAO GIỜ broadcast — chỉ log `bundle.shadow`), `"live"`
     /// (CHƯA implement trong cụm này — vẫn cần cụm `strategy-exec` + lệnh
-    /// riêng, xem CLAUDE.md mục "Live"; đọc field này KHÔNG tự mở khoá gửi
+    /// riêng, xem AGENTS.md mục "Live"; đọc field này KHÔNG tự mở khoá gửi
     /// tx thật, `executor::can_send_live`/`Config::gate_check` vẫn là cổng
     /// DUY NHẤT quyết định có được gửi hay không). Giá trị khác 3 chuỗi này
     /// = FAIL LOAD (cùng khuôn `sim_engine`/`bribe_mode`).
@@ -290,7 +290,7 @@ pub struct Config {
     /// Cụm `planB-backrun-opportunity` — CHIẾN LƯỢC thực thi:
     /// - `"backrun"` (ship, Chủ chốt 2026-09-16): backrun-arb nguyên tử bằng
     ///   flash loan. Không cần đứng trước victim, không cần `victim_ok`,
-    ///   không cần vốn xoay — xem CLAUDE.md mục "Chiến lược đã chốt".
+    ///   không cần vốn xoay — xem AGENTS.md mục "Chiến lược đã chốt".
     /// - `"sandwich"`: đường cũ (front/back kẹp victim). Code KHÔNG bị xoá,
     ///   chỉ TẮT bằng field này, bật lại được nếu Chủ đổi ý.
     ///
@@ -418,7 +418,7 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Fail load CHỈ 4 lý do (CLAUDE.md phiên config-hot-reload): thiếu field
+    /// Fail load CHỈ 4 lý do (AGENTS.md phiên config-hot-reload): thiếu field
     /// (serde tự fail ở `toml::from_str`), `chain_id != 56`, số âm/không hữu
     /// hạn ở field ngưỡng BNB, parse lỗi. Cho phép `min_profit_bnb=0`,
     /// `max_roundtrip_tax=0`, `max_front_bnb` rất lớn — không chặn biên trên.
@@ -676,7 +676,7 @@ impl Config {
     }
 
     /// Cụm `exec-path-traps` (F-05) — cổng live CHI TIẾT, NGUỒN DUY NHẤT cho
-    /// mọi điều kiện live theo CLAUDE.md mục "Live". `halt_exists` đọc từ
+    /// mọi điều kiện live theo AGENTS.md mục "Live". `halt_exists` đọc từ
     /// `state/halt.lock`. `version_flag_name`/`version_live`/`version_pinned`
     /// là cờ riêng của family (v2/v3/v4) ĐANG được đánh giá, gọi lại hàm này
     /// riêng cho từng family cần live. Gom TẤT CẢ lý do thiếu vào `failures`
@@ -717,7 +717,7 @@ impl Config {
         LiveGateStatus { ok: failures.is_empty(), failures }
     }
 
-    /// Cổng live theo CLAUDE.md mục "Live", dạng `bool` tiện dụng — GỌI THẲNG
+    /// Cổng live theo AGENTS.md mục "Live", dạng `bool` tiện dụng — GỌI THẲNG
     /// `gate_check` ở trên (F-05, không còn 2 danh sách điều kiện tách rời).
     /// `gas cap > 0` đọc THẲNG từ `front_max_gas_bnb_wei`/`back_max_gas_bnb_wei`
     /// (bên trong `gate_check`) thay vì nhận tham số `gas_cap_positive` rời
@@ -749,7 +749,7 @@ pub struct LiveGateStatus {
 /// này CHỈ wire sẵn cổng kiểm tra (`decide_paper_v2` gọi
 /// `consecutive_loss_exceeded` trước khi sim — nếu bot từng bị 7.x đánh dấu
 /// đã lỗ liên tiếp đủ ngưỡng, coi như `unprofitable`, dùng lại đúng enum
-/// `PipelineSkip` sẵn có trong CLAUDE.md, KHÔNG thêm skip reason mới) +
+/// `PipelineSkip` sẵn có trong AGENTS.md, KHÔNG thêm skip reason mới) +
 /// `front_cap_after_gas_reserve` (giữ `gas_reserve_bnb_wei` LUÔN không bị
 /// dùng làm vốn front-run, trừ thẳng vào trần front_in hiệu lực).
 #[derive(Debug, Default)]
@@ -878,7 +878,7 @@ allow_competitor_victims = false
     }
 
     /// `allow_tax_inject` la field bat buoc moi (cum tax-cache-inject) —
-    /// thieu field nay cung phai fail load dung luat CLAUDE.md, giong het
+    /// thieu field nay cung phai fail load dung luat AGENTS.md, giong het
     /// `missing_min_profit_bnb_fails` o duoi.
     #[test]
     fn missing_allow_tax_inject_fails() {
@@ -981,7 +981,7 @@ allow_competitor_victims = false
         }
     }
 
-    /// `max_roundtrip_tax=0` phải load OK (zero-tax only, theo CLAUDE.md mục
+    /// `max_roundtrip_tax=0` phải load OK (zero-tax only, theo AGENTS.md mục
     /// "Config").
     #[test]
     fn max_roundtrip_tax_zero_load_ok() {
@@ -1296,7 +1296,7 @@ allow_competitor_victims = false
     /// Cụm `strategy-lock-mode2` (Chủ chốt 2026-09-15) — ship mặc định ĐỔI:
     /// CHỈ mode 2 (pair-mode) bật, mode 1 (wallet/victims.txt) TẮT. Đây là
     /// hành vi GỐC MỚI kể từ chiến lược này — KHÔNG được đổi lại `true` trừ
-    /// khi Chủ ra lệnh quay về đa-mode (xem CLAUDE.md mục "Chiến lược đã chốt").
+    /// khi Chủ ra lệnh quay về đa-mode (xem AGENTS.md mục "Chiến lược đã chốt").
     #[test]
     fn explicit_mode_flags_ship_default_is_mode2_only() {
         let cfg = Config::from_str(&base_toml()).unwrap();
@@ -1335,7 +1335,7 @@ allow_competitor_victims = false
     }
 
     /// Ship mac dinh `scan_quote_usdt = false` - AN TOAN, hanh vi WBNB khong
-    /// doi gi khi tat (dung CLAUDE.md).
+    /// doi gi khi tat (dung AGENTS.md).
     #[test]
     fn scan_quote_usdt_ship_default_is_false() {
         let cfg = Config::from_str(&base_toml()).unwrap();

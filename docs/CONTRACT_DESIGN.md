@@ -224,7 +224,7 @@ mua rồi tự bán và **lỗ chắc chắn** 2×0.25% phí + price impact.
 | Builder loại cả bundle (không đủ hấp dẫn) | Không tx nào lên chain. **Mất 0** (không trả gas cho tx chưa on-chain) | Như trên |
 | Victim revert on-chain | Bundle có `revertingTxHashes` rỗng → **cả bundle bị loại**, không lên chain. Mất 0 | Như trên |
 | Builder cố tình tách bundle | `noMerge: true` yêu cầu không trộn với bundle khác; `positionFirst` xin vị trí đầu. Docs không cam kết tuyệt đối → **rủi ro còn lại, ghi ở B7** | `noMerge`/`positionFirst` cùng tham số |
-| Chỉ front lên chain (trường hợp xấu nhất) | Không xảy ra với bundle nguyên tử đúng nghĩa; **nhưng** nếu từng phải fallback gửi lẻ qua RPC thường thì có thể → **CẤM gửi lẻ** (audit F-01, CLAUDE.md) | như trên |
+| Chỉ front lên chain (trường hợp xấu nhất) | Không xảy ra với bundle nguyên tử đúng nghĩa; **nhưng** nếu từng phải fallback gửi lẻ qua RPC thường thì có thể → **CẤM gửi lẻ** (audit F-01, AGENTS.md) | như trên |
 
 **Lớp phòng thủ cuối cùng nằm TRONG contract, không phụ thuộc lời hứa của
 relay**: `backRun` revert khi `gained < minProfitQuote` (`E_NO_PROFIT`). Nếu

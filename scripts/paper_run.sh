@@ -16,7 +16,7 @@
 # Yeu cau: .env co BSC_HTTP/BSC_WS that.
 # Script tao 1 config TAM (khong dung config.toml that cua Chu) voi nguong 0.
 #
-# CLAUDE.md luat "3 luat bo sung 2026-09-15" (#2): moi so lieu runtime phai
+# AGENTS.md luat "3 luat bo sung 2026-09-15" (#2): moi so lieu runtime phai
 # ghi ro chay o dau (WSL/VPS) + hash binary — script nay tu in ca 2 thu do
 # ngay dau output ket qua, dan nguyen vao BAOCAO.
 set -euo pipefail
@@ -334,4 +334,4 @@ echo "---- /api/econ summary_line (cum real-economics-mode2, muc 3.e, doc tu ECO
 printf '%s' "$ECON_JSON" | jq -r '.summary_line // "MISSING"' 2>/dev/null || echo "MISSING"
 
 echo "DONE. Log day du: $LOG (redact secret truoc khi dan cho Grok)."
-echo "Nho dan lai: may=$RUN_ENV, binary sha256=$BIN_SHA, git HEAD=$GIT_HEAD (luat #2 CLAUDE.md)."
+echo "Nho dan lai: may=$RUN_ENV, binary sha256=$BIN_SHA, git HEAD=$GIT_HEAD (luat #2 AGENTS.md)."

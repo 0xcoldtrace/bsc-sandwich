@@ -1,5 +1,5 @@
 //! Cụm 3.3 "Tax stub" — cache đo tax roundtrip theo block, hết hạn sau
-//! `tax_cache_blocks` (CLAUDE.md mục "Config"). CHƯA đo -> `honeypot_or_tax`
+//! `tax_cache_blocks` (AGENTS.md mục "Config"). CHƯA đo -> `honeypot_or_tax`
 //! SKIP (đúng luật, mặc định an toàn — `TaxCache::get_fresh` trả `None`).
 //!
 //! `measure_roundtrip_via_router` viết plumbing `eth_call` THẬT (2 chặng:
@@ -211,7 +211,7 @@ impl TaxCache {
     }
 
     /// `None` khi CHƯA đo HOẶC đã quá hạn `tax_cache_blocks` — caller PHẢI xử
-    /// lý như chưa đo (`honeypot_or_tax` SKIP), đúng CLAUDE.md.
+    /// lý như chưa đo (`honeypot_or_tax` SKIP), đúng AGENTS.md.
     pub fn get_fresh(&self, token: Address, current_block: u64, tax_cache_blocks: u32) -> Option<TaxMeasurement> {
         let m = self.entries.get(&TaxKey { token, quote: crate::pool::wbnb() })?;
         let age = current_block.saturating_sub(m.measured_at_block);
@@ -263,7 +263,7 @@ impl TaxCache {
 /// thành `roundtrip_tax_bps` đúng công thức tổn thất kép
 /// `1 - (1-buy)(1-sell) = buy + sell - buy*sell` (KHÔNG cộng đơn giản —
 /// cộng đơn giản đếm trùng phần giao giữa 2 lần tax). Toàn bộ tính bằng
-/// `u128` nguyên (không float, khớp CLAUDE.md "U256 only" cho math tiền —
+/// `u128` nguyên (không float, khớp AGENTS.md "U256 only" cho math tiền —
 /// bps ở đây không phải U256 vì không phải số tiền wei, nhưng vẫn giữ
 /// nguyên tắc số nguyên chính xác tuyệt đối, không sai số float).
 /// `saturating_sub` tự vệ input rác (`buy_bps`/`sell_bps` > 10_000, tức

@@ -1,5 +1,5 @@
 //! Cụm 3.1+3.2 — V2 sandwich math (constant product, phí 0.25% = 9975/10000
-//! theo `DEX_REGISTRY.md`/CLAUDE.md mục "Math") + "victim still ok". U256
+//! theo `DEX_REGISTRY.md`/AGENTS.md mục "Math") + "victim still ok". U256
 //! only, KHÔNG float cho tiền on-chain — `profit_wei` dùng `i128` (không
 //! phải U256) vì có thể âm (lỗ), nhưng biên độ luôn nằm trong phạm vi BNB
 //! thực tế (< `max_front_bnb` + gas, xa dưới `i128::MAX`) nên không tràn số,
@@ -16,7 +16,7 @@
 use alloy::primitives::U256;
 
 /// Hệ số phí PancakeSwap V2 (0.25%) — nguồn `DEX_REGISTRY.md` mục V2, khớp
-/// CLAUDE.md mục "Math".
+/// AGENTS.md mục "Math".
 pub const FEE_NUM: u64 = 9975;
 pub const FEE_DEN: u64 = 10000;
 
@@ -305,7 +305,7 @@ mod tests {
         // nhung max_front bi khoa rat thap (0.1 WBNB) -> loi nhuan van con
         // dang tang trong suot khoang cho phep -> toi uu bi CHAN o bien tren
         // dung max_front_wei (khong tran ra ngoai) - dung "All-in bi chan
-        // max_front" theo CLAUDE.md.
+        // max_front" theo AGENTS.md.
         let reserves = PoolReserves {
             reserve_wbnb: U256::from(1_000_000_000_000_000_000u128), // 1 WBNB
             reserve_token: U256::from(1_000_000u64) * U256::from(1_000_000_000_000_000_000u128),

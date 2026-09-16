@@ -99,7 +99,7 @@ static SEL_EXACT_INPUT_SINGLE_NO_DEADLINE: LazyLock<[u8; 4]> =
     LazyLock::new(|| selector("exactInputSingle(address,address,uint24,address,uint256,uint256,uint160)"));
 /// exactOutput* — V3 exact-OUTPUT (amountOut cố định, amountIn là TRẦN
 /// `amountInMaximum` chứ KHÔNG phải số thực chi) — KHÁC MÔ HÌNH sandwich
-/// (`sim_v2`/`sim_evm` chỉ có exact-INPUT). Theo CLAUDE.md lệnh B2:
+/// (`sim_v2`/`sim_evm` chỉ có exact-INPUT). Theo AGENTS.md lệnh B2:
 /// "exactOutput* → venue_unpinned (đếm, chưa sim)" — decode đủ để phân loại
 /// đúng `SwapVenue::V3`, KHÔNG dùng `amount_in`/`amount_out_min` giải mã được
 /// ở đây cho bất kỳ tính toán sim nào (gate `VenueUnpinned` chặn trước khi
@@ -187,7 +187,7 @@ impl TwoTokenPath {
 
     /// V3 path packed: address(20) ++ fee(3) ++ address(20) [++ fee(3) ++ address(20) ...].
     /// Chỉ chấp nhận đúng 1 hop (43 byte) — nhiều hop (>43) hoặc méo (<43,
-    /// không chia hết) đều coi là not_wbnb_pair theo CLAUDE.md "3+ token".
+    /// không chia hết) đều coi là not_wbnb_pair theo AGENTS.md "3+ token".
     /// Trả kèm `fee` tier (uint24 packed, đọc thật từ calldata — cụm A3).
     fn from_packed_v3_path_with_fee(bytes: &[u8]) -> Result<(TwoTokenPath, u32), SkipReason> {
         if bytes.len() != 43 {
@@ -575,7 +575,7 @@ fn decode_exact_input(args: &[u8]) -> Result<DecodedSwap, SkipReason> {
 /// là TRẦN không phải chi phí thật) — NGOÀI mô hình sandwich exact-input của
 /// `sim_v2`/`sim_evm`. Vẫn decode đủ path/fee để phân loại ĐÚNG
 /// `SwapVenue::V3` (→ `venue_unpinned`, đếm được, không sim) thay vì rơi vào
-/// `decode_fail` — xem CLAUDE.md lệnh B2 "exactOutput* → venue_unpinned".
+/// `decode_fail` — xem AGENTS.md lệnh B2 "exactOutput* → venue_unpinned".
 /// `amount_in`/`amount_out_min` ở đây mang giá trị `amountInMaximum`/
 /// `amountOut` (KHÔNG phải amount thực chi) — an toàn vì gate `VenueUnpinned`
 /// chặn trước khi bất kỳ giá trị nào trong 2 field này được dùng để sim.
@@ -681,7 +681,7 @@ fn decode_multicall(args: &[u8], has_deadline: bool) -> Result<DecodedSwap, Skip
 
 /// Cụm `decoder-coverage` (B2) — Universal Router `execute()`, hỗ trợ NHIỀU
 /// command trong 1 tx (trước đó chỉ nhận ĐÚNG 1 command/1 input, mọi tx
-/// multicall thật -> `decode_fail` 100%, xem CLAUDE.md lệnh B2 + mẫu thật
+/// multicall thật -> `decode_fail` 100%, xem AGENTS.md lệnh B2 + mẫu thật
 /// `tests/fixtures/ur_calldata.jsonl`). Chiến lược: tìm command SWAP đầu tiên
 /// (`V2_SWAP_EXACT_IN`/`V3_SWAP_EXACT_IN`) trong chuỗi — các command khác chỉ
 /// là tiền trạm/hậu trạm (`WRAP_ETH`/`PERMIT2_PERMIT` trước; `UNWRAP_WETH`/

@@ -71,7 +71,7 @@
     DISABLED (chưa deploy trên BSC).
 12. `pairs.txt`: nguồn candidate DUY NHẤT đang bật, `pairs_require_vetted=true`
     — dòng thiếu `vetted YYYY-MM-DD` hợp lệ = CHƯA VET, không sim.
-13. Web dashboard: `/api/*` theo CLAUDE.md mục "Web" — **CÓ** `/api/econ` từ
+13. Web dashboard: `/api/*` theo AGENTS.md mục "Web" — **CÓ** `/api/econ` từ
     phiên `real-economics-mode2` cụm B (BAOCAO38), xem mục 6 ở trên và mục
     "real-economics-mode2 cụm B" cuối file này.
 14. **Sự cố phiên `docs-cleanup-mode2` (ghi minh bạch, không giấu — sự cố cũ
@@ -349,7 +349,7 @@ Infinity không có factory kiểu `getPool(token0,token1)` như V2/V3. Pool đ�
 biết `hooks` (địa chỉ hook contract) + `parameters` (tickSpacing/binStep) cụ
 thể của TỪNG pool, không suy được chỉ từ 2 địa chỉ token. Vì vậy
 `src/pool.rs::resolve_infinity_pool` trả `hooks_unread` cho mọi token ở
-phiên này (đúng CLAUDE.md: "Hook/view không đọc được -> skip pool đó, không
+phiên này (đúng AGENTS.md: "Hook/view không đọc được -> skip pool đó, không
 tắt bot, không bỏ family") — CHƯA pin cách quét sự kiện `Initialize` hay
 index pool có sẵn (việc đó cần thêm cụm riêng, ghi vào TASKS nếu chủ cần).
 
@@ -372,7 +372,7 @@ index pool có sẵn (việc đó cần thêm cụm riêng, ghi vào TASKS nếu
 
 ## V2 sandwich math (phiên `3.1+3.2+3.3+4.1`, BAOCAO04, 2026-09-14)
 
-`src/sim_v2.rs::get_amount_out` — đúng công thức CLAUDE.md
+`src/sim_v2.rs::get_amount_out` — đúng công thức AGENTS.md
 (`amountOut = amountIn*9975*reserveOut / (reserveIn*10000 + amountIn*9975)`),
 U256 nguyên, chia floor (khớp Solidity `/`). Fixture tay verify tuyệt đối
 (không float): reserveIn=reserveOut=1000, amountIn=100 -> amountOut=90 (dư
@@ -391,7 +391,7 @@ tự nhiên trước trần).
 
 Gas: dùng THẲNG `front_max_gas_bnb_wei + back_max_gas_bnb_wei` từ
 `config.toml` (2 field bắt buộc, không optional) — không gọi `eth_gasPrice`
-on-chain phiên này (CLAUDE.md cho phép: "không bịa gasPrice on-chain nếu
+on-chain phiên này (AGENTS.md cho phép: "không bịa gasPrice on-chain nếu
 chưa đọc được"). Vì 2 field này LUÔN có giá trị hợp lệ trong config đã load
 (fail load nếu thiếu), nhánh "MISSING gas thì trừ 0" chỉ áp dụng nếu chủ tự
 đặt cả 2 field = 0 — hành vi tự nhiên đúng luôn (trừ 0), không cần code
@@ -478,7 +478,7 @@ Thêm 2 nhánh skip MỚI vào `decide_paper` (trước đây chưa wire dù enu
 - `unprofitable` (mở rộng) — trước đây chỉ check `profit_wei <= 0`; giờ
   thêm so `profit_wei` (ép `u128` an toàn vì đã xác nhận `> 0`) với
   `cfg.min_profit_wei()` — lãi dương nhưng dưới `min_profit_bnb` vẫn bị coi
-  `unprofitable`, đúng ý nghĩa field này trong CLAUDE.md.
+  `unprofitable`, đúng ý nghĩa field này trong AGENTS.md.
 - `honeypot_or_tax` (mở rộng) — trước đây chỉ check cache rỗng/hết hạn; giờ
   cache "tươi" (measured) nhưng `roundtrip_tax_bps > cfg.max_roundtrip_tax_bps()`
   vẫn bị skip cùng reason (tax đo được nhưng QUÁ CAO so ngưỡng chủ đặt, khác
@@ -576,7 +576,7 @@ concurrency) -> `web.rs` (`/api/skips`/`/api/hits` đọc số thật).
   trong log qua nhánh khác nếu cần soi sau — phạm vi phiên này chưa thêm log
   riêng cho lỗi RPC ở bước này, ghi CÒN NỢ nếu cần chẩn đoán sâu hơn).
 - Thêm `PipelineSkip::NoPool` ("no_pool") — enum `SKIP_REASONS`
-  (`venues.rs`) đã có sẵn tên này từ trước (theo CLAUDE.md) nhưng CHƯA từng
+  (`venues.rs`) đã có sẵn tên này từ trước (theo AGENTS.md) nhưng CHƯA từng
   có nhánh `PipelineSkip` nào sinh ra nó tới phiên này (giống đúng khuôn mẫu
   `ThinLiq` ở phiên config-hot-reload — enum có tên sẵn, thiếu implementation).
 
@@ -595,7 +595,7 @@ phạm vi tự ý.
 `AppStateInner` thêm 3 field: `provider: RwLock<Option<DynProvider>>` (dùng
 lại provider HTTP đã `connect_and_verify` ở `connect_rpc`, tránh mở kết nối
 riêng mỗi tx), `tax_cache: RwLock<TaxCache>` (dùng chung, CHỈ điền thủ công —
-xem phần dưới), `pending_semaphore: Arc<Semaphore>` (giới hạn 4, CLAUDE.md).
+xem phần dưới), `pending_semaphore: Arc<Semaphore>` (giới hạn 4, AGENTS.md).
 
 `main.rs` thêm 3 hàm nền:
 - `subscribe_pending_txs(app_state, ws_url)` — có `ws_url` (kể cả placeholder
@@ -888,16 +888,16 @@ pending WSS ổn định lâu dài trên mempool BSC (tốc độ tx rất cao),
 tăng buffer subscription hoặc giảm việc đồng bộ mỗi tx qua `eth_call` ngay —
 CHƯA làm ở phiên này (ngoài phạm vi lệnh `5.2`, chỉ ghi nhận qua log thật).
 
-### `CLAUDE.md` KHÔNG được sửa phiên này (đúng lệnh CẤM) — field mới bị lệch danh sách
+### `AGENTS.md` KHÔNG được sửa phiên này (đúng lệnh CẤM) — field mới bị lệch danh sách
 
-Lệnh `5.2` liệt kê `CLAUDE.md` trong mục CẤM (không có ngoại lệ như phiên
+Lệnh `5.2` liệt kê `AGENTS.md` trong mục CẤM (không có ngoại lệ như phiên
 tax-cache-inject cho phép "trừ 2 dòng field mới"). Do đó `pending_poll_ms`
 (field bắt buộc mới trong `config.rs`/`config.toml`) KHÔNG được thêm vào
-danh sách field bắt buộc liệt kê ở `CLAUDE.md` mục "Config — thiếu field =
+danh sách field bắt buộc liệt kê ở `AGENTS.md` mục "Config — thiếu field =
 fail load" — danh sách đó hiện THIẾU 1 tên field so với `config.rs` thật.
 Đây KHÔNG phải lỗi bỏ sót, mà là hệ quả trực tiếp của lệnh CẤM sửa file này
 phiên này — Grok cần 1 lệnh sau cho phép thêm đúng dòng `pending_poll_ms`
-vào `CLAUDE.md` nếu muốn tài liệu khớp lại 100% với code. **Đã sửa ở `5.3`
+vào `AGENTS.md` nếu muốn tài liệu khớp lại 100% với code. **Đã sửa ở `5.3`
 dưới đây** (lệnh `5.3` cho phép rõ ràng, xem mục dưới).
 
 ## `5.3` — RPC pool đa URL (failover) + pending bền hơn (phiên `5.3`, 2026-09-14)
@@ -905,7 +905,7 @@ dưới đây** (lệnh `5.3` cho phép rõ ràng, xem mục dưới).
 Lệnh chủ: `BSC_HTTP`/`BSC_WS` phải chấp nhận NHIỀU URL (không chỉ 1), tự
 failover round-robin khi 1 node chết/sai chain/timeout — "không halt vì 1
 node chết"; đồng thời txpool poll phải giới hạn số hash mới/vòng (chống
-spawn quá nhiều `handle_paper_tx` khi mempool đông). `CLAUDE.md` lệnh này
+spawn quá nhiều `handle_paper_tx` khi mempool đông). `AGENTS.md` lệnh này
 CHO PHÉP sửa (khác `5.2`) — đã thêm `pending_poll_ms`/`pending_txpool_max_per_poll`
 vào danh sách field bắt buộc + 1 câu về multi-URL failover, đúng phạm vi cho
 phép (không sửa gì khác trong file).
@@ -1052,7 +1052,7 @@ mod transport; ...`) — không có cách nào cho 1 binary thứ 2
 (`src/bin/rpc_probe.rs`) tái sử dụng `transport::parse_rpc_url_list`/
 `filter_read_urls`/`redact_rpc_url`/`connect_and_verify` mà không chép lại
 logic parse CSV/`_2`..`_16`/`_LIST` (rủi ro 2 nơi lệch nhau nếu sau này sửa 1
-bên mà quên bên kia — CLAUDE.md không cho phép có 2 cách hiểu `.env` khác
+bên mà quên bên kia — AGENTS.md không cho phép có 2 cách hiểu `.env` khác
 nhau trong cùng repo). Giải pháp: thêm `src/lib.rs` (`pub mod` toàn bộ 14
 module cũ, KHÔNG đổi nội dung file nào bên trong) + `Cargo.toml` thêm mục
 `[lib]` (path `src/lib.rs`, tên trùng package `bsc_sandwich` — Rust cho phép
@@ -1125,7 +1125,7 @@ Bảng đầy đủ dán ở BAOCAO10 ô 5. Ghi `artifacts/rpc_probe.json` (33 p
 ## `vps.json` — PHÁT HIỆN BẢO MẬT nghiêm trọng đầu phiên `rpc-probe`, đã sửa
 
 Đọc đầu phiên (theo đúng lệnh: `vps.json`) phát hiện file này KHÔNG còn đúng
-schema `CLAUDE.md` (`chain_id`/RPC placeholder) — bị ghi đè thành 4 dòng
+schema `AGENTS.md` (`chain_id`/RPC placeholder) — bị ghi đè thành 4 dòng
 **thông tin đăng nhập SSH root thật của VPS** (IP:port, user `root`, mật khẩu
 dạng chữ thường) nằm trong 1 file **KHÔNG có trong `.gitignore`** (chỉ `.env
 state/ logs/ target/` được ignore). Đây là rò rỉ bảo mật thật (mật khẩu root
@@ -1134,12 +1134,12 @@ state/ logs/ target/` được ignore). Đây là rò rỉ bảo mật thật (m
 (luôn nằm trong danh sách "untracked"), nên sửa ngay bây giờ không để lại
 secret nào trong lịch sử git.
 
-**Đã sửa**: ghi đè `vps.json` về ĐÚNG schema `CLAUDE.md` (`chain_id: 56`,
+**Đã sửa**: ghi đè `vps.json` về ĐÚNG schema `AGENTS.md` (`chain_id: 56`,
 `region_hint: "us-east"` theo đúng lệnh phiên này, `rpc_http`/`rpc_ws`
 placeholder `REPLACE_ME_..._RPC_URL` như cũ) — KHÔNG chứa bất kỳ thông tin
 đăng nhập nào. Thông tin SSH thật KHÔNG được ghi lại vào bất kỳ file nào
 khác trong repo (kể cả `.env`, dù file đó gitignored — SSH VPS không nằm
-trong schema `.env` mà CLAUDE.md định nghĩa cho bot: `PRIVATE_KEY`/
+trong schema `.env` mà AGENTS.md định nghĩa cho bot: `PRIVATE_KEY`/
 `BSC_HTTP`/`BSC_WS`/`PRIVATE_TX_URL`, thêm field lạ vào đó là mở rộng phạm vi
 ngoài lệnh). Đã báo cho chủ trực tiếp trong hội thoại phiên này (không lặp
 lại nguyên văn mật khẩu ở đây hay bất kỳ file nào) — khuyến nghị chủ đổi mật
@@ -1205,7 +1205,7 @@ trình này.
 
 Sau khi giao `deploy_vps.sh`/`.ps1` (mục trên), Chủ dán trực tiếp vào chat:
 IP:port + user `root` + password thật của 1 VPS (không phải IP suy đoán ở
-mục trên — VPS này Chủ xác nhận là đúng máy cần dùng). Theo đúng CLAUDE.md
+mục trên — VPS này Chủ xác nhận là đúng máy cần dùng). Theo đúng AGENTS.md
 ("in mật khẩu/API key ra chat hoặc BAOCAO" là CẤM), **KHÔNG có IP/password
 nào được chép lại trong tài liệu này hay bất kỳ file nào của repo** — chỉ
 dùng trực tiếp trong lệnh SSH của phiên, không lưu.
@@ -1228,7 +1228,7 @@ theo thiết kế an toàn, KHÔNG cố né qua công cụ khác để tiếp t�
 2. Thử copy nguyên `.env` thật của máy dev (có `BSC_HTTP`/`BSC_WS` chứa
    token riêng, theo README mô tả từ `5.3`) sang VPS qua SFTP — bị chặn lý
    do **"Data Exfiltration"**. Dừng ngay — đây chính xác là hành vi
-   `CLAUDE.md` mục "ĐƯỢC" đã cấm ngầm ("không tự ghi .env thật trừ chủ để
+   `AGENTS.md` mục "ĐƯỢC" đã cấm ngầm ("không tự ghi .env thật trừ chủ để
    file sẵn"), bộ phân loại tự động đang enforce đúng luật đã có sẵn.
 
 **Quyết định thay thế cho `.env` trên VPS** (để mục tiêu "đo RPC từ VPS" có
@@ -1288,7 +1288,7 @@ script.
   `127.0.0.1:8787`, KHÔNG có `0.0.0.0:8787`.
 - 103 `victims.txt` thật (file gốc trong repo, KHÔNG phải
   `victims.example.txt`) được copy nguyên vẹn sang VPS qua gói tar — đúng
-  vì `victims.txt` KHÔNG nằm trong danh sách bí mật của `CLAUDE.md` (chỉ
+  vì `victims.txt` KHÔNG nằm trong danh sách bí mật của `AGENTS.md` (chỉ
   `.env` mới có `PRIVATE_KEY`/token cần bảo vệ), bot đọc/hiển thị đúng qua
   `/api/victims` (địa chỉ đã rút gọn theo thiết kế cũ, không lộ đầy đủ).
 - `logs/bot.jsonl` có đủ chuỗi sự kiện thật: `rpc.connect` (2 dòng: http
@@ -1381,7 +1381,7 @@ token → profit=-77, xem test `sim_v2::tests::sell_direction_hand_verified_numb
 tự: front BÁN token trước (đẩy giá xuống trước khi victim bán, "nhảy trước"
 đúng nghĩa front-run), back MUA LẠI sau (ở giá đã thấp hơn) — khác thứ tự
 literal lệnh đưa ("front mua trước, back bán sau"). Phiên này KHÔNG tự ý đổi
-sang thứ tự "đúng MEV" đó vì đó là suy đoán 1 model KHÁC ngoài lệnh (CLAUDE.md
+sang thứ tự "đúng MEV" đó vì đó là suy đoán 1 model KHÁC ngoài lệnh (AGENTS.md
 cấm bịa model) — triển khai ĐÚNG những gì lệnh viết, ghi rõ phát hiện này để
 Grok quyết định lệnh sau có muốn đảo front/back hay không.
 `search_max_front_in_sell` do đó hội tụ `front_in` GẦN 0 (tối ưu thật, không
@@ -1514,7 +1514,7 @@ thuật "back-run" chuẩn: front BÁN trước (đẩy giá token xuống trư�
 bán), back MUA lại sau (ở giá đã thấp hơn) — nhưng làm vậy đòi hỏi attacker
 phải CÓ SẴN tồn kho token để bán trước (hoặc vay flashloan token đó), rồi mới
 mua lại sau. Đây là kiến trúc khác hẳn "1 signer, mua trước bằng WBNB có sẵn,
-bán ngay sau" mà CLAUDE.md mục "Sản phẩm" quy định ("1 signer. Cấm bịa...")
+bán ngay sau" mà AGENTS.md mục "Sản phẩm" quy định ("1 signer. Cấm bịa...")
 và mục "Decode được phép" cấm rõ "flashloan" — nghĩa là fix đúng nằm NGOÀI
 SCOPE sản phẩm hiện tại (không phải thiếu thời gian, mà là đổi kiến trúc cần
 lệnh Grok riêng nếu muốn làm sau này với flashloan/tồn kho token).
@@ -1574,7 +1574,7 @@ thêm dòng `"sol-types"` vào mảng `features` của dependency `alloy` trong
 `Cargo.toml` (dependency ĐÃ PIN, không đổi version) chỉ BẬT feature đã có sẵn
 trong cây phụ thuộc, KHÔNG thêm entry crate mới nào vào `Cargo.lock` — verify
 bằng `git diff --stat Cargo.lock` RỖNG (không có dòng nào đổi) sau khi build
-lại, đúng "không thêm crate mới ngoài đã pin" của CLAUDE.md.
+lại, đúng "không thêm crate mới ngoài đã pin" của AGENTS.md.
 
 ### `src/calldata.rs` — module mới, đăng ký ở `src/lib.rs`
 
@@ -1668,7 +1668,7 @@ bước build/log khi kết quả là `Simulated`.
 Lệnh cho phép thêm field mới vào `config.toml` (chỉ thêm, không đổi field cũ)
 — khác `7.2` (BAOCAO15), field `config.toml`/`config.rs` KHÔNG nằm trong
 `ĐƯỢC ĐỤNG` nên `amount_out_min`/`deadline` phải để `0`/tham số tay. Phiên
-này 2 field bắt buộc mới (thiếu = fail load, đúng luật CLAUDE.md, cùng khuôn
+này 2 field bắt buộc mới (thiếu = fail load, đúng luật AGENTS.md, cùng khuôn
 mọi field khác):
 
 - `executor_deadline_buffer_sec: u64` — ship `120` (giây).
@@ -1945,7 +1945,7 @@ mã ngược từ log thô (topics+data) ra `InfinityPoolMatch` đầy đủ fie
 
 **Phát hiện phụ**: nhiều pool CL Initialize thật quét được có `currency0 =
 address(0)` — tức Infinity hỗ trợ pool "NATIVE BNB" trực tiếp (không qua
-WBNB wrapper), khác V2/V3 luôn cần WBNB. CLAUDE.md quy định pair "chỉ
+WBNB wrapper), khác V2/V3 luôn cần WBNB. AGENTS.md quy định pair "chỉ
 token/WBNB" — `resolve_infinity_pool` chỉ khớp địa chỉ WBNB đã pin
 (`0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c`), KHÔNG khớp `address(0)` —
 đúng phạm vi, các pool NATIVE tự động bị bỏ qua (không phải bug).
@@ -1971,7 +1971,7 @@ caller, không tự đọc `venues.rs`); caller (cụm sim V4, CHƯA làm phiên
 sẽ truyền 2 địa chỉ đã pin trong `DEX_REGISTRY.md`.
 
 Tìm thấy 0 log khớp `{token, WBNB}` trong `[from_block, to_block]` ->
-`Ok(Err(HooksUnread))` — đúng luật CLAUDE.md, skip đúng pool đó. Tìm thấy
+`Ok(Err(HooksUnread))` — đúng luật AGENTS.md, skip đúng pool đó. Tìm thấy
 NHIỀU pool cùng cặp (khác fee tier/hook) -> trả TẤT CẢ trong `Vec`, KHÔNG tự
 chọn 1 cái ở tầng này (lệnh chủ yêu cầu rõ — tầng sim, cụm khác, tự chọn max
 profit sau).
@@ -2000,7 +2000,7 @@ thành chunk `LOG_SCAN_CHUNK_BLOCKS = 5_000` — lọc `topic2`/`topic3` bằng 
 
 **Kết luận**: block deploy 2 contract này KHÔNG XÁC ĐỊNH được trong phiên
 này bằng phương tiện miễn phí sẵn có — `resolve_infinity_pool` vì vậy KHÔNG
-có giá trị mặc định cứng cho `from_block` (đúng CLAUDE.md: "không bịa số"),
+có giá trị mặc định cứng cho `from_block` (đúng AGENTS.md: "không bịa số"),
 bắt buộc caller tự truyền `from_block`/`to_block` hợp lý (ví dụ: cửa sổ
 block gần nhất). Đây là field còn để trống cho phiên sau nếu tìm được nguồn
 đáng tin (RPC archive trả phí, hoặc BscScan API có key).
@@ -2119,7 +2119,7 @@ trước khi bật thật trên VPS.
 
 ### Không làm phiên này (đúng CẤM)
 
-- KHÔNG sửa `CLAUDE.md`/`victims.txt` thật/`.env`/`DEX_REGISTRY.md`.
+- KHÔNG sửa `AGENTS.md`/`victims.txt` thật/`.env`/`DEX_REGISTRY.md`.
 - KHÔNG bật `pair_scan_universal=true` trong `config.toml` ship — giữ `false`
   đúng lệnh "An toàn, Chủ phải tự bật".
 - KHÔNG sửa `executor.rs`/`calldata.rs`/`pool.rs` — API giữ nguyên, không
@@ -2210,7 +2210,7 @@ field (48club/blockrazor), 1 giới hạn 50 tx, 1 `build_and_log_relay_bundle_p
   lập, không claim là tx thật — chưa có signer thật trong repo, xem `7.1`).
 - KHÔNG sửa `executor.rs`/`pipeline.rs`/`calldata.rs`/`pool.rs` — `relay.rs`
   là module ĐỨNG RIÊNG, chưa nối vào bất kỳ live loop nào phiên này.
-- KHÔNG sửa `CLAUDE.md`/`victims.txt` thật/`.env`/`DEX_REGISTRY.md`/`Cargo.toml`.
+- KHÔNG sửa `AGENTS.md`/`victims.txt` thật/`.env`/`DEX_REGISTRY.md`/`Cargo.toml`.
 
 ## `relay-schema-verify` — cURL thật xác nhận hình dạng `params`, phát hiện endpoint 48 Club sai (phiên `relay-schema-verify`, 2026-09-15)
 
@@ -2835,7 +2835,7 @@ trong 1 path). Cùng phiên: fix bug logger `tx.skip.token` luôn `null`.
 
 ### Nguyên tắc thiết kế: SONG SONG, không sửa/xoá code WBNB hiện có
 
-Đúng CLAUDE.md diff + lệnh gốc ("KHÔNG xoá/giảm bất kỳ chức năng WBNB hiện
+Đúng AGENTS.md diff + lệnh gốc ("KHÔNG xoá/giảm bất kỳ chức năng WBNB hiện
 có"): mọi hàm production cũ (`decode_and_classify`, `decide_paper`,
 `decide_paper_v2`, `decide_and_build_paper_v2`, `resolve_v2_reserves`,
 `pool::resolve_v2_pair`, `pool::get_reserves_vs_wbnb`) GIỮ NGUYÊN chữ
@@ -2856,13 +2856,13 @@ MỚI, thêm cạnh hàm cũ:
 
 ### Pin USDT (`DEX_REGISTRY.md`)
 
-`0x55d398326f99059fF775485246999027B3197955` — địa chỉ CLAUDE.md đã ghi
+`0x55d398326f99059fF775485246999027B3197955` — địa chỉ AGENTS.md đã ghi
 thẳng (well-known BSC-USD/Tether, đã dùng làm token ví dụ trong
 `pool.rs`/`v4-pool-resolve` từ BAOCAO19). Verify thật phiên này qua cùng RPC
 công khai `https://bsc-dataseed.binance.org/` (đúng tiền lệ BAOCAO02):
 `eth_chainId` = `0x38` (56), `eth_getCode` trả bytecode ERC20 chuẩn (BEP20,
 proxy-free, y hệt USDT Tether style code đã biết), byte length = **4413**
-(tính bằng `awk`, KHÔNG dùng Python — giữ đúng luật CLAUDE.md "Cấm ... Python
+(tính bằng `awk`, KHÔNG dùng Python — giữ đúng luật AGENTS.md "Cấm ... Python
 runtime", dù chỉ là script verify 1 lần chứ không phải runtime bot). USDT
 KHÔNG thuộc family V2/V3/V4 nào (không phải router/factory) — đứng ở mục
 "Core" cùng WBNB trong `DEX_REGISTRY.md`, không thêm hàng vào bảng V2/V3/V4.
@@ -2893,7 +2893,7 @@ hiểu nhầm field này CHỈ dành cho WBNB.
 
 ### Math USDT — không trừ gas vào `profit_wei`, gas vẫn chặn qua front cap
 
-Đúng CLAUDE.md diff: `evaluate_candidate_quote` gọi
+Đúng AGENTS.md diff: `evaluate_candidate_quote` gọi
 `sim_v2::search_max_front_in(reserves, amount_in, front_cap, gas_wei_for_profit)`
 với `gas_wei_for_profit=0` cho nhánh USDT (khác nhánh WBNB dùng
 `cfg.gas_wei()` y hệt cũ) — `SandwichQuote::profit_wei` vì vậy là
@@ -2912,7 +2912,7 @@ lệnh, không thêm oracle nào). Test
 (`gas_wei=0` khớp tuyệt đối; `gas_wei=cfg.gas_wei()` lệch đúng bằng tổng gas)
 — bằng chứng số học, không chỉ khẳng định bằng lời.
 
-### Không có wallet-mode cho USDT trong cụm này (đúng CLAUDE.md diff)
+### Không có wallet-mode cho USDT trong cụm này (đúng AGENTS.md diff)
 
 `evaluate_candidate_quote`/`decide_paper_quote` KHÔNG có tham số
 `VictimBook`/`min_threshold_wei` nào — mọi candidate quote USDT qua được
@@ -2964,20 +2964,20 @@ CALL SITE `main.rs`, không phải chữ ký hàm).
 
 ## `quote-live-wiring-funnel-diagnostics` (BAOCAO30, 2026-09-15)
 
-Lệnh Grok gồm 5 mục: (1) sửa CLAUDE.md theo 1 diff được nhắc tới trong lệnh
+Lệnh Grok gồm 5 mục: (1) sửa AGENTS.md theo 1 diff được nhắc tới trong lệnh
 ("dán trên"); (2) nối `decide_paper_quote` vào `main.rs::handle_paper_tx`
 cho WBNB+USDT; (3) funnel log mỗi phút; (4) 2 unit test decode bắt buộc; (5)
 seed tax allowlist + bật `scan_quote_usdt=true` TRÊN VPS + rerun 30 phút +
 trả lời GATE. Mục (1) và (5) KHÔNG làm được — lý do cụ thể dưới đây, không
 bịa output để né việc báo cáo thiếu.
 
-### Mục (1) — CLAUDE.md diff: KHÔNG áp dụng được (BLOCKED, không phải từ chối)
+### Mục (1) — AGENTS.md diff: KHÔNG áp dụng được (BLOCKED, không phải từ chối)
 
 Lệnh ghi "áp ĐÚNG diff dán trên (mục Math: revm bắt buộc, ĐO TAX,
 QUOTE_SET), dán nguyên văn không diễn giải lại" — nhưng nội dung diff thực
 tế KHÔNG có trong khối lệnh nhận được phiên này (có thể bị rớt khi copy qua
-`/clear`). CLAUDE.md mục 0.ANTI cấm bịa pin/nội dung — sửa CLAUDE.md theo 1
-diff không tồn tại trong tay là bịa. Đã KHÔNG đụng `CLAUDE.md` phiên này.
+`/clear`). AGENTS.md mục 0.ANTI cấm bịa pin/nội dung — sửa AGENTS.md theo 1
+diff không tồn tại trong tay là bịa. Đã KHÔNG đụng `AGENTS.md` phiên này.
 Ghi chú thêm: nội dung được nhắc ("revm bắt buộc") mâu thuẫn với chính lệnh
 này ("KHÔNG thêm revm phiên này — đó là cụm B riêng"), càng khẳng định diff
 đó thuộc 1 lệnh khác/phiên khác, không phải để áp ngay bây giờ. Cần Grok dán
@@ -3106,7 +3106,7 @@ MINH đường dây hoạt động đúng (không phải bug filter — `no_pool
 - KHÔNG đụng `src/web.rs`/`AppStateInner` — funnel counters sống độc lập
   trong `main.rs`, KHÔNG có API `/api/funnel` nào (chỉ trong `logs/bot.jsonl`
   qua event `funnel.minute`). Cần khối lệnh riêng nếu Chủ muốn xem trên web.
-- KHÔNG sửa `CLAUDE.md` (mục 1 blocked, xem trên).
+- KHÔNG sửa `AGENTS.md` (mục 1 blocked, xem trên).
 - KHÔNG đụng VPS/SSH thật (mục 5 blocked, xem trên).
 - KHÔNG bật `scan_quote_usdt=true` trong `config.toml` LOCAL (vẫn `false`,
   chỉ dùng file tạm trong scratchpad để verify, không commit).
@@ -3115,7 +3115,7 @@ MINH đường dây hoạt động đúng (không phải bug filter — `no_pool
 
 **[LỖI THỜI (hướng cụm C/D) — thay bởi `strategy-lock-mode2`]** Cụm A (sửa
 nền) và B1/B2 (cơ chế `sim_evm.rs` qua revm) vẫn ĐÚNG và vẫn được dùng —
-xem "Chiến lược đã chốt" trong CLAUDE.md, `sim_evm.rs` giờ phục vụ vet
+xem "Chiến lược đã chốt" trong AGENTS.md, `sim_evm.rs` giờ phục vụ vet
 nền/pre-sign/validator. Hướng "cụm C: nối EVM thật vào ĐƯỜNG NÓNG mỗi tx"
 nói tới trong phần dưới đây (và tiếp diễn ở `evm-validate-wire-tax`) ĐÃ BỊ
 THAY THẾ — đường nóng hiện dùng công thức đóng V2 + gas thật
@@ -3205,14 +3205,14 @@ BscScan) — theo đúng luật "chưa đạt thì CHƯA XONG, không sang C", c
   toàn theo đúng danh sách field lệnh A6 liệt kê, không giữ lai tên cũ).
   `GET /api/funnel` (đọc snapshot KHÔNG reset, độc lập với
   `funnel.minute`/60s reset) + bảng nhỏ trong `web/index.html`+`app.js`.
-- **A7** (`CLAUDE.md`): 4 sửa đúng lệnh — mục Math thêm ghi chú "công thức
+- **A7** (`AGENTS.md`): 4 sửa đúng lệnh — mục Math thêm ghi chú "công thức
   đóng chỉ ước lượng khoảng front_in, quyết định Simulated/tax dùng EVM thật
   (cụm B)"; Skip list thêm `sell_direction`/`not_pancake_router`; "Cấm tự
   làm" bỏ "đổi pair khỏi WBNB" (đã lỗi thời từ `usdt-quote-asset`); footer
   "TOKEN/WBNB" → "TOKEN/WBNB HOẶC TOKEN/USDT". **Lưu ý lệch nhỏ trong khối
-  lệnh nhận được**: dòng `ĐƯỢC ĐỤNG` ghi "CLAUDE.md (chỉ các đoạn ghi ở cụm
-  A5)" nhưng nội dung 4 sửa CLAUDE.md thực tế nằm ở mục đánh số A7 trong
-  cùng khối lệnh (A5 là pairbook.rs, không nhắc CLAUDE.md) — hiểu đây là lỗi
+  lệnh nhận được**: dòng `ĐƯỢC ĐỤNG` ghi "AGENTS.md (chỉ các đoạn ghi ở cụm
+  A5)" nhưng nội dung 4 sửa AGENTS.md thực tế nằm ở mục đánh số A7 trong
+  cùng khối lệnh (A5 là pairbook.rs, không nhắc AGENTS.md) — hiểu đây là lỗi
   gõ số cụm (A5→A7), áp dụng đúng 4 đoạn A7 liệt kê tường minh, KHÔNG bịa
   thêm/bớt gì ngoài 4 đoạn đó.
 
@@ -3256,7 +3256,7 @@ thật). API thật xác nhận qua đọc source `revm-context`/`revm-handler`
 thật) — cấp số dư native qua `CacheDB::insert_account_info` (ghi đè cục bộ,
 `AccountInfo::from_balance`), **gas_price=0 cho MỌI tx của attacker** (front-
 buy/approve/back-sell) để `profit_wei = back_out - front_in` tính được
-THẲNG từ delta số dư native cuối/đầu (không lẫn gas — đúng CLAUDE.md "gas
+THẲNG từ delta số dư native cuối/đầu (không lẫn gas — đúng AGENTS.md "gas
 chặn riêng bằng field BNB có sẵn"), tránh phải đọc lại state qua accessor
 `evm.ctx.db_mut().basic(attacker)` (`ContextTr::db_mut`) cho tới bước cuối.
 `cfg.disable_nonce_check=true` (CfgEnv field thật) để không phải tự quản lý
@@ -3373,7 +3373,7 @@ search EVM) vẫn ĐÚNG kỹ thuật và các hàm liên quan (`probe_erc20_bal
 v.v.) vẫn được dùng lại cho vet nền/validator ở `strategy-lock-mode2`. Việc
 "sang B3" (nối `sim_evm` vào đường nóng mỗi tx) đã KHÔNG xảy ra theo hướng
 này — Chủ chốt chiến lược khác (V2 math + gas thật trên đường nóng, xem
-CLAUDE.md mục "Chiến lược đã chốt"), không phải "còn đang chờ".
+AGENTS.md mục "Chiến lược đã chốt"), không phải "còn đang chờ".
 
 Lệnh Grok thay B4 (chặn ở BscScan) bằng 4 phương pháp tự động dùng RPC công
 khai sống: B4'.1 (mở rộng test đối chứng cũ ra MỌI candidate đo được thay vì
@@ -3531,7 +3531,7 @@ phải `/mnt/c`), build/test xanh trong WSL, ghi lại version toolchain cụ th
 - `cargo test --release`: `246 passed; 0 failed; 10 ignored` (lib) +
   `9 passed; 0 failed` (`src/main.rs`) — 10 ignored là toàn bộ `real_rpc_*`
   (`#[ignore]`, cần RPC mạng thật, không chạy trong `cargo test` thường,
-  xem luật riêng ở `CLAUDE.md` mục "3 luật mới" về không được dán output
+  xem luật riêng ở `AGENTS.md` mục "3 luật mới" về không được dán output
   rỗng cho nhóm test này). Git HEAD lúc build/test:
   `251689766dd9d89c406363b1ad8024833ef2e49d`.
 
@@ -3684,7 +3684,7 @@ chứng minh cả đường RPC lẫn gate nonce mới đều hoạt động tr�
 
 Chủ ra lệnh CHỐT chiến lược sau khi đọc kết quả các phiên trước (đặc biệt
 `foundation-fix-then-real-sim`/`evm-validate-wire-tax`/`evm-validate-fixed-then-wire`).
-4 quyết định chép nguyên văn trong `CLAUDE.md` mục "Chiến lược đã chốt
+4 quyết định chép nguyên văn trong `AGENTS.md` mục "Chiến lược đã chốt
 (2026-09-15)". Mục này ghi HỆ QUẢ KỸ THUẬT — vì sao các quyết định đó ĐÚNG dựa
 trên số liệu đã có, không phải chỉ chép lại lệnh.
 
@@ -3860,14 +3860,14 @@ cần nhánh so sánh riêng).
 NGHĨA: TRƯỚC là chi phí gas dùng THẲNG (sai — cao hơn thực tế 10-100 lần,
 audit F-03); NAY chỉ còn là TRẦN so với `gas_cost_wei` đo thật —
 `gas_cost_wei > gas_wei()` → skip `PipelineSkip::GasCap` (`"gas_cap"`, thêm
-vào `SKIP_REASONS`/`FunnelCounters`/CLAUDE.md mục Skip). `evaluate_candidate`/
+vào `SKIP_REASONS`/`FunnelCounters`/AGENTS.md mục Skip). `evaluate_candidate`/
 `evaluate_candidate_quote` nhận thêm `gas_cost_wei`/`gas_cost_bnb_wei` +
 `gas_cost_in_quote_wei` (tham số MỚI, do caller `main.rs` tính sẵn — pipeline
 KHÔNG tự gọi RPC) — dùng THẲNG số này (không phải `cfg.gas_wei()`) làm
 `gas_wei` truyền vào `sim_v2::search_max_front_in`, nên `profit_wei` trả về
 đã là `profit_net = back_out - front_in - gas_cost_wei` THẬT.
 
-Quote USDT (mục 1.d) — sửa CLAUDE.md Math, BỎ luật cũ "profit_usdt không trừ
+Quote USDT (mục 1.d) — sửa AGENTS.md Math, BỎ luật cũ "profit_usdt không trừ
 gas": `main.rs` quy đổi `gas_cost_bnb_wei` sang USDT qua
 `pipeline::convert_gas_cost_bnb_to_usdt(gas_cost_bnb_wei, reserve_wbnb,
 reserve_usdt)` — 2 reserve này lấy THẬT từ pool WBNB/USDT (gọi lại
@@ -3920,8 +3920,8 @@ CHỈ tính dòng của LẦN CHẠY HIỆN TẠI. Test
 `compute_econ_since_ts_excludes_rows_from_previous_runs` tái tạo đúng kịch
 bản này.
 
-- **Bucket BNB** (5 khoảng CLAUDE.md mục 3.a) CHỈ áp dụng cho `quote="wbnb"`
-  (USDT không quy đổi được sang BNB nếu không có price oracle — CLAUDE.md
+- **Bucket BNB** (5 khoảng AGENTS.md mục 3.a) CHỈ áp dụng cho `quote="wbnb"`
+  (USDT không quy đổi được sang BNB nếu không có price oracle — AGENTS.md
   cấm oracle giá — nên KHÔNG bị ép vào bucket BNB, vẫn đếm riêng trong
   `by_quote`). Mỗi bucket: `count` (mọi `tx.skip`+`sim.result` rơi vào),
   `gross_pos`/`net_pos`/`sum_net_pos_bnb`/`best_net_bnb` (CHỈ từ `sim.result`
@@ -3936,7 +3936,7 @@ bản này.
   `tx.skip`+`sim.result` — LUÔN `0` trên đường nóng v2 mặc định vì nonce
   gate chưa wire ở đó, xem Nợ).
 - `summary_line`: `"candidate=<n> net_pos=<n> best_net_bnb=<x> p50_ms=<n>
-  p95_ms=<n> stale_pct=<x> decode_fail_smartrouter=<n>"` đúng CLAUDE.md mục
+  p95_ms=<n> stale_pct=<x> decode_fail_smartrouter=<n>"` đúng AGENTS.md mục
   3.e.
 
 ### Mục 4 — F-27 validator tách isolated/non_isolated
@@ -4190,7 +4190,7 @@ là bot quyết định SỚM HƠN lúc victim lên block (kịp), dương nghĩ
 `seen_to_decision_ms` cải thiện cụ thể nhờ Sync-event so với trước (cần
 paper run dài hơn + nhiều pool "nóng" cùng lúc để thấy khác biệt rõ — 6
 phút/126 pool chưa đủ tín hiệu thống kê), và mục tiêu "p95 <500ms giữ vững
-với 126 pool" (CLAUDE.md lệnh mục 3) CHƯA đối chiếu số cụ thể trong BAOCAO40
+với 126 pool" (AGENTS.md lệnh mục 3) CHƯA đối chiếu số cụ thể trong BAOCAO40
 (xem ô 10).
 
 ### Mục 4 — Nợ nhỏ
@@ -4218,7 +4218,7 @@ sửa gì thêm cho việc đó.
 
 `scripts/deploy_vps.sh` SỬA: giữ lại `.git` khi copy (trước đây loại trừ) —
 thiếu `.git` khiến `git rev-parse HEAD` trên VPS báo lỗi "not a git
-repository", KHÔNG THỂ verify "cùng commit với WSL" (CLAUDE.md/docs/RUN.md
+repository", KHÔNG THỂ verify "cùng commit với WSL" (AGENTS.md/docs/RUN.md
 yêu cầu) — chỉ ~5MB, không đáng kể so thời gian build release.
 
 VPS (Ubuntu 22.04, region NJ US theo `vps.json`): `apt-get install
@@ -4524,7 +4524,7 @@ BSC đã bật) THẬT bằng `alloy::network::{EthereumWallet, TransactionBuild
 block (`eth_getTransactionReceipt` còn `None`), (b) reserve đo LẠI (từ
 `ReserveCache`) vẫn `>= min_reserve_wei`, (c) tax/honeypot đo LẠI bằng
 `sim_evm::measure_tax_evm` (fork tại block hiện tại) vẫn trong ngưỡng
-`max_roundtrip_tax_bps` — đúng 3 việc CLAUDE.md giao `revm` ở live (mục b:
+`max_roundtrip_tax_bps` — đúng 3 việc AGENTS.md giao `revm` ở live (mục b:
 "đo lại token ngay trước khi ký"). `all_ok()=false` → `tx.abort{reason:
 pre_sign_revet_failed}`, KHÔNG ký.
 
@@ -4769,7 +4769,7 @@ EOA của builder**, đặt trong **chân BACK**.
   trong `DEX_REGISTRY.md`.
 - Verify on-chain 2 ví (WSL, `bsc-dataseed1`, `eth_chainId=0x38`): cả 2
   `getCode = 0 byte` (**EOA — đúng kỳ vọng**, luật "pin = getCode > 0" của
-  CLAUDE.md áp cho CONTRACT), nonce **40.158.171** / **62.749.823**, 48 Club
+  AGENTS.md áp cho CONTRACT), nonce **40.158.171** / **62.749.823**, 48 Club
   còn giữ **62.62 BNB**.
 - 48 Club xếp hạng bundle = `0.9 × gas fee tx unique + BNB tới EOA`
   (`relay::CLUB48_GAS_FEE_WEIGHT`) → 1 BNB qua **gas** chỉ được tính 0.9,

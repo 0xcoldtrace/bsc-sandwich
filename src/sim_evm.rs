@@ -16,7 +16,7 @@
 //! — nạp số dư native qua `CacheDB::insert_account_info` (ghi đè lớp cache
 //! CỤC BỘ, không đụng chain thật), gas_price=0 cho MỌI tx của attacker (front/
 //! approve/back) để `profit_wei = back_out - front_in` KHÔNG lẫn chi phí gas
-//! (đúng CLAUDE.md — gas chặn riêng bằng field BNB, không trộn vào đây). Tx
+//! (đúng AGENTS.md — gas chặn riêng bằng field BNB, không trộn vào đây). Tx
 //! của VICTIM replay ĐÚNG `from`/`to`/`value`/`input`/`gas`/`gas_price`/`nonce`
 //! thật — không override gì (đang dùng đúng state thật của họ tại block fork
 //! qua `AlloyDB`, không cần cấp giả).
@@ -130,7 +130,7 @@ pub struct EvmSandwichOutcome {
     pub token_received: U256,
     /// BNB attacker nhận được sau back-sell (ĐÃ trừ tax bán nếu có).
     pub back_out: U256,
-    /// `back_out - front_in`, KHÔNG trừ gas (đúng CLAUDE.md, gas chặn riêng).
+    /// `back_out - front_in`, KHÔNG trừ gas (đúng AGENTS.md, gas chặn riêng).
     pub profit_wei: i128,
     pub victim_success: bool,
     /// Cụm `truth-victim-ok-and-memleak` (mục 1) — LÝ DO victim revert, decode
@@ -1519,7 +1519,7 @@ pub async fn measure_tax_evm(
 }
 
 /// B3.2 — thu hẹp `front_in` bằng EVM THẬT trên fork đã warm, xuất phát từ ước
-/// lượng công thức đóng `sim_v2` (đúng CLAUDE.md: công thức đóng CHỈ để ước
+/// lượng công thức đóng `sim_v2` (đúng AGENTS.md: công thức đóng CHỈ để ước
 /// lượng khoảng, quyết định cuối cùng dùng EVM thật).
 ///
 /// Thử một lưới nhỏ quanh ước lượng (`×0.5 … ×1.5`, kẹp trong `[1, max_front]`)
@@ -3389,7 +3389,7 @@ sim_evm[token_received={} back_out={} profit={}] victim_success={} buy_tax_bps={
     ///   (b) `victim_topup = Some(amount_in)` -> kỳ vọng victim SỐNG
     ///
     /// Test in số THẬT (block, địa chỉ, `amount_in`, lãi mô phỏng) — luật #3
-    /// CLAUDE.md, không được "pass rỗng". Nếu quét hết ngân sách block mà
+    /// AGENTS.md, không được "pass rỗng". Nếu quét hết ngân sách block mà
     /// không gặp mẫu hình nào thì in `MISSING` và KHÔNG assert (cụm đối thủ có
     /// thể đã ngừng/đổi cách hoạt động — đó là dữ kiện, không phải lỗi code).
     #[tokio::test(flavor = "multi_thread")]

@@ -26,7 +26,7 @@
 //! V4/Infinity: `pool.rs::resolve_infinity_pool` đã trả `hooks_unread` cho
 //! MỌI token (chưa pin cách tìm `PoolKey`) — sim V4 phiên này KHÔNG gọi
 //! `CLQuoter`/`BinQuoter` cho pool nào (không có `PoolKey` để build calldata,
-//! gọi bừa là bịa tham số `hooks`/`parameters`, đúng CLAUDE.md "không đoán
+//! gọi bừa là bịa tham số `hooks`/`parameters`, đúng AGENTS.md "không đoán
 //! tick/hooks"). Giữ nguyên skip đó — xem `resolve_infinity_pool`.
 
 use alloy::primitives::{keccak256, Address, U256};

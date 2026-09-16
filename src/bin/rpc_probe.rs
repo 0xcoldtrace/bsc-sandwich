@@ -7,7 +7,7 @@
 //!
 //! Không có `.env`/biến env RPC nào set trong shell hiện tại -> in `MISSING`,
 //! không panic, exit code 0 (đây không phải lỗi chương trình, chỉ là chưa có
-//! gì để đo — đúng CLAUDE.md mục 0.ANTI "Không chắc -> MISSING").
+//! gì để đo — đúng AGENTS.md mục 0.ANTI "Không chắc -> MISSING").
 //!
 //! Timeout mỗi cuộc gọi RPC: 2s (đúng lệnh). 5 mẫu `eth_chainId` +
 //! `eth_blockNumber` mỗi URL (connect 1 lần/URL, 5 vòng gọi lại trên cùng

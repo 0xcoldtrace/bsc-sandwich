@@ -75,7 +75,7 @@ pub struct AppStateInner {
     /// minh ở test B4''.4). Chia sẻ fork xuyên tx cần 1 worker-thread riêng
     /// (actor) — ngoài phạm vi cụm này, ghi CÒN NỢ.
     pub validate_log: RwLock<ValidateStats>,
-    /// Giới hạn xử lý tx paper đồng thời ≤ 4 (CLAUDE.md lệnh `5.1`).
+    /// Giới hạn xử lý tx paper đồng thời ≤ 4 (AGENTS.md lệnh `5.1`).
     pub pending_semaphore: Arc<Semaphore>,
     /// Cụm `5.2` — nguồn pending-tx ĐANG hoạt động (`ws`/`txpool`/
     /// `inject_only`), cập nhật bởi `main.rs::subscribe_pending_txs`/
@@ -967,7 +967,7 @@ async fn victims(State(state): State<AppState>) -> Json<Value> {
 
 /// Cụm pair-mode — `GET /api/pairs`: đủ `count`/`error_lines`/
 /// `last_reload_sec_ago`/danh sách entry (`pair_addr`/`source_line`/
-/// `resolved_from`) đúng schema CLAUDE.md lệnh pair-mode. Chỉ đọc, không sửa
+/// `resolved_from`) đúng schema AGENTS.md lệnh pair-mode. Chỉ đọc, không sửa
 /// (sửa qua file `pairs.txt`, hot-reload theo `pairs_reload_sec`).
 ///
 /// Cụm `strategy-lock-mode2` — thêm 5 cột: `vetted_at` (ngày Chủ vet tay,
@@ -1216,7 +1216,7 @@ fn prune_econ_row(mut row: Value) -> Value {
     row
 }
 
-/// 5 bucket `victim_in` (BNB) đúng CLAUDE.md mục 3.a.
+/// 5 bucket `victim_in` (BNB) đúng AGENTS.md mục 3.a.
 const BNB_BUCKETS: [(&str, f64, f64); 5] = [
     ("<0.01", 0.0, 0.01),
     ("0.01-0.05", 0.01, 0.05),
@@ -1225,7 +1225,7 @@ const BNB_BUCKETS: [(&str, f64, f64); 5] = [
     (">=1", 1.0, f64::INFINITY),
 ];
 
-/// 5 router đã pin, tên hiển thị khớp CLAUDE.md mục 3.c ("V2 Router /
+/// 5 router đã pin, tên hiển thị khớp AGENTS.md mục 3.c ("V2 Router /
 /// SmartRouter / UR v3 / UR Infinity / SwapRouter") — dùng ĐÚNG địa chỉ đã
 /// pin trong `venues::PANCAKE_ROUTERS`, không lặp lại hằng số riêng.
 fn router_display_name(to: &str) -> &'static str {
@@ -1494,7 +1494,7 @@ fn compute_econ_from_rows(rows: &[Value], since_ts: Option<&str>) -> Value {
         // NGẦM ĐỊNH cho CHÍNH dòng này, suy từ 2 field đã log sẵn
         // (`amount_in` đơn vị quote gốc, `amount_in_bnb_equiv` đã quy đổi ở
         // `main.rs`/`pipeline::convert_usdt_to_bnb_wei`) — KHÔNG phải price
-        // oracle (CLAUDE.md cấm), chỉ tái dùng đúng tỉ giá reserve THẬT bot
+        // oracle (AGENTS.md cấm), chỉ tái dùng đúng tỉ giá reserve THẬT bot
         // đã tính lúc quyết định. `quote="wbnb"` cho tỉ giá 1.0 tự nhiên
         // (amount_in_bnb_equiv == amount_in, xem `main.rs`).
         // Cụm 1 - CẢ 2 giá trị phải quy về đơn vị BNB/USDT thật (chia 1e18,
@@ -2221,7 +2221,7 @@ mod tests {
         assert_eq!(econ["latency_ms"]["samples"], 4);
     }
 
-    /// USDT quote KHÔNG được quy vào bucket BNB (CLAUDE.md cấm price oracle
+    /// USDT quote KHÔNG được quy vào bucket BNB (AGENTS.md cấm price oracle
     /// quy đổi) — vẫn đếm vào `by_quote`/`candidate` nhưng không rơi vào bất
     /// kỳ bucket BNB nào.
     #[test]

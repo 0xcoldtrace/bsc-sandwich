@@ -18,7 +18,7 @@ VPS, tên cũ gây hiểu nhầm chỉ dành cho VPS).
 ## Lọc thô `pairs.txt` bằng GoPlus (`scripts/vet_goplus.sh`)
 
 Bước ĐẦU TIÊN trước khi Chủ tự vet tay + điền `vetted YYYY-MM-DD` vào
-`pairs.txt` (xem CLAUDE.md mục "Chiến lược đã chốt"):
+`pairs.txt` (xem AGENTS.md mục "Chiến lược đã chốt"):
 
 ```bash
 scripts/vet_goplus.sh pairs.txt
@@ -58,7 +58,7 @@ scripts/paper_run.sh --minutes 30 --port 8799
 
 Script tự in máy đang chạy (`WSL`/`VPS`, tự phát hiện qua `/proc/version`) và
 `sha256sum` của binary vừa build ngay đầu phần kết quả — dán nguyên vào
-BAOCAO theo luật #2 (`CLAUDE.md` mục "3 luật bổ sung").
+BAOCAO theo luật #2 (`AGENTS.md` mục "3 luật bổ sung").
 
 Script sẽ:
 
@@ -105,7 +105,7 @@ Script sẽ:
   `candidate=<n> net_pos=<n> best_net_bnb=<x> p50_ms=<n> p95_ms=<n>
   stale_pct=<x> decode_fail_smartrouter=<n>`). Bucket BNB CHỈ áp dụng cho
   `quote=wbnb` (USDT không quy đổi được sang BNB nếu không có price oracle —
-  CLAUDE.md cấm oracle giá).
+  AGENTS.md cấm oracle giá).
 - `/api/validate`: chỉ số SỐNG của validator nhúng (B3.4) — `within_1pct_ratio`
   là tỉ lệ dự đoán victim khớp on-chain ≤1%. Cụm `real-economics-mode2`
   (F-27): tách riêng `isolated`/`non_isolated` (mỗi nhóm có `n`/
@@ -117,7 +117,7 @@ Script sẽ:
 ## Lưu ý hạ tầng (đo thật, xem `docs/STATE.md` mục cụm này)
 
 - RPC công khai giữ state ~128 block (~96s). Fork EVM (`pairs_vet_task`,
-  validator, đo lại trước ký live — xem CLAUDE.md mục "Chiến lược đã chốt")
+  validator, đo lại trước ký live — xem AGENTS.md mục "Chiến lược đã chốt")
   luôn mở tại block hiện tại nên luôn trong cửa sổ — không phụ thuộc archive.
 - Cụm `strategy-lock-mode2`: `sim_engine="v2"` (ship) — đường nóng KHÔNG mở
   fork EVM mỗi tx nữa, nên log `sim.evm`/`sim_error` từ đường nóng SẼ RỖNG
@@ -233,7 +233,7 @@ sha256sum target/release/bsc_sandwich
 
 So 2 giá trị này với `git log -1 --format=%H` và `sha256sum` chạy trên WSL
 (dev) — **khác nhau = MISSING**, chưa được coi là "đã deploy đúng bản" theo
-`CLAUDE.md` (Dev = WSL, Production = VPS, phải cùng commit). Ghi cả 2 cặp
+`AGENTS.md` (Dev = WSL, Production = VPS, phải cùng commit). Ghi cả 2 cặp
 giá trị vào BAOCAO khi báo cáo đã deploy.
 
 ### 8. Logrotate cho `logs/bot.jsonl`
@@ -260,7 +260,7 @@ touch /root/bsc-sandwich/state/halt.lock
 cụm `strategy-exec` — contract executor + gas-price/bribe model thật — đã
 xong VÀ Chủ tự đọc + đồng ý rủi ro). Claude Code KHÔNG được tự thực hiện bất
 kỳ bước nào dưới đây (bật `allow_live`/`bot_armed`/`dry_run=false`, gửi tx
-thật) — CLAUDE.md cấm tuyệt đối "tự live".
+thật) — AGENTS.md cấm tuyệt đối "tự live".
 
 ### 9.a Ví mới, nạp nhỏ
 

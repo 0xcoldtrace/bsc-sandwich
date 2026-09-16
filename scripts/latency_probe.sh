@@ -2,7 +2,7 @@
 # Cụm `vps-latencyprobe-retest` (B) — đo round-trip TỪNG CHẶNG bằng lệnh
 # đọc/vô hại (eth_blockNumber / eth_chainId), KHÔNG ký/gửi tx thật, KHÔNG
 # sửa relay.rs/pipeline.rs/executor.rs (đo bằng script ngoài, không đụng
-# code sản phẩm). Dùng curl thuần + awk/date, KHÔNG Python (đúng CLAUDE.md
+# code sản phẩm). Dùng curl thuần + awk/date, KHÔNG Python (đúng AGENTS.md
 # "Cấm ... Python runtime" cho mọi phần thuộc repo bot, kể cả tooling).
 #
 # Chạy trên máy có `.env` của bot (thường là VPS đang host bot, vì đây là
