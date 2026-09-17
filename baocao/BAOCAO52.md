@@ -19,7 +19,7 @@ sendRaw / deploy / đổi list / nới both_ok / paper 6h. Không đụng `.env`
 
 ## 3. FILE ĐỔI
 
-Commit: `837a08f5f0359edf7c5ac2ee7311d750844dbdd3`.
+Commit nội dung: `17944f4f41336a520ae5f7d033c5eade1758401a`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -120,4 +120,5 @@ paper 6h. Không sửa AGENTS.md. Không 15 case revm.
 
 ---
 
-Commit: `837a08f5f0359edf7c5ac2ee7311d750844dbdd3`
+Commit: `17944f4f41336a520ae5f7d033c5eade1758401a` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này, không đổi code.
