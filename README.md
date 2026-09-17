@@ -1,57 +1,105 @@
-# BSC Sandwich Bot — Hướng dẫn vận hành
+# BSC backrun-arb — Hướng dẫn vận hành
 
-Tài liệu này viết cho người **không cần biết Rust**. Mỗi bước là 1 lệnh
-copy-dán được, kèm "kỳ vọng thấy gì" và "nếu sai thì xem đâu". Không sửa
-`.env`/`config.toml`/`pairs.txt` chỉ bằng cách đọc README — luôn tự tay sửa
-file rồi đối chiếu lại với phần tương ứng ở đây.
+Repo vẫn tên `bsc-sandwich` (crate `bsc_sandwich`). **Chiến lược đang chạy
+không phải sandwich.** Chủ chốt 2026-09-16: **Kế hoạch B — backrun-arb** bằng
+flash loan 0 phí, đứng **sau** swap lớn, cân giá giữa ≥ 2 pool của cùng
+token. Đường sandwich cũ giữ code, tắt bằng `strategy = "backrun"` trong
+`config.toml`.
+
+Tài liệu này viết cho người **không cần biết Rust**. Mỗi bước là lệnh
+copy-dán được, kèm "kỳ vọng thấy gì". Không sửa `.env` / `config.toml` /
+`pairs_arb.txt` chỉ bằng cách đọc README — luôn tự tay sửa file rồi đối chiếu
+lại với phần tương ứng ở đây.
+
+Chi tiết kỹ thuật / luật phiên: `AGENTS.md`. Vận hành paper + VPS dài:
+`docs/RUN.md`. Trạng thái cụm: `docs/STATE.md`, `docs/TASKS.md`.
 
 ## Mục lục
 
-1. [Bot làm gì](#1-bot-làm-gì)
-2. [Cài đặt trên WSL](#2-cài-đặt-trên-wsl)
-3. [Cấu hình](#3-cấu-hình)
-4. [Quy trình vet `pairs.txt`](#4-quy-trình-vet-pairstxt)
-5. [Chạy paper (dry-run)](#5-chạy-paper-dry-run)
-6. [Dashboard](#6-dashboard)
-7. [Đọc log `logs/bot.jsonl`](#7-đọc-log-logsbotjsonl)
-8. [Dừng / khởi động / halt](#8-dừng--khởi-động--halt)
-9. [Deploy VPS](#9-deploy-vps)
-10. [Sự cố thường gặp](#10-sự-cố-thường-gặp)
-11. [An toàn](#11-an-toàn)
+1. [Bot làm gì (hiện tại)](#1-bot-làm-gì-hiện-tại)
+2. [Đã làm / chưa làm](#2-đã-làm--chưa-làm)
+3. [Cài đặt trên WSL](#3-cài-đặt-trên-wsl)
+4. [Cấu hình](#4-cấu-hình)
+5. [Hai list token](#5-hai-list-token)
+6. [Vet token (`pairs_arb.txt`)](#6-vet-token-pairs_arbtxt)
+7. [List đa venue](#7-list-đa-venue)
+8. [Chạy paper (dry-run)](#8-chạy-paper-dry-run)
+9. [Dashboard](#9-dashboard)
+10. [Đọc log `logs/bot.jsonl`](#10-đọc-log-logsbotjsonl)
+11. [Dừng / khởi động / halt](#11-dừng--khởi-động--halt)
+12. [Deploy VPS](#12-deploy-vps)
+13. [Sự cố thường gặp](#13-sự-cố-thường-gặp)
+14. [An toàn](#14-an-toàn)
 
 ---
 
-## 1. Bot làm gì
+## 1. Bot làm gì (hiện tại)
 
-- Bot theo dõi mempool BSC (chain `56`), tìm giao dịch của **nạn nhân đang
-  mua** một token trong `pairs.txt` bằng WBNB hoặc USDT trên PancakeSwap
-  (V2/V3/V4-Infinity), rồi mô phỏng sandwich (mua trước — victim mua — bán
-  sau) để ước tính lợi nhuận.
-- Chỉ giao dịch **pool đã được Chủ tự vet tay** và điền `vetted YYYY-MM-DD`
-  vào `pairs.txt` (mode 2 — pair-mode). Tính năng theo dõi theo ví
-  (`victims.txt`, mode 1) và quét mọi pool (mode 3, universal) đang **TẮT**
-  theo mặc định, chỉ dùng cho thử nghiệm nếu tự bật trong `config.toml`.
-- **Mặc định `dry_run=true`**: bot không bao giờ ký hay gửi giao dịch thật.
-  Mọi kết quả "lãi/lỗ" chỉ là số mô phỏng ghi vào log + dashboard.
-- Có một dashboard web local (chỉ đọc) để xem trạng thái bot, không dùng để
-  gửi lệnh.
-- Muốn bật gửi giao dịch thật (`live`) cần rất nhiều điều kiện (xem mục 11)
-  và **hiện tại chưa có tính năng ký/gửi giao dịch nào trong bot** — phần đó
-  chưa được xây dựng.
+Trên BSC (chain `56`), bot theo dõi mempool, tìm **swap lớn** trên token có
+**≥ 2 venue** (Pancake V2 + Pancake V3 và/hoặc Uniswap V3). Sau đó **mô
+phỏng** một giao dịch nguyên tử:
 
-## 2. Cài đặt trên WSL
+1. Vay flash (ưu tiên Pancake Infinity Vault, phí 0).
+2. Mua pool rẻ → bán pool đắt (có chân USDT↔WBNB nếu khác quote).
+3. Trả nợ trong cùng tx, giữ phần chênh.
 
-Chạy trong **WSL (Ubuntu)**, thư mục nên nằm trong hệ thống file Linux (ví
-dụ `~/bsc-sandwich`), **không** để trong `/mnt/c/...` (chậm hơn nhiều).
+Không đứng trước victim, không cần `victim_ok`, không cần vốn xoay. Không lãi
+→ tx sẽ revert (khi đã có contract). Hiện **chỉ mô phỏng** — chưa gửi bundle
+thật.
+
+**Không làm (đã loại bằng số, không phải “chưa viết”):** sandwich victim
+người-thật ≈ 0 lãi (slippage 1–5 % ép `front_in`); phần lớn lãi mô phỏng cũ
+là kẹp ví burner của cụm đối thủ. Code sandwich vẫn trong repo, **tắt**.
+
+**Nguồn candidate đang bật:** `pairs_arb.txt` (List A, token `both_ok` đã
+vet tay). `pairs.txt` chỉ dùng lại nếu đổi `strategy = "sandwich"`. Mode 1
+(`victims.txt`) và mode 3 (quét mọi pool) **tắt** bằng cờ.
+
+**Mặc định an toàn:** `dry_run=true`, `allow_live=false`, `bot_armed=false`,
+`live_mode="off"`. Bot không gửi tx. `live_mode="shadow"` **có thể ký thật**
+bằng `PRIVATE_KEY` nhưng **không broadcast**.
+
+Dashboard local (chỉ đọc) xem trạng thái, flash, funnel, skip. Không có nút
+gửi giao dịch.
+
+---
+
+## 2. Đã làm / chưa làm
+
+Tính đến `BAOCAO51` (`planB-B5-simarb-v3-measure`, 2026-09-17):
+
+| Có | Chưa |
+|---|---|
+| Decoder router Pancake đã pin + Uniswap V3 SwapRouter02 (cổng backrun) | Contract `ArbExecutor` (B1) — **No-Go**, không viết |
+| `sim_arb` route V2↔V3 / V3↔V3 (PCS + Uniswap) | Gửi bundle thật / `sendRaw` (`7.3`) |
+| 4 nguồn flash + `/api/flash` | Live nhỏ (B3) |
+| List A: 28 token `both_ok` trong `pairs_arb.txt` | Kẹp cứng `arb_max_borrow_*` trên mọi chân V3 mixed (paper đã thấy borrow 40–46 BNB trong khi trần 20) |
+| Paper dry-run, dashboard, vet nền revm | Cửa sổ live ≥ 6 h đủ điều kiện Go/No-Go |
+| Shadow: ký thật, không gửi | Infinity CL làm venue arb (flash Vault thì đã có) |
+
+**Go/No-Go B1 (ngưỡng: ≥ 30 cơ hội/ngày và p50 ≥ 5 USDT sau bribe, đo ≥ 6 h
+thật): No-Go.** Số replay/log không đủ tin để viết contract. Chi tiết:
+`baocao/BAOCAO51.md` ô 10.
+
+**Cảnh báo số liệu:** dòng `sim.arb` `simulated` có `borrow` lớn hơn
+`arb_max_borrow_bnb` / `arb_max_borrow_usdt` **không dùng để kết luận lãi**.
+`sanity_reject` hiện không bắt hết các trường hợp đó.
+
+---
+
+## 3. Cài đặt trên WSL
+
+Chạy trong **WSL (Ubuntu)**, thư mục trên filesystem Linux (ví dụ
+`~/bsc-sandwich`), **không** `/mnt/c/...`.
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libssl-dev curl git jq
 ```
 
-Kỳ vọng: không có dòng `E:` (lỗi apt) ở cuối.
+Kỳ vọng: không có dòng `E:` ở cuối.
 
-Cài Rust qua `rustup` (nếu máy chưa có):
+Cài Rust (nếu chưa có):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -60,443 +108,477 @@ rustc --version
 cargo --version
 ```
 
-Kỳ vọng: in ra `rustc 1.7x.x ...` và `cargo 1.7x.x ...`. Nếu báo "command
-not found" — mở lại terminal mới hoặc chạy lại `source "$HOME/.cargo/env"`.
-
-Lấy code (đã có sẵn thư mục thì bỏ qua bước `git clone`, chỉ cần `cd`):
-
-```bash
-cd ~/bsc-sandwich
-```
-
 Build:
 
 ```bash
+cd ~/bsc-sandwich
 cargo build --release
 ```
 
-Kỳ vọng: dòng cuối `Finished \`release\` profile [optimized] target(s) in
-...s`. Nếu lỗi liên quan `openssl`/`pkg-config` — xem mục 10.
+Kỳ vọng: `Finished release profile ...`. Lỗi `openssl` / `pkg-config` → mục 13.
 
-Chạy test:
+Test (không cần mạng cho nhóm thường):
 
 ```bash
-cargo test
+cargo test --lib --offline
+cargo test --bin bsc_sandwich --offline
 ```
 
-Kỳ vọng: nhiều dòng `test result: ok. N passed; 0 failed; M ignored; ...`
-(hiện tại N ~ 280+, M ~ 11 — số `ignored` là các test cần RPC mạng thật,
-không chạy trong `cargo test` thường). Nếu có `FAILED` — đừng chạy bot, báo
-lại nguyên văn dòng lỗi.
+Kỳ vọng: `0 failed`. Số `ignored` là test gọi RPC thật (`real_rpc_*`) — không
+chạy trong `cargo test` thường, không được coi là đã verify. Lần đo
+BAOCAO51: 453 lib + 18 bin passed.
 
-## 3. Cấu hình
+---
 
-### `.env` — bí mật + kết nối RPC
+## 4. Cấu hình
+
+### `.env` — bí mật + RPC
 
 ```bash
 cp .env.example .env
-nano .env   # hoặc trình soạn thảo bất kỳ
+nano .env
 ```
 
-Điền tối thiểu 2 biến (xem chi tiết + comment trong chính file `.env.example`):
+Tối thiểu:
 
 ```
 BSC_HTTP=https://bsc-dataseed1.bnbchain.org
 BSC_WS=wss://bsc-rpc.publicnode.com
 ```
 
-- `BSC_WS` **nên** trỏ vào host `publicnode` (hoặc nhà cung cấp WSS ổn định
-  khác hỗ trợ `newPendingTransactions`) — bot cảnh báo trong log nếu nguồn
-  pending không phải WS (`pending_source != "ws"`).
-- `PRIVATE_KEY` và `PRIVATE_TX_URL` để **trống** ở giai đoạn paper — chưa
-  cần, và bot cũng chưa có tính năng ký/gửi tx thật để dùng tới chúng.
-- Không commit `.env` (đã có trong `.gitignore`).
-- `BSC_HTTP_SIM` (cụm `econ-truth-latency-vps`, **tuỳ chọn**) — pool RPC
-  RIÊNG cho revm fork (`pairs_vet_task`/`gas_units_boot_task`/validator),
-  KHÁC `BSC_HTTP` (đường nóng). Rỗng = dùng lại danh sách `BSC_HTTP`. Điền
-  riêng khi thấy log `pair.vet_error`/`gas.units_measure_error` báo lỗi dạng
-  `-32000`/`not supported`/`method not found` (quan sát thật với một số node
-  bloXroute/RPC riêng không hỗ trợ đủ method cho revm) — bot tự đánh dấu URL
-  đó (`rpc.method_unsupported`) và chuyển URL kế trong `BSC_HTTP_SIM`, không
-  cần restart.
+- `BSC_WS` nên hỗ trợ `newPendingTransactions` (publicnode). Log cảnh báo nếu
+  `pending_source != "ws"`.
+- `PRIVATE_KEY` để **trống** ở paper `live_mode="off"`. Chỉ điền khi chạy
+  **shadow** (ví trắng, không phải ví đang giữ tiền).
+- `PRIVATE_TX_URL` / `BLOCKRAZOR_AUTH` để trống cho tới khi live bundle.
+- `BSC_HTTP_SIM` (tuỳ chọn): RPC riêng cho revm (vet nền / crosscheck). Rỗng
+  = dùng lại `BSC_HTTP`. Điền khi log `pair.vet_error` / `eth_getStorageAt`
+  báo `-32000` / `not supported`.
+- Không commit `.env` (đã gitignore).
+
+Nhiều URL: `BSC_HTTP` phẩy, hoặc `BSC_HTTP_2`…`_16`, hoặc `BSC_HTTP_LIST`.
+Cùng quy ước cho `BSC_WS` và `BSC_HTTP_BG` (task nền).
 
 ### `config.toml` — ngưỡng vận hành
 
-File này có ~40 field, thiếu field bất kỳ = bot từ chối chạy ("fail load").
-**Không tự thêm/xoá field** — chỉ sửa GIÁ TRỊ. Sau khi lưu, bot tự đọc lại
-trong tối đa `config_reload_sec` giây (mặc định 15s) — không cần build lại,
-không cần restart.
+Thiếu field bất kỳ = bot từ chối chạy. **Không tự thêm/xoá field** — chỉ sửa
+giá trị. Sau khi lưu, bot đọc lại trong tối đa `config_reload_sec` giây
+(mặc định 15), không cần rebuild.
 
-12 field Chủ thường chỉnh (còn lại giữ nguyên trừ khi có lý do cụ thể):
+Field đang quyết định hành vi sản phẩm (giá trị **ship** trong file repo):
 
 | Field | Ship | Ý nghĩa |
 |---|---|---|
-| `min_profit_bnb` | `0.002` | Lợi nhuận tối thiểu (BNB) để coi 1 kèo là `Simulated`. Thấp hơn tổng gas 2 chiều sẽ bị cảnh báo lúc boot. |
-| `max_front_bnb` | `5` | Trần BNB tối đa bot "bỏ ra" để front-run 1 kèo. |
-| `min_reserve_wbnb` | `20` | Pool có ít hơn số WBNB này trong reserve → bỏ qua (`thin_liq`), tránh pool quá mỏng. |
-| `max_exposure_bnb` | `5` | Trần tổng vốn rủi ro thứ 2 (đặt `0` = tắt, chỉ còn `max_front_bnb` chặn). |
-| `pairs_min_swap_bnb` | `0.05` | Giao dịch của victim nhỏ hơn số này (quy đổi BNB) thì bỏ qua, không đáng front-run. |
-| `pairs_require_vetted` | `true` | `true` = pool trong `pairs.txt` CHƯA có `vetted YYYY-MM-DD` hợp lệ thì KHÔNG được sim. Đừng tắt trừ khi biết rõ hậu quả. |
-| `pairs_vet_interval_sec` | `600` | Chu kỳ (giây) bot tự đo lại tax/honeypot NỀN cho các pool đã vet (không chặn đường nóng). |
-| `sim_engine` | `"v2"` | `"v2"` = dùng công thức đóng (nhanh, đúng cho token đã vet sạch). `"evm"` = mở fork EVM mô phỏng từng tx (chậm hơn nhiều, dùng để đối chiếu/kiểm tra). Chỉ nhận đúng 2 chuỗi này. |
-| `scan_quote_usdt` | `false` | `true` = bật thêm nhánh quote USDT song song WBNB (victim mua bằng USDT). |
-| `front_slippage_bps` | `10` | Trượt giá cho phép ở chân mua trước (0.10%). |
-| `back_slippage_bps` | `50` | Trượt giá cho phép ở chân bán sau (0.50%, nới hơn vì giá đã dịch sau khi victim khớp). |
-| `max_roundtrip_tax` | `0.005` | Tổng tax mua+bán tối đa cho phép (0.5%) — cao hơn thì coi `honeypot_or_tax`, bỏ qua. |
-| `max_consecutive_loss` | `3` | Số lần "thua" liên tiếp (tín hiệu từ validator nội bộ) trước khi risk-guard chặn thêm kèo mới. |
-| `gas_price_max_gwei` | `10` | Trần `eth_gasPrice` (gwei nguyên) — đo được cao hơn số này (mạng tắc nghẽn bất thường) thì coi `gas_cap`, bỏ qua kèo. |
+| `strategy` | `"backrun"` | `"backrun"` = arb sau swap. `"sandwich"` = đường cũ, tắt. Chuỗi khác = fail load. |
+| `pairs_arb_path` | `"pairs_arb.txt"` | List A. Khi `strategy="backrun"`, PairBook + vet nền đọc file này, **không đè** `pairs.txt`. |
+| `pairs_path` | `"pairs.txt"` | List sandwich / mode 2 cũ. Không dùng khi đang backrun. |
+| `arb_max_borrow_bnb` | `20` | Trần **vay flash** (BNB) mỗi route. Không phải vốn tự có. |
+| `arb_max_borrow_usdt` | `12000` | Trần vay flash (USDT). |
+| `pairs_min_swap_bnb` | `0.05` | Swap nhỏ hơn (quy BNB) → `below_min`. Chiến lược mô tả “swap lớn ≥ 0,5 BNB”; ngưỡng file đang `0.05` — tự chỉnh. |
+| `min_profit_bnb` | `0.002` | Lãi tối thiểu (BNB) để `Simulated`. |
+| `min_reserve_wbnb` | `20` | Pool mỏng hơn → `thin_liq`. List đa venue còn ngưỡng V2 ≥ 50 BNB khi **sinh list**. |
+| `scan_quote_usdt` | `true` | Bật nhánh quote USDT. |
+| `min_profit_usdt` / `max_front_usdt` / `min_reserve_usdt` | `3` / `3000` / `15000` | Ngưỡng USDT (không quy đổi từ BNB). |
+| `sim_engine` | `"v2"` | Đường nóng: công thức đóng V2 + gas đo thật. `"evm"` chỉ để đối chiếu; vet nền/validator không đi qua field này. |
+| `pairs_require_vetted` | `true` | Thiếu `vetted YYYY-MM-DD` → không sim. |
+| `pairs_vet_interval_sec` | `600` | Chu kỳ vet nền revm. |
+| `gas_price_max_gwei` | `10` | `eth_gasPrice` cao hơn → `gas_cap`. |
+| `live_mode` | `"off"` | `"off"` / `"shadow"` / `"live"`. `"live"` không tự mở khoá gửi. |
+| `allow_competitor_victims` | `false` | Khi `live_mode != "off"`, skip tx của cụm đối thủ đã nhận diện. Paper thuần (`off`) không chặn, vẫn gắn cờ để `/api/econ` đếm. |
+| `wallet_scan_enabled` | `false` | Mode 1 tắt. |
+| `pair_scan_enabled` | `true` | Mode 2 bật. |
+| `pair_scan_universal` | `false` | Mode 3 tắt. |
+| `dry_run` / `allow_live` / `bot_armed` | `true` / `false` / `false` | Cổng live. Không bật trừ khi có lệnh riêng. |
+| `flash_source_interval_sec` | `300` | Task nền chụp chiều sâu 4 nguồn flash. |
+| `multi_venue_path` | `"state/multi_venue.json"` | Bản đồ token → nhiều pool. Thiếu file → `arb_no_second_venue`, bot không crash. |
+| `multivenue_min_v2_bnb` | `50` | Ngưỡng V2 khi chạy `discover_multivenue`. |
+| `multivenue_min_v2_usdt` | `35000` | Cùng ý, quote USDT. |
+| `multivenue_min_v3_impact_pct` | `2` | Impact V3 tối đa (%) khi bán `probe` 1 BNB. |
+| `multivenue_probe_bnb` | `1` | Cỡ probe impact V3. |
 
-Gas giờ được chặn theo **2 lớp** (cụm `real-economics-mode2`, F-03):
-`gas_reserve_bnb_wei`/`front_max_gas_bnb_wei`/`back_max_gas_bnb_wei` (wei,
-đã có từ trước) giờ CHỈ còn là TRẦN so với `gas_cost_wei` ĐO THẬT
-(`eth_gasPrice` × gas unit đo bằng revm lúc boot — không còn dùng thẳng làm
-chi phí gas như trước); `gas_units_front`/`gas_units_back` (ship
-`160000`/`140000`) là số gas UNIT FALLBACK khi chưa đo được thật. Vượt trần
-BẤT KỲ lớp nào → `gas_cap` (skip reason mới, xem mục 7). Dòng tổng kinh tế
-"candidate=... net_pos=..." đọc qua `GET /api/econ` (mục 6).
+Gas đường nóng `sim_engine="v2"`: chi phí = `eth_gasPrice` × gas unit (đo
+revm lúc boot, fallback `gas_units_front`/`gas_units_back`).
+`front_max_gas_bnb_wei` / `back_max_gas_bnb_wei` chỉ còn là **trần**. Route
+arb dùng `gas_units_arb_infinity` / `gas_units_arb_v2flash` /
+`gas_units_arb_v3` (ước lượng; V3 p50 hop đo 7 case ≈ 275k + overhead →
+360000).
 
-Kiểm tra nhanh config đang hợp lệ (không cần chạy cả bot):
-
-```bash
-cargo test config::tests
-```
-
-Kỳ vọng: `test result: ok. N passed; 0 failed`.
-
-## 4. Quy trình vet `pairs.txt`
-
-Đây là bước **quan trọng nhất** để bot có việc để làm — mode 1 (`victims.txt`)
-và mode 3 (universal) đang tắt, `pairs.txt` là nguồn candidate DUY NHẤT.
-
-### a. Định dạng dòng
-
-```
-0xTokenAddress # SYMBOL | vetted YYYY-MM-DD | tax b/s | owner renounced|active | note
-```
-
-- Phần **trước** dấu `#`: địa chỉ token (hoặc `0xToken,0xWBNB`/`0xToken,0xUSDT`
-  nếu cần chỉ rõ cặp — cột 2 phải đúng WBNB hoặc USDT đã pin, sai địa chỉ
-  khác → lỗi dòng) — đây là phần DUY NHẤT bot dùng để xác định pool.
-- Phần **sau** dấu `#`: chỉ có `vetted YYYY-MM-DD` được bot đọc và dùng để
-  quyết định (thiếu hẳn, hoặc có chữ `vetted` nhưng không kèm ngày đúng định
-  dạng → bot coi là **CHƯA VET**, không sim). Các trường còn lại
-  (`SYMBOL`/`tax`/`owner`/`note`) chỉ là ghi chú cho người đọc, bot không
-  parse.
-
-Ví dụ **ĐÚNG** (đã vet, bot sẽ sim):
-```
-0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82 # CAKE | vetted 2026-09-16 | tax 0/0 | owner Pancake (mintable, MasterChef) | reserve_wbnb~=14002 BNB
-```
-
-Ví dụ **SAI** (chưa vet, bot bỏ qua — thiếu ngày):
-```
-0xAbc... # TOKEN | vetted | tax ?/? | owner ? | chưa soát
-```
-
-Dòng bắt đầu bằng `#` là comment nguyên dòng, bị bỏ qua hoàn toàn.
-
-### b. Lọc thô bằng `scripts/vet_goplus.sh`
+Kiểm tra config hợp lệ:
 
 ```bash
-scripts/vet_goplus.sh pairs.txt
+cargo test config::tests --offline
 ```
 
-- Yêu cầu `curl` + `jq` (đã cài ở mục 2).
-- Gọi API công khai GoPlus Security cho **từng** token (tuần tự, có nghỉ
-  giữa các lần gọi) rồi in bảng `PASS` / `REVIEW` / `FAIL` + dòng tổng kết.
-- Kỳ vọng: mỗi dòng có địa chỉ, verdict, symbol, lý do (nếu có cờ). Dòng cuối
-  dạng `== TOM TAT: tong=100 PASS=30 REVIEW=41 FAIL=20 (loi_goi_API=9) ==`.
+---
 
-**Đọc verdict:**
+## 5. Hai list token
 
-| Verdict | Ý nghĩa | Việc cần làm |
+Đừng nhầm file:
+
+| File | Khi nào bot đọc | Nội dung hiện tại |
 |---|---|---|
-| `PASS` | GoPlus không thấy cờ đỏ/vàng nào | Vẫn phải tự đọc BscScan (bước c) trước khi điền `vetted` — đây chỉ là lọc thô |
-| `REVIEW` | Có ít nhất 1 cờ vàng (`owner_not_renounced`, `mintable`, `proxy_contract`, `anti_whale`, tax nhỏ, ít LP holder...) | Đọc kỹ contract trước khi quyết định, không tự động loại |
-| `FAIL` | Có cờ đỏ (`honeypot`, `blacklist`, `trading_cooldown`, `transfer_pausable`, `can_take_back_ownership`, `hidden_owner`, tax > 5%) | Không điền `vetted`, cân nhắc xoá khỏi `pairs.txt` |
+| `pairs_arb.txt` | `strategy="backrun"` (ship) | List A: **28** token `both_ok`, vet `2026-09-17`. |
+| `pairs.txt` | `strategy="sandwich"` | List mode 2 cũ (sandwich). Backrun **không** sim file này. |
+| `baocao/evidence/baocao50_listB_watch.txt` | Không | List B: có V3 nhưng mỏng — **theo dõi, không sim, không kết luận**. |
 
-**Nếu bị rate-limit** (dòng `REVIEW ... khong goi duoc GoPlus
-(rate_limit_or_network)`, hoặc tổng kết có `loi_goi_API > 0`): GoPlus chặn
-burst rất chặt (~7-8 request liên tục). Script đã tự retry-backoff 3 lần
-(5s/10s/20s) cho mỗi token — nếu vẫn lỗi, đợi vài phút rồi chạy lại **riêng
-cho các token đó** (copy các dòng đó sang 1 file tạm rồi
-`scripts/vet_goplus.sh file_tam.txt`). Không bao giờ coi lỗi rate-limit là
-`PASS`.
+`both_ok` = V2 đủ ngưỡng **và** V3 cùng quote có impact ≤ 2 % khi bán 1 BNB.
+Venue hợp lệ: Pancake V2, Pancake V3, Uniswap V3 BSC. **Không** THENA,
+**không** Biswap.
 
-### c. Checklist tự đọc BscScan (bắt buộc, script không thay được)
-
-Với mỗi token dự định điền `vetted`, mở `https://bscscan.com/address/0x...`
-(hoặc `token/0x...#code`) và kiểm tra bằng mắt:
-
-- [ ] Contract đã **verified** (có tab "Contract" hiện source code, không
-      phải bytecode thô).
-- [ ] Không phải **proxy** ẩn logic thật ở nơi khác (nếu là proxy, phải đọc
-      luôn implementation contract).
-- [ ] Không có hàm chuyển tiền kèm **fee/tax** bất thường (đọc hàm
-      `_transfer`/`transferFrom`, tìm `fee`/`tax`/`burn`).
-- [ ] Không có **blacklist**/`isBlacklisted`/`_isExcluded` chặn địa chỉ tuỳ ý.
-- [ ] Không có **cooldown**/anti-MEV (`lastTradeBlock`, `cooldownTime`,...)
-      chặn giao dịch trong cùng block.
-- [ ] Không **pausable** (`whenNotPaused`, `pause()`/`unpause()` cho owner).
-- [ ] Không có `maxTxAmount`/`maxWalletAmount` quá thấp gây revert bất ngờ.
-- [ ] Không **mint** tuỳ ý / không phải token **rebase** (supply tự đổi).
-- [ ] Owner đã **renounce** (`owner() == 0x0`) hoặc, nếu chưa, hiểu rõ owner
-      là ai và owner có quyền gì (mint/pause/blacklist).
-
-Bất kỳ ô nào KHÔNG tick được → đừng điền `vetted`.
-
-### d. Kiểm volume trên DexScreener
-
-Mở `https://dexscreener.com/bsc/0x...` (địa chỉ token), chọn đúng **pool
-"PancakeSwap V2"** quote WBNB hoặc USDT (không phải V3 — pool V2 là pool bot
-đang sim). Kiểm:
-
-- Volume 24h đủ lớn (có giao dịch thật xảy ra, không phải pool chết).
-- Reserve/liquidity ≥ ngưỡng `min_reserve_wbnb`/`min_reserve_usdt` trong
-  `config.toml` — pool mỏng hơn ngưỡng sẽ bị bot tự bỏ qua (`thin_liq`) dù
-  đã điền `vetted`.
-
-### e. Điền `vetted YYYY-MM-DD` + commit
-
-Sau khi qua đủ b-c-d, tự tay sửa dòng trong `pairs.txt`:
+Định dạng 1 dòng (cả hai file list):
 
 ```
-0xTokenAddress # SYMBOL | vetted 2026-09-16 | tax 0/0 | owner renounced | note
+0xToken # SYMBOL | vetted YYYY-MM-DD | tax b/s | owner renounced|active | note
 ```
 
-Lưu file — bot tự đọc lại trong tối đa `pairs_reload_sec` giây (mặc định
-30s), không cần restart. Commit thay đổi:
+- Trước `#`: `0xToken` (quote ngầm WBNB) hoặc `0xToken,0xQuote`. Cột 2 phải
+  là WBNB hoặc USDT đã pin; địa chỉ khác → lỗi dòng, không sim.
+- Sau `#`: bot chỉ đọc `vetted YYYY-MM-DD`. Thiếu ngày → **CHƯA VET**, không
+  thành candidate (`pairs_require_vetted=true`).
+- Dòng bắt đầu `#` = comment.
+
+Ví dụ đúng (đang trong `pairs_arb.txt`):
+
+```
+0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82 # Cake | vetted 2026-09-17 | tax 0/0 | owner active | ...
+```
+
+Quote USDT tường minh:
+
+```
+0x80f1ff15b887cb19295d88c8c16f89d47f6d8888,0x55d398326f99059ff775485246999027b3197955 # COCO | vetted 2026-09-17 | ...
+```
+
+---
+
+## 6. Vet token (`pairs_arb.txt`)
+
+List arb chỉ nhận token **Chủ đã vet tay**. Tool chỉ lọc thô.
+
+### a. Lọc thô GoPlus
 
 ```bash
-git add pairs.txt
-git commit -m "vet: them token X vao pairs.txt"
+scripts/vet_goplus.sh pairs_arb.txt
 ```
 
-### f. Bot tự đo lại (vet nền) — `pairs_vet_task`
+Cần `curl` + `jq`. Gọi tuần tự, retry khi rate-limit. In `PASS` / `REVIEW` /
+`FAIL`. **Không tự sửa file.**
 
-Sau khi 1 pool có `vetted`, bot chạy **nền** (không chặn đường nóng) đo lại
-tax/honeypot mỗi `pairs_vet_interval_sec` giây bằng cách mô phỏng thật qua
-EVM (revm), KHÔNG tin tưởng mù quáng vào bước vet tay:
+| Verdict | Việc cần làm |
+|---|---|
+| `PASS` | Vẫn đọc BscScan (bước b) rồi mới điền `vetted` |
+| `REVIEW` | Cờ vàng (owner, mint, proxy, anti-whale…) — đọc kỹ, không tự loại |
+| `FAIL` | Cờ đỏ (honeypot, blacklist, cooldown, pausable, hidden owner, tax > 5%) — không điền `vetted` |
+
+Rate-limit (`loi_goi_API > 0`): đợi rồi chạy lại **chỉ các dòng đó**. Không
+coi lỗi mạng là `PASS`.
+
+### b. Checklist BscScan (bắt buộc)
+
+Với mỗi token, mở `https://bscscan.com/address/0x...`:
+
+- [ ] Contract verified
+- [ ] Không phải proxy ẩn (nếu proxy phải đọc implementation; List A từng
+      FAIL 6 token Binance-Peg EIP-1967 vì không `--allow-proxy`)
+- [ ] Không tax/fee bất thường trong `_transfer`
+- [ ] Không blacklist / cooldown / pause / maxTx quá thấp
+- [ ] Không mint tuỳ ý / rebase
+- [ ] Owner renounce, hoặc hiểu rõ quyền owner
+
+Ô nào không tick → đừng điền `vetted`.
+
+### c. Volume / thanh khoản
+
+DexScreener `https://dexscreener.com/bsc/0x...`: pool Pancake V2 **và** V3
+(PCS hoặc Uniswap) cùng quote. List A đòi V2 đủ sâu **và** V3 impact ≤ 2 %.
+Chỉ “có V3 mỏng” → List B, không vào `pairs_arb.txt`.
+
+### d. Điền ngày + reload
+
+```
+0xTokenAddress # SYMBOL | vetted 2026-09-17 | tax 0/0 | owner renounced | note
+```
+
+Bot đọc lại trong tối đa `pairs_reload_sec` (30 s), không restart.
+
+### e. Vet nền (`pairs_vet_task`)
+
+Bot đo lại tax/honeypot bằng revm mỗi `pairs_vet_interval_sec`, không tin mù
+vet tay:
 
 ```bash
 curl -s http://127.0.0.1:8787/api/pairs | jq
 ```
 
-Kỳ vọng: mỗi pool có thêm cột `vetted_at`, `symbol`, `candidate`, `buy_bps`,
-`sell_bps`, `honeypot`, `last_vet_sec_ago`. `candidate:true` nghĩa là pool
-đang thực sự được dùng để sim (đã vet VÀ vet nền chưa phát hiện vấn đề).
+Kỳ vọng backrun: `count` = số dòng List A đã resolve (paper BAOCAO51:
+`count=28`, `error_lines=0`). `candidate:true` = đã vet **và** vet nền chưa
+loại. `pair.vet_fail` trong log → ẩn khỏi candidate tới lần PASS sau, không
+tự xoá file.
 
-`/api/pairs` còn có `pending_count`/`pending` (cụm `econ-truth-latency-vps`,
-0.a) — dòng CHƯA resolve xong (RPC lỗi/timeout, hoặc "no pool" tạm thời),
-mỗi dòng có `token`/`quote`/`attempts`/`last_error`/`last_attempt_sec_ago`.
-Dòng pending tự retry backoff 5s/15s/60s ở các lần `pairs_reload_sec` kế
-tiếp — KHÔNG rớt khỏi danh sách nếu trước đó ĐÃ resolve thành công (chỉ dòng
-mới/chưa từng resolve mới rơi vào đây). `pending` cao kéo dài + `last_error`
-lặp lại "not supported"/"-32000" → điền `BSC_HTTP_SIM` (xem mục 3) hoặc kiểm
-tra `getPair` cho đúng cặp token/quote đã khai trong `pairs.txt`.
+`pending_count` cao + `last_error` lặp `-32000` / `not supported` → điền
+`BSC_HTTP_SIM` (mục 4).
 
-File `state/pairs_vetted.json` là bản chụp nhanh cùng dữ liệu (đọc nhanh
-không cần `jq`/API):
+---
+
+## 7. List đa venue
+
+Tool sinh bản đồ token → nhiều pool (chỉ đọc chain, không ký):
 
 ```bash
-cat state/pairs_vetted.json | jq
+cargo run --release --bin discover_multivenue -- \
+  --hours 4 --pairs pairs.txt \
+  --out state/multi_venue.json
 ```
 
-Nếu 1 pool đã điền `vetted` nhưng vet nền phát hiện tax/honeypot, log sẽ có
-dòng `pair.vet_fail` — pool đó **tự động bị loại khỏi candidate** (không
-tự xoá khỏi `pairs.txt`, chỉ ẩn khỏi runtime cho tới lần vet PASS kế tiếp).
-Xem chi tiết field trong dòng log đó (`token`, `buy_bps`, `sell_bps`,
-`honeypot`) để quyết định có nên xoá hẳn dòng đó khỏi `pairs.txt` hay không.
+- Nguồn volume: Swap log Pancake V2+V3 (cửa sổ `--hours`).
+- Giữ **chỉ** `both_ok`. Output: `state/multi_venue.json`, TSV,
+  `state/multi_venue_candidates.txt`.
+- Ngưỡng lấy từ CLI hoặc `multivenue_*` trong config.
+- Token PASS vet mới được copy vào `pairs_arb.txt`. List B không copy.
 
-## 5. Chạy paper (dry-run)
+Thiếu `state/multi_venue.json` khi chạy bot → mọi tx arb `arb_no_second_venue`.
+
+Đo lại / đối chiếu math (dev, cần RPC):
+
+```bash
+cargo run --release --bin arb_measure -- --jsonl logs/bot.jsonl --pairs-arb pairs_arb.txt
+cargo run --release --bin arb_crosscheck
+```
+
+---
+
+## 8. Chạy paper (dry-run)
 
 ```bash
 scripts/paper_run.sh --minutes 30 --port 8799
 ```
 
-Script tự: build lại, xoá `state/halt.lock` cũ, tạo 1 **bản config tạm**
-(không đụng `config.toml` thật, chỉ hạ ngưỡng kinh tế về 0 để dễ quan sát),
-chạy bot 30 phút, in kết quả, rồi tự halt sạch.
+Script: build lại, xoá `halt.lock` cũ, tạo **config tạm** (không đụng
+`config.toml` thật — chỉ hạ ngưỡng kinh tế về 0 + đổi port), chạy N phút,
+in kết quả, halt sạch. **Không** bật live/armed, **không** gửi tx.
 
-Kỳ vọng đầu ra (rút gọn, số thật sẽ khác):
+Tuỳ chọn: `--live-mode shadow` (ký thật, không gửi — cần `PRIVATE_KEY` ví
+trắng). `--allow-competitor-victims` chỉ để **đo** tx cụm đối thủ ở shadow.
+
+Kỳ vọng đầu ra:
 
 ```
 == may chay: WSL (repo: ...) ==
-== binary sha256 = <64 ký tự hex> ==
-== git HEAD = <40 ký tự hex> ==
-== pairs.txt (grep tho...): tong=121 vetted=45 chua_vet=76 ==
+== binary sha256 = <64 hex> ==
+== git HEAD = <40 hex> ==
+== pairs_arb.txt (list A, strategy=backrun): total=28 vetted=28 ==
 ======== KET QUA SAU 30 PHUT ... ========
 ---- /api/skips ----
-{"below_min":0,"decode_fail":...,"not_in_list":...,...}
 ---- /api/funnel ----
-{...,"seen":..., "simulated":0, ...}
+---- /api/pairs ----
 ```
 
-Đọc từng khối:
+**Đọc đúng số backrun** (script vẫn in khối `sim.evm` của đường sandwich —
+với `strategy="backrun"` khối đó thường rỗng, **không phải lỗi**):
 
-- **`/api/funnel`** — phễu theo đúng thứ tự gate thật:
-  `seen → not_pancake_router → decode_fail → not_wbnb_pair →
-  venue_v2|venue_v3 → no_pool → below_min → thin_liq → honeypot_or_tax →
-  unprofitable → victim_would_revert → simulated`, cộng `sim_error` (số tx
-  không mô phỏng được — cao bất thường thường là RPC quá tải, không phải
-  bug). Số ở bước sau luôn ≤ số ở bước trước (phễu hẹp dần).
-- **`/api/skips`** — tổng số lần mỗi lý do bỏ qua xuất hiện trong phiên chạy
-  (không reset mỗi phút như `/api/funnel`).
-- **`/api/tax`** — cache tax đo tự động (mục 4f) + có thể inject tay qua
-  `POST /api/tax`.
-- **`/api/validate`** — độ chính xác sim: `within_1pct_ratio` càng gần `1.0`
-  càng tốt (dự đoán sim khớp với kết quả thật trên chain trong biên độ 1%).
-  Cụm `real-economics-mode2` (F-27): tách riêng `isolated`/`non_isolated`
-  (mỗi nhóm có `n`/`within_1pct`/`p50_lech_pct`/`p95_lech_pct`) — block **cô
-  lập** (không tx nào khác chen vào cùng pool) thường khớp gần tuyệt đối,
-  block **có tx khác chen vào** (điều kiện MEV thật) mới phản ánh đúng độ
-  khó thật của việc dự đoán.
-- Dòng `sim_engine="v2"` (ship mặc định) → `sim.evm`/`sim_error` trên đường
-  nóng sẽ **RỖNG** trong lần chạy bình thường. Đây **không phải lỗi** — đường
-  nóng dùng công thức đóng V2, không mở fork EVM mỗi tx (xem mục 1). Muốn
-  quan sát lại đường EVM per-tx để đối chiếu, đổi tạm `sim_engine="evm"`
-  trong `config.toml` (hot-reload, không cần build lại) rồi chạy lại.
-- Số nào là "tốt": `simulated > 0` với `unprofitable`/`victim_would_revert`
-  thấp là dấu hiệu tích cực. `not_in_list`/`decode_fail` cao là bình thường
-  (đa số tx mempool không liên quan). `sim_error` cao, hoặc `venue_v2 = 0`
-  suốt nhiều phút dù `seen` cao, là dấu hiệu XẤU (xem mục 10).
-- Dòng tổng kết kinh tế dạng "candidate=… net_pos=…" đọc qua `GET /api/econ`
-  (field `summary_line`, cụm `real-economics-mode2`) — xem mục 6.
-
-## 6. Dashboard
-
-Mở `http://127.0.0.1:8787` (hoặc port bạn truyền qua tham số/`web_port`) —
-chỉ đọc, không có nút gửi giao dịch. Các khối chính: trạng thái bot, cổng
-live (tick xanh/đỏ từng điều kiện), venue đã pin, victims, pairs, hit sống,
-đếm skip, funnel, tax cache, validator.
-
-API JSON dùng trực tiếp qua `curl`/`jq` nếu cần:
-
-```
-GET /api/health
-GET /api/status
-GET /api/victims
-GET /api/venues
-GET /api/pairs
-GET /api/hits?limit=50
-GET /api/skips
-GET /api/funnel
-GET /api/econ       (cụm real-economics-mode2 — bucket victim_in theo BNB, quote wbnb/usdt, top token, decode_fail theo router, latency, dòng tổng)
-GET /api/validate
-GET /api/tax        POST /api/tax   (inject tax thủ công, cần allow_tax_inject=true)
-POST /api/control   (body {"action":"halt"|"disarm"|"reset"})
+```bash
+# trong lúc bot chạy (đổi port cho khớp)
+curl -s http://127.0.0.1:8799/api/pairs  | jq '{count,error_lines}'
+curl -s http://127.0.0.1:8799/api/flash  | jq
+curl -s http://127.0.0.1:8799/api/skips  | jq
+curl -s http://127.0.0.1:8799/api/funnel | jq
+grep '"event":"sim.arb"' logs/bot.jsonl | tail
 ```
 
-## 7. Đọc log `logs/bot.jsonl`
+- `/api/pairs` backrun: 28 dòng List A, `venue_unpinned=0` nếu V3 đã nối.
+- `/api/flash`: chiều sâu Infinity / Aave / V2 flash / Balancer tại block đã
+  chụp. Infinity Vault phí 0; Balancer trên BSC gần rỗng.
+- `sim.arb`: kết quả route. `simulated` chỉ đáng tin khi `borrow` ≤ trần
+  `arb_max_borrow_*`.
+- `not_in_list` / `decode_fail` cao là bình thường (đa số mempool không phải
+  swap Pancake/Uni trên List A).
+- Mọi số paper phải ghi **máy (WSL/VPS)** + **sha256 binary** hoặc git HEAD
+  (luật repo).
 
-10 event quan trọng nhất + lệnh grep mẫu:
+Chạy dài trên VPS từng bị OOM (~11 MB/phút, chết ~11 h trên máy 8 GB). Chia
+phiên 4–6 h hoặc theo dõi RSS cho tới khi nợ mem được sửa. Xem `docs/RUN.md`.
 
-| Event | Ý nghĩa | Lệnh xem nhanh |
-|---|---|---|
-| `bot.start` | Bot vừa boot xong, đọc config/venue ban đầu | `grep '"event":"bot.start"' logs/bot.jsonl \| tail -1` |
-| `pair.reload` | `pairs.txt` vừa được đọc lại (hot-reload) | `grep '"event":"pair.reload"' logs/bot.jsonl \| tail -5` |
-| `pair.unvetted` | Có dòng trong `pairs.txt` chưa có `vetted` hợp lệ, bị loại khi reload | `grep '"event":"pair.unvetted"' logs/bot.jsonl \| tail -5` |
-| `pair.vet_fail` | Vet nền (mục 4f) phát hiện pool có tax/honeypot, loại khỏi candidate | `grep '"event":"pair.vet_fail"' logs/bot.jsonl \| tail -5` |
-| `tx.seen` | Bot vừa nhận 1 tx pending mới (từ WS/txpool/inject) | `grep '"event":"tx.seen"' logs/bot.jsonl \| tail -5` |
-| `tx.skip` | 1 tx bị loại — có field `reason` (xem bảng skip reason dưới) | `grep '"event":"tx.skip"' logs/bot.jsonl \| tail -20` |
-| `sim.result` | Kết quả mô phỏng cuối cho 1 candidate (kể cả `Simulated`) | `grep '"event":"sim.result"' logs/bot.jsonl \| tail -10` |
-| `tx.build` | Bot build xong calldata front-buy/back-sell (paper — không gửi) | `grep '"event":"tx.build"' logs/bot.jsonl \| tail -5` |
-| `build.refused` | Có candidate `Simulated` nhưng bị từ chối build (vd chưa có signer thật) | `grep '"event":"build.refused"' logs/bot.jsonl \| tail -5` |
-| `halt.triggered` / `halt.cleared` | Bot dừng/chạy lại do `state/halt.lock` | `grep -E '"event":"halt\.(triggered\|cleared)"' logs/bot.jsonl` |
+Dừng sớm (an toàn):
 
-Bảng lý do `tx.skip` (field `reason`):
-
-| Reason | Ý nghĩa |
-|---|---|
-| `not_in_list` | Tx không khớp `pairs.txt`/`victims.txt` (mode đang tắt) |
-| `below_min` | Số tiền victim giao dịch nhỏ hơn ngưỡng min |
-| `decode_fail` | Không giải mã được calldata (router lạ, hàm chưa hỗ trợ, hoặc router/selector lệch nhau) |
-| `not_wbnb_pair` / `not_quote_pair` | Cặp token không phải WBNB/USDT hợp lệ |
-| `sell_direction` | Victim đang BÁN token (chưa có model sandwich cho chiều này) |
-| `not_pancake_router` | `tx.to` không phải 1 trong 5 router Pancake đã pin |
-| `venue_unpinned` | Venue chưa pin đủ để sim |
-| `no_pool` | Factory trả `address(0)` — chắc chắn không có pool V2 |
-| `rpc_error` | `eth_call` `getPair`/`getReserves` lỗi mạng/timeout — KHÁC `no_pool` (cụm `hotpath-fix-then-decoder-ur` A3, tách từ `no_pool` cũ) |
-| `thin_liq` | Pool có reserve thấp hơn `min_reserve_wbnb`/`min_reserve_usdt` |
-| `deadline` | Deadline của tx quá gần, không kịp front-run |
-| `nonce_stale` / `nonce_future` | Nonce victim không khớp nonce kỳ vọng on-chain |
-| `victim_would_revert` | Nếu front-run, tx victim gốc sẽ revert |
-| `unprofitable` | Lợi nhuận ≤ 0 hoặc thấp hơn `min_profit_bnb`/`min_profit_usdt` |
-| `honeypot_or_tax` | Tax đo được > `max_roundtrip_tax`, hoặc chưa đo (an toàn mặc định) |
-| `hooks_unread` | Pool V4/Infinity không đọc được hook |
-| `sim_error` | Lỗi kỹ thuật khi mô phỏng (RPC timeout, ...) |
-| `gas_cap` | `gas_cost_wei` đo thật vượt trần cấu hình, hoặc `eth_gasPrice` vượt `gas_price_max_gwei` (cụm `real-economics-mode2`) |
-
-## 8. Dừng / khởi động / halt
-
-- **Dừng khẩn cấp** (dừng cả paper loop, không chỉ khoá live):
-  ```bash
-  touch state/halt.lock
-  ```
-  hoặc qua API:
-  ```bash
-  curl -s -X POST http://127.0.0.1:8787/api/control -H 'content-type: application/json' -d '{"action":"halt"}'
-  ```
-  Kỳ vọng: log có `halt.triggered`, `GET /api/status` trả `bot_state:"STOPPED"`.
-
-- **Chạy lại sau halt**:
-  ```bash
-  rm -f state/halt.lock
-  ```
-  hoặc `POST /api/control {"action":"reset"}`. Kỳ vọng: log có `halt.cleared`.
-
-- **`scripts/paper_run.sh`** tự halt sạch ở cuối phiên chạy — không cần làm
-  gì thêm sau khi script in `DONE.`.
-
-## 9. Deploy VPS
-
-Xem chi tiết đầy đủ (checklist bảo mật + các bước) tại `docs/RUN.md` mục
-"Vận hành trên VPS". Tóm tắt:
-
-1. Tạo SSH key riêng cho VPS, tắt đăng nhập bằng password.
-2. Bật `ufw` (chỉ mở port 22), cân nhắc `fail2ban`.
-3. Cài `rustup`/`build-essential` trên VPS (script tự làm nếu thiếu).
-4. `scripts/deploy_vps.sh --host <ip> --user root --identity <key> --build --run`
-   để copy source + build + chạy bot nền (`systemd-run`, vẫn `dry_run=true`
-   theo `config.toml` đã copy).
-5. Tự điền `.env` **trên VPS** (không copy `.env` máy dev qua mạng).
-6. Xem dashboard qua SSH tunnel, **không** mở port `8787` ra Internet:
-   ```bash
-   ssh -N -L 8787:127.0.0.1:8787 -p <port> <user>@<ip>
-   ```
-7. Ghi lại `git log -1 --format=%H` + `sha256sum target/release/bsc_sandwich`
-   **trên VPS** — VPS và WSL phải cùng commit trước khi coi là "đã deploy
-   đúng bản".
-
-## 10. Sự cố thường gặp
-
-| Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
-|---|---|---|
-| `/api/status` có `pending_source != "ws"` | `BSC_WS` rỗng/lỗi/không hỗ trợ `newPendingTransactions`, bot đã fallback sang `txpool_content` hoặc chỉ nhận inject | Đổi `BSC_WS` sang host khác (ưu tiên publicnode), kiểm log `rpc.pending_unavailable` để biết lý do cụ thể |
-| `decode_fail` chiếm gần hết `seen` | Đa số tx mempool BSC không phải Pancake swap — **bình thường** | Chỉ đáng lo nếu `venue_v2`/`venue_v3` trong `/api/funnel` luôn bằng 0 dù chạy lâu |
-| `nonce_stale` cao | Bình thường ở mức thấp-vừa (vài lần/phút) — victim tx bị tx khác chen nonce trước khi bot kịp xử lý | Chỉ đáng lo nếu gần bằng 100% số candidate |
-| `sim_error` cao | RPC quá tải/timeout khi mô phỏng | Kiểm `.env` có nhiều URL failover chưa (mục 3), thử RPC khác |
-| GoPlus trả `4029`/`REVIEW ... rate_limit_or_network` | Rate-limit burst của GoPlus (không phải lỗi mạng) | Đợi vài phút, chạy lại riêng các token đó (mục 4b) |
-| `cargo build` lỗi thiếu `openssl`/`pkg-config` | Thiếu gói hệ thống | `sudo apt-get install -y build-essential pkg-config libssl-dev` rồi build lại |
-| Ghi `state/halt.lock` nhưng bot không dừng | Kiểm tra đã ghi đúng thư mục `state/` trong repo đang chạy (không phải thư mục khác) | `ls -la state/halt.lock`, xem log có `halt.triggered` chưa — nếu bot không đọc được file do quyền, kiểm `chmod`/owner thư mục |
-| `pairs.txt`: `candidate:0` dù đã điền `vetted` | Sai định dạng ngày (`vetted YYYY-MM-DD` phải đúng dạng số), hoặc vet nền vừa phát hiện `pair.vet_fail` | Kiểm `GET /api/pairs`, đối chiếu log `pair.unvetted`/`pair.vet_fail` |
-
-## 11. An toàn
-
-- **Không** dán nội dung `.env`, private key, hay IP/thông tin đăng nhập VPS
-  vào chat, BAOCAO, hay bất kỳ file nào trong repo (kể cả file đã gitignore).
-- URL RPC dán vào log/BAOCAO phải được redact (bot tự redact khi log —
-  không tự ý dán URL đầy đủ có token/API key ra ngoài).
-- Cờ live (`allow_live`/`bot_armed`/`dry_run=false`) hiện **CHƯA bật** và
-  **CHƯA có tính năng ký/gửi tx thật** trong bot — mọi số liệu hiện tại đều
-  là mô phỏng dry-run. Việc bật live đòi hỏi đủ 5 điều kiện (mục "Cổng live"
-  trên dashboard) và một cụm công việc riêng (executor + relay bundle) chưa
-  được xây dựng, xem `docs/TASKS.md`.
+```bash
+touch state/halt.lock
+# PID wrapper nằm ở state/paper_run.pid — kill đúng PID đó, đừng pkill -f paper_run.sh
+```
 
 ---
 
-Xem thêm: `AGENTS.md` (luật vận hành đầy đủ, không tự sửa trừ khi được lệnh),
-`DEX_REGISTRY.md` (venue đã pin), `docs/STATE.md` (quyết định kỹ thuật),
-`docs/TASKS.md` (việc còn lại), `docs/DOC_MAP.md` (bản đồ toàn bộ file),
-`docs/RUN.md` (vận hành WSL + VPS chi tiết), `baocao/BAOCAO{NN}.md` (báo cáo
-từng phiên).
+## 9. Dashboard
+
+Mở `http://127.0.0.1:8787` (hoặc port paper). Chỉ đọc. Khối chính: bot,
+cổng live, **flash sources**, venue, pairs, hits, skip, funnel, tax, econ,
+validator, shadow.
+
+API:
+
+```
+GET  /api/health
+GET  /api/status
+GET  /api/venues
+GET  /api/pairs
+GET  /api/flash      # 4 nguồn flash tại block đã chụp
+GET  /api/hits?limit=50
+GET  /api/skips
+GET  /api/funnel
+GET  /api/econ       # bucket, top, net_pos_non_cluster, latency
+GET  /api/validate
+GET  /api/compete    # cụm đối thủ
+GET  /api/mem        # RSS, kích thước container (chống OOM)
+GET  /api/shadow
+GET  /api/tax        POST /api/tax   (cần allow_tax_inject=true)
+GET  /api/victims    # mode 1 đang tắt — file gần như trống
+POST /api/control    body {"action":"halt"|"disarm"|"reset"}
+```
+
+Nút Halt/Disarm/Reset chỉ ghi `state/*.req` / `halt.lock`, không gọi signer.
+
+---
+
+## 10. Đọc log `logs/bot.jsonl`
+
+| Event | Ý nghĩa | Xem nhanh |
+|---|---|---|
+| `bot.start` | Boot, config/venue ban đầu | `grep '"event":"bot.start"' logs/bot.jsonl \| tail -1` |
+| `pair.reload` | Đọc lại list (backrun = `pairs_arb.txt`) | `grep '"event":"pair.reload"' logs/bot.jsonl \| tail -5` |
+| `pair.unvetted` / `pair.vet_fail` | Chưa vet / vet nền loại | `grep '"event":"pair.vet' logs/bot.jsonl \| tail` |
+| `tx.seen` | Pending mới (WS / txpool / inject) | `grep '"event":"tx.seen"' logs/bot.jsonl \| tail -5` |
+| `tx.skip` | Bỏ qua — field `reason` | `grep '"event":"tx.skip"' logs/bot.jsonl \| tail -20` |
+| `sim.arb` | Kết quả backrun-arb (đường đang bật) | `grep '"event":"sim.arb"' logs/bot.jsonl \| tail -10` |
+| `sim.result` / `sim.evm` | Đường sandwich / EVM — thường rỗng khi backrun | — |
+| `bundle.shadow` | Đã ký thật, **không gửi** (`live_mode=shadow`) | `grep '"event":"bundle.shadow"' logs/bot.jsonl \| tail` |
+| `halt.triggered` / `halt.cleared` | `state/halt.lock` | `grep halt logs/bot.jsonl \| tail` |
+
+Lý do `tx.skip`:
+
+| Reason | Ý nghĩa |
+|---|---|
+| `not_in_list` | Token không nằm trong list đang đọc (`pairs_arb.txt` khi backrun) |
+| `below_min` | Swap nhỏ hơn `pairs_min_swap_bnb` |
+| `decode_fail` | Không giải mã được (NFT UR, hàm lạ, router/selector lệch). ~81% `execute()` fail cũ là Seaport/NFT — đúng, không phải swap sót |
+| `not_wbnb_pair` / `not_quote_pair` | Không phải WBNB/USDT hợp lệ |
+| `sell_direction` | Victim bán token — sandwich không làm chiều này; backrun vẫn có thể cân 2 pool sau swap lớn (tuỳ path decode) |
+| `not_pancake_router` | `tx.to` không phải router được cổng nhận. Sandwich: 5 router Pancake. Backrun: 5 Pancake **+** Uniswap V3 SwapRouter02 |
+| `venue_unpinned` | Venue chưa pin đủ để sim |
+| `no_pool` | Factory trả `address(0)` |
+| `rpc_error` | `eth_call` lỗi mạng — khác `no_pool` |
+| `thin_liq` | Reserve dưới ngưỡng |
+| `deadline` / `nonce_stale` / `nonce_future` | Không kịp / nonce lệch |
+| `victim_would_revert` | Đường sandwich: victim sẽ revert nếu bị kẹp |
+| `unprofitable` | Lãi ≤ 0 hoặc dưới `min_profit_*` |
+| `honeypot_or_tax` | Tax / honeypot (hoặc `vet_fail`) |
+| `hooks_unread` | Pool Infinity không đọc được hook — skip **pool**, không tắt bot |
+| `sim_error` | Lỗi mô phỏng (RPC…) |
+| `gas_cap` | Gas thật vượt trần, hoặc `eth_gasPrice` > `gas_price_max_gwei` |
+| `sanity_reject` | Sim vượt trần vô lý (front > 10% reserve, profit > 2% reserve, victim_in > 100% reserve) — **chưa bắt hết** borrow arb oversized |
+| `competitor_victim` | Ví cụm đối thủ, chỉ khi `live_mode != "off"` và `allow_competitor_victims=false` |
+| `arb_no_second_venue` | Token không có ≥ 2 venue đủ sâu trong `multi_venue.json` |
+| `arb_no_flash_source` | Không nguồn flash nào đủ sâu tại block |
+
+---
+
+## 11. Dừng / khởi động / halt
+
+Dừng khẩn cấp (cả paper loop):
+
+```bash
+touch state/halt.lock
+```
+
+hoặc:
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/api/control \
+  -H 'content-type: application/json' \
+  -d '{"action":"halt"}'
+```
+
+Kỳ vọng: log `halt.triggered`, `/api/status` → `bot_state:"STOPPED"`.
+
+Chạy lại:
+
+```bash
+rm -f state/halt.lock
+```
+
+hoặc `POST /api/control {"action":"reset"}`. Kỳ vọng: `halt.cleared`.
+
+`scripts/paper_run.sh` tự halt cuối phiên. Nếu phải giết process: dùng PID
+trong `state/paper_run.pid`, **không** `pkill -f paper_run.sh` (có thể giết
+nhầm shell đang chạy lệnh).
+
+---
+
+## 12. Deploy VPS
+
+Chi tiết: `docs/RUN.md` mục “Vận hành trên VPS”. Tóm tắt:
+
+1. SSH key **riêng** cho VPS (không dùng khóa GitHub, không commit `key/`).
+2. `ufw` chỉ mở 22. Không mở `8787` ra Internet.
+3. `scripts/deploy_vps.sh --host <ip> --user root --identity <key> --build --run`
+4. Điền `.env` **trên VPS** — không copy `.env` máy dev.
+5. `config.toml` trên VPS là file **riêng**. Binary mới có field mới (ví dụ
+   `pairs_arb_path`, `gas_units_arb_v3`, `multivenue_*`) phải cập nhật
+   **cùng lúc**, thiếu = fail load.
+6. Dashboard qua tunnel:
+   ```bash
+   ssh -N -L 8787:127.0.0.1:8787 -p <port> <user>@<ip>
+   ```
+7. WSL và VPS phải **cùng git commit**. Ghi `git log -1 --format=%H` +
+   `sha256sum target/release/bsc_sandwich` trên VPS.
+
+VPS chỉ nhận commit đã paper trên WSL. Không ghi IP VPS vào README / BAOCAO.
+
+---
+
+## 13. Sự cố thường gặp
+
+| Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
+|---|---|---|
+| `/api/status` `pending_source != "ws"` | `BSC_WS` rỗng / không hỗ trợ pending | Đổi WSS (ưu tiên publicnode), xem `rpc.pending_unavailable` |
+| `decode_fail` chiếm gần hết `seen` | Đa số mempool không phải swap List A — bình thường | Đáng lo nếu `sim.arb` = 0 suốt lâu **và** `/api/pairs` candidate > 0 |
+| `arb_no_second_venue` mọi tx | Thiếu / cũ `state/multi_venue.json` | Chạy `discover_multivenue`, kiểm `multi_venue_path` |
+| `venue_unpinned` trên V3 | Binary/config cũ chưa nối V3 arb | Cần bản có cụm B5; paper BAOCAO51 đã `venue_unpinned=0` |
+| `sim.arb` simulated nhưng borrow 40–46 BNB | Trần `arb_max_borrow_bnb=20` chưa kẹp hết chân V3 mixed | **Không** dùng dòng đó cho Go/No-Go |
+| `sim.evm` rỗng khi paper | Đúng với `strategy=backrun` + `sim_engine=v2` | Đọc `sim.arb` + `/api/flash` |
+| `/api/pairs` `count=0` dù đã vet | Đang đọc nhầm file, hoặc sai `vetted YYYY-MM-DD` | Backrun phải là `pairs_arb.txt`. Xem `pair.unvetted` |
+| `sim_error` / vet `missing_trie_node` | RPC public không giữ state | Điền `BSC_HTTP_SIM` node đủ state |
+| `cargo build` thiếu openssl | Thiếu gói hệ thống | `sudo apt-get install -y build-essential pkg-config libssl-dev` |
+| Bot chết sau nhiều giờ, không có `DONE` | OOM (đã đo trên VPS 8 GB) | RSS qua `/api/mem`; chia phiên ngắn; xem `docs/RUN.md` |
+| Halt không dừng | Sai thư mục `state/` hoặc giết nhầm PID | `ls state/halt.lock`; PID = `state/paper_run.pid` |
+
+---
+
+## 14. An toàn
+
+- Không dán `.env`, private key, `BLOCKRAZOR_AUTH`, IP VPS vào chat / BAOCAO
+  / file trong git.
+- URL RPC có token phải redact. Bot tự redact khi log.
+- Cổng live cần **đủ** `allow_live && !dry_run && bot_armed` && không
+  `halt.lock` && `chain_id==56` && `live_*` && venue đã pin. Thiếu một cái
+  = không gửi. Dashboard khối “Cổng live” tick từng điều kiện.
+- Mọi tx MEV (khi có) chỉ gửi **bundle** qua builder đã pin (48 Club
+  Puissant, BlockRazor). Cấm `sendRaw` lẻ qua RPC thường. Bribe = chuyển BNB
+  tới EOA builder **trong tx**, chỉ khi thành công.
+- `live_mode="shadow"`: ký thật, không gửi. Dùng ví trắng.
+- `live_mode="live"` trong config **không** tự mở khoá — vẫn cần cụm
+  executor + lệnh Chủ. Contract arb **chưa có** (No-Go B1).
+- Flash chỉ từ nguồn đã pin trong `DEX_REGISTRY.md`, trả trong cùng tx.
+
+Nguồn flash (đọc on-chain mỗi chu kỳ, không giả định số dư):
+
+1. Pancake Infinity Vault — phí 0, trần = `balanceOf(vault)` (không phải
+   `reservesOfApp`).
+2. Aave V3 Pool — 5 bps.
+3. Pancake V2 `pancakeCall` — ~25 bps.
+4. Balancer V2 Vault — phí 0 nhưng trên BSC gần rỗng + wind-down; không chờ.
+
+---
+
+Xem thêm: `AGENTS.md` (luật), `DEX_REGISTRY.md` (venue + flash đã pin),
+`docs/STATE.md`, `docs/TASKS.md`, `docs/DOC_MAP.md`, `docs/RUN.md`,
+`docs/CONTRACT_DESIGN.md` (thiết kế, chưa code), `baocao/BAOCAO51.md` (cụm
+mới nhất).
