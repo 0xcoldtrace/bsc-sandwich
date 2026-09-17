@@ -366,4 +366,5 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | B3 `live-small` | — | chờ B2 |
 | B4 `planB-B4-multivenue-tool` | 48 | TOOL + pin Uniswap V3. List 2 h (22 both_ok). |
 | B4 scan 4 h + bổ sung pairs.txt | 49 | `--hours 4` xong: vol 1271, both_ok=34, keep=109 (108/129 pairs có V3). Uniswap V3 = venue hợp lệ. |
-| B4 `venue-infinity-v3` (sim) | — | chờ list vet; decoder PoolKey/hooks + sim_arb V3. |
+| B4 `planB-listA-vet` (tách A/B + vet List A) | 50 | List A 34 both_ok → vet Windows PASS 28 → `pairs_arb.txt`. List B 75 V3 mỏng, theo dõi. FAIL 6 proxy Binance-Peg. |
+| B4 `venue-infinity-v3` (sim) | — | chờ đo sim_arb trên `pairs_arb.txt`; decoder PoolKey/hooks + sim_arb V3. |

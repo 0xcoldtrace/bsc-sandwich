@@ -1,0 +1,86 @@
+input: 34 token, 0 dong hong
+rpc#1: eth_chainId=0x38 ok
+rpc#2: eth_chainId=0x38 ok
+rpc#3: eth_chainId=0x38 ok
+rpc#4: eth_chainId=0x38 ok
+rpc#5: eth_chainId=0x38 ok
+rpc#6: eth_chainId=0x38 ok
+rpc#7: eth_chainId=0x38 ok
+rpc#8: eth_chainId=0x38 ok
+rpc#9: eth_chainId=0x38 ok
+rpc: 9 URL dung duoc (eth_chainId=0x38)
+[1/34] DOT 0x7083…3402 PASS (4.1s) dynamic clean
+[2/34] USDC 0x8ac7…580d FAIL (4.4s) proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+[3/34] ADA 0x3ee2…5d47 PASS (3.9s) dynamic clean
+[4/34] AVAX 0x1ce0…4041 FAIL (4.3s) proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+[5/34] BUSD 0xe9e7…7d56 PASS (4.0s) dynamic clean
+[6/34] KOGE 0xe6df…5528 PASS (7.4s) dynamic clean
+[7/34] UNI 0xbf51…e9b1 FAIL (4.4s) proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+[8/34] BNBHolder 0x4444…7d03 PASS (3.9s) dynamic clean
+[9/34] ETH 0x2170…33f8 PASS (4.0s) dynamic clean
+[10/34] SKYAI 0x92aa…fb10 PASS (3.9s) dynamic clean
+[11/34] Broccoli 0x6d5a…6714 PASS (4.1s) dynamic clean
+[12/34] XVS 0xcf6b…6c63 PASS (4.5s) dynamic clean
+[13/34] 4 0x0a43…4444 PASS (4.1s) dynamic clean
+[14/34] BTCB 0x7130…ad9c PASS (3.9s) dynamic clean
+[15/34] COSA 0x5f98…5839 PASS (3.9s) dynamic clean
+[16/34] LINK 0xf8a0…51bd PASS (3.9s) dynamic clean
+[17/34] DOGE 0xba2a…4c43 FAIL (4.3s) proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+[18/34] CAT 0x6894…063d PASS (4.1s) dynamic clean
+[19/34] LTC 0x4338…db94 PASS (4.0s) dynamic clean
+[20/34] BabyDoge 0xc748…e8de PASS (9.9s) dynamic clean
+[21/34] KOMA 0xd5ea…3c19 PASS (5.4s) dynamic clean
+[22/34] Cheems 0x0df0…b413 PASS (3.9s) dynamic clean
+[23/34] 我踏马来了 0xc51a…4444 PASS (4.1s) dynamic clean
+[24/34] Cake 0x0e09…ce82 PASS (3.9s) dynamic clean
+[25/34] XRP 0x1d2f…0dbe PASS (4.0s) dynamic clean
+[26/34] ASTER 0x000a…556a PASS (4.1s) dynamic clean
+[27/34] COCO 0x80f1…8888 PASS (4.6s) dynamic clean
+[28/34] NEAR 0x1fa4…5d63 FAIL (4.3s) proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+[29/34] USDT 0x55d3…7955 PASS (4.0s) dynamic clean
+[30/34] TWT 0x4b0f…8003 PASS (3.9s) dynamic clean
+[31/34] SFP 0xd41f…5dfb PASS (4.1s) dynamic clean
+[32/34] 币安人生 0x924f…4444 PASS (4.0s) dynamic clean
+[33/34] TST 0x86bb…6429 PASS (4.1s) dynamic clean
+[34/34] INJ 0xa2b7…d495 FAIL (4.3s) proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+
+LINE SYMBOL       TOKEN         Q    RESERVE      VERDICT TAX b/x/s   REASONS
+1    USDC         0x8ac7…580d   WBNB 296.3        FAIL    0/0/0       proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+2    DOT          0x7083…3402   WBNB 162          PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+3    ADA          0x3ee2…5d47   WBNB 329.5        PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+4    COSA         0x5f98…5839   WBNB 71.1         PASS    0/0/0       dynamic clean; static clean; owner renounced
+5    DOGE         0xba2a…4c43   WBNB 625.4        FAIL    0/0/0       proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+6    AVAX         0x1ce0…4041   WBNB 124.8        FAIL    0/0/0       proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+7    KOGE         0xe6df…5528   WBNB 51.7         PASS    0/0/0       dynamic clean; static clean; owner none
+8    BUSD         0xe9e7…7d56   WBNB 6275.4       PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xd2f9…d6c4
+9    UNI          0xbf51…e9b1   WBNB 242.6        FAIL    0/0/0       proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+10   BNBHolder    0x4444…7d03   WBNB 284.4        PASS    0/0/0       dynamic clean; static clean; owner renounced
+11   ETH          0x2170…33f8   WBNB 2127         PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+12   SKYAI        0x92aa…fb10   WBNB 4748.5       PASS    0/0/0       dynamic clean; static clean; owner renounced
+13   Broccoli     0x6d5a…6714   WBNB 445.4        PASS    0/0/0       dynamic clean; static clean; owner renounced
+14   XVS          0xcf6b…6c63   WBNB 76.5         PASS    0/0/0       dynamic clean; static clean; owner active 0x3a32…98cf
+15   4            0x0a43…4444   WBNB 1095.5       PASS    0/0/0       dynamic clean; static clean; owner renounced
+16   BTCB         0x7130…ad9c   WBNB 2129         PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+17   LINK         0xf8a0…51bd   WBNB 356.1        PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+18   CAT          0x6894…063d   WBNB 3744.7       PASS    0/0/0       dynamic clean; static clean; owner none
+19   BabyDoge     0xc748…e8de   WBNB 5956         PASS    0/0/0       dynamic clean; static fee,blacklist,limit,mint_rebase,owner_power nhung owner renounced
+20   LTC          0x4338…db94   WBNB 53.9         PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+21   KOMA         0xd5ea…3c19   WBNB 1753.6       PASS    0/0/0       dynamic clean; static fee,antimev,owner_power nhung owner renounced
+22   Cheems       0x0df0…b413   WBNB 1196.2       PASS    0/0/0       dynamic clean; static clean; owner renounced
+23   USDT         0x55d3…7955   WBNB 52945.5      PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+24   我踏马来了        0xc51a…4444   WBNB 711          PASS    0/0/0       dynamic clean; static clean; owner renounced
+25   Cake         0x0e09…ce82   WBNB 13779.4      PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0x73fe…e24e
+26   XRP          0x1d2f…0dbe   WBNB 504.2        PASS    0/0/0       dynamic clean; static khong co nhom rui ro (chi info: mint khong cap); owner active 0xf68a…f62d
+27   ASTER        0x000a…556a   WBNB 59           PASS    0/0/0       dynamic clean; static clean; owner none
+28   COCO         0x80f1…8888   USDT 754506.1     PASS    0/0/0       dynamic clean; static clean; owner renounced
+29   NEAR         0x1fa4…5d63   WBNB 89.3         FAIL    0/0/0       proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+30   TWT          0x4b0f…8003   WBNB 237.8        PASS    0/0/0       dynamic clean; static clean; owner active 0xb2df…d1cd
+31   SFP          0xd41f…5dfb   WBNB 194.1        PASS    0/0/0       dynamic clean; static clean; owner none
+32   币安人生         0x924f…4444   WBNB 5314.8       PASS    0/0/0       dynamic clean; static clean; owner renounced
+33   TST          0x86bb…6429   WBNB 154.8        PASS    0/0/0       dynamic clean; static clean; owner renounced
+34   INJ          0xa2b7…d495   WBNB 126.5        FAIL    0/0/0       proxy(eip1967 impl=0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c admin=0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4)
+
+TONG: 34 token | PASS 28 | REVIEW 0 | FAIL 6 | thoi gian 80.3s | rpc calls 1301 (failover 0)
+output: out/listA\vet_report.tsv
+EXIT:0
+END:2026-09-17T04:06:48Z

@@ -1,13 +1,21 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B4-multivenue-tool`, 2026-09-16)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-listA-vet`, 2026-09-17)
 
--2. Cụm mới nhất: `planB-B4-multivenue-tool` (BAOCAO48, 2026-09-16) — TOOL
+-2. Cụm mới nhất: `planB-listA-vet` (BAOCAO50, 2026-09-17) — tách 2 list từ
+    quét 4 h (BAOCAO49): **List A** 34 token `both_ok` (cột 6 TSV, không phải
+    cột cuối) → `vet_bsc_token` Windows `--date 2026-09-17` → **PASS 28** ghi
+    `pairs_arb.txt` (file MỚI, không đè `pairs.txt`); FAIL 6 toàn proxy
+    EIP-1967 Binance-Peg (USDC/AVAX/UNI/DOGE/NEAR/INJ), không `--allow-proxy`.
+    **List B** 75 token keep nhưng không `both_ok` (V3 mỏng) — chỉ theo dõi,
+    `baocao/evidence/baocao50_listB_watch.txt`. Chưa nối `pairs_path`, chưa
+    sim_arb, chưa contract.
+
+-1b. Cụm liền trước: `planB-B4-multivenue-tool` (BAOCAO48, 2026-09-16) — TOOL
     `discover_multivenue` + list đa venue MỚI (không dùng `pairs.txt` meme) +
-    pin Uniswap V3 BSC (Factory/QuoterV2/SwapRouter02, getCode > 0, chưa dùng
-    lọc). Quy tắc: PCS V2 đủ ngưỡng **và** PCS V3 cùng quote đủ impact ≤ 2 %
-    khi bán 1 BNB. Uniswap ghi nhận, không thay điều kiện. KHÔNG THENA/Biswap.
-    KHÔNG sim_arb V3, KHÔNG đo cơ hội, KHÔNG contract. Xem mục cùng tên cuối file.
+    pin Uniswap V3 BSC (Factory/QuoterV2/SwapRouter02, getCode > 0). Quy tắc:
+    PCS V2 đủ ngưỡng **và** V3 cùng quote impact ≤ 2 % khi bán 1 BNB. Uniswap
+    = venue hợp lệ từ BAOCAO49. KHÔNG THENA/Biswap. KHÔNG contract.
 
 -1. Cụm liền trước đo: `planB-B0-complete` (BAOCAO47) — No-Go B1 (1,27 cơ
     hội/ngày). Cụm `competitor-recon-and-strategy` (BAOCAO41, 2026-09-16) —
@@ -5746,3 +5754,25 @@ VPS phải thêm 4 field này **trước** khi nhận binary mới.
 - sim_arb V3 / đo cơ hội trên list mới — chờ Chủ vet candidates.
 - THENA/Biswap — cấm.
 - Kết luận thị trường / Go-No-Go lại B1 — cấm (chưa có list vet).
+
+## `planB-listA-vet` (BAOCAO50, 2026-09-17)
+
+Chủ: tách 2 list từ quét 4 h (109 keep = 34 both_ok + 75 V3 mỏng), vet List A
+ngay, PASS → `pairs_arb.txt` (không đè `pairs.txt`).
+
+`both_ok` là **cột 6** của `state/multi_venue_report.tsv` (cột cuối = `proxy`).
+Lọc `$NF=="true"` ra 0 dòng — đã sửa thành cột 6.
+
+| List | n | Luật | File |
+|---|---|---|---|
+| A | 34 both_ok → vet → PASS 28 | V2 đủ ngưỡng + V3 impact ≤ 2 % | `pairs_arb.txt` |
+| B | 75 | keep nhưng không both_ok (V3 mỏng) | `baocao/evidence/baocao50_listB_watch.txt` |
+
+Vet: Windows `vet_bsc_token.exe` `--in input/listA_unvetted.txt --date 2026-09-17
+--out out/listA`, không `--allow-proxy`. 9 RPC `eth_chainId=0x38`. 80.3 s,
+1301 RPC call, failover 0. PASS 28 / REVIEW 0 / FAIL 6. FAIL toàn
+`proxy(eip1967 impl=0xba5fe23f… admin=0xd2f93484…)`: USDC, DOGE, AVAX, UNI,
+NEAR, INJ. Dynamic tax 0/0/0 cả 34 (kể cả FAIL).
+
+`pairs.txt` / `config.toml` `pairs_path` **không** đổi. Bot chưa đọc
+`pairs_arb.txt`. sim_arb / contract / live không làm ở cụm này.
