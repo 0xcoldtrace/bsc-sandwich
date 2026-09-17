@@ -20,7 +20,7 @@ Go B1, cấm “đã có lãi”. Commit + push PAT một lần (không lưu rem
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: HASH_NOI_DUNG
+Commit nội dung: `48058f194337b3b0fb96f953c76a876fd6dfda3a`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -179,4 +179,4 @@ hàng B8b. Không commit `.env` / PAT / URL có token.
 
 ---
 
-Commit: HASH_NOI_DUNG
+Commit: `48058f194337b3b0fb96f953c76a876fd6dfda3a`
