@@ -2598,7 +2598,12 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
             *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
         }
         Some((route, q)) => {
-            if !bsc_sandwich::sim_arb::arb_sanity_ok_mixed(&route, &q) {
+            // Cụm `planB-B6-cap-borrow-v3` — cửa trần vay TRƯỚC Simulated.
+            // Search đã kẹp trong trần; cổng này bắt luôn case lọt (40 BNB /
+            // trần 20). Reason nhất quán: `sanity_reject`.
+            if pipeline::arb_borrow_sanity_skip(q.borrow, route.borrow_quote, &cfg).is_some()
+                || !bsc_sandwich::sim_arb::arb_sanity_ok_mixed(&route, &q)
+            {
                 let skip = pipeline::PipelineSkip::SanityReject;
                 pipeline::log_outcome_v2(
                     &app_state.logger,

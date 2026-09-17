@@ -368,4 +368,5 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | B4 scan 4 h + bổ sung pairs.txt | 49 | `--hours 4` xong: vol 1271, both_ok=34, keep=109 (108/129 pairs có V3). Uniswap V3 = venue hợp lệ. |
 | B4 `planB-listA-vet` (tách A/B + vet List A) | 50 | List A 34 both_ok → vet Windows PASS 28 → `pairs_arb.txt`. List B 75 V3 mỏng, theo dõi. FAIL 6 proxy Binance-Peg. |
 | B5 `planB-B5-simarb-v3-measure` | 51 | sim_arb chân V3 + PairBook `pairs_arb.txt`. **No-Go B1** (live 20.9 phút 3 sim không tin; replay 26.3/ngày <30). Xem BAOCAO51 ô 10. |
+| B6 `planB-B6-cap-borrow-v3` | 52 | Kẹp search `sim_arb` trong trần `arb_max_borrow_*`; `sanity_reject` thêm 2 cửa trần vay. Không Simulated nếu borrow > trần. |
 | B4 `venue-infinity-v3` (sim Infinity) | — | chờ Go B5; decoder PoolKey/hooks Infinity. |

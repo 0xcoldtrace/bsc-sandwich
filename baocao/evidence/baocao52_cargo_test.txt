@@ -1,0 +1,4 @@
+--- cargo test --lib --offline ---
+test result: ok. 461 passed; 0 failed; 19 ignored; finished in 0.25s
+--- cargo test --bin bsc_sandwich --offline ---
+test result: ok. 18 passed; 0 failed; 0 ignored; finished in 0.21s

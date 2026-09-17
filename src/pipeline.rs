@@ -32,7 +32,7 @@ use crate::pairbook::PairBook;
 use crate::pool;
 use crate::sim_v2::{self, PoolReserves, SandwichQuote};
 use crate::tax::TaxCache;
-use crate::venues::{V2_FACTORY_ADDRESS, USDT_ADDRESS, WBNB_ADDRESS};
+use crate::venues::{usdt_addr, wbnb_addr, V2_FACTORY_ADDRESS, USDT_ADDRESS, WBNB_ADDRESS};
 use crate::victims::VictimBook;
 use std::str::FromStr;
 
@@ -122,12 +122,12 @@ pub enum PipelineSkip {
     /// TRƯỚC khi trả `Simulated`: kết quả sim vi phạm ít nhất 1 trong 3 giới
     /// hạn vật lý của chính pool đang xét (xem `sanity_check`):
     /// `front_in > 10% reserve_quote`, `profit_net > 2% reserve_quote`, hoặc
-    /// `victim amount_in > reserve_quote`. Đây KHÔNG phải ngưỡng kinh tế
-    /// (khác `Unprofitable`/`GasCap`, những cái đó Chủ chỉnh được trong
-    /// `config.toml`) mà là chặn "số sim vô lý" — một sim đòi nuốt >10% pool
-    /// hoặc hứa lãi >2% pool trong 1 tx là dấu hiệu reserve/tỉ giá đang sai
-    /// chiều/sai đơn vị (đúng loại bug A1 vừa sửa), KHÔNG được phép đi tiếp
-    /// tới đường ký.
+    /// `victim amount_in > reserve_quote`. Cụm `planB-B6-cap-borrow-v3` thêm
+    /// 2 điều kiện trần vay arb (`borrow > arb_max_borrow_bnb` khi chân vay
+    /// là WBNB, hoặc `borrow > arb_max_borrow_usdt` khi chân vay là USDT) —
+    /// xem `sanity_check_arb_borrow` / `arb_borrow_sanity_skip`. Đây KHÔNG
+    /// phải ngưỡng kinh tế (khác `Unprofitable`/`GasCap`) mà là chặn số sim
+    /// vô lý, KHÔNG được phép đi tiếp tới đường ký.
     SanityReject,
     /// Cụm `bugfix-presign-and-contract-plan` (A3) — `tx.from` thuộc CỤM ĐỐI
     /// THỦ MEV đã nhận diện on-chain (xem `competitor::ClusterIndex`) và
@@ -1168,6 +1168,42 @@ pub fn sanity_check(front_in: U256, profit_net_wei: i128, victim_amount_in: U256
         return false;
     }
     true
+}
+
+/// Cụm `planB-B6-cap-borrow-v3` — 2 điều kiện trần vay của `sanity_reject`
+/// cho backrun-arb. So đúng đơn vị quote của chân VAY (không quy đổi):
+/// WBNB → `max_borrow_bnb_wei`, USDT → `max_borrow_usdt_wei`. Quote khác
+/// → `false` (không đoán). `borrow == cap` pass; `borrow > cap` fail.
+pub fn sanity_check_arb_borrow(
+    borrow: U256,
+    borrow_quote: Address,
+    max_borrow_bnb_wei: U256,
+    max_borrow_usdt_wei: U256,
+) -> bool {
+    let cap = if borrow_quote == wbnb_addr() {
+        max_borrow_bnb_wei
+    } else if borrow_quote == usdt_addr() {
+        max_borrow_usdt_wei
+    } else {
+        return false;
+    };
+    borrow <= cap
+}
+
+/// `None` = qua cổng (có thể Simulated nếu lãi đủ); `Some(SanityReject)` =
+/// KHÔNG Simulated. Reason nhất quán: `sanity_reject` (không dùng
+/// `unprofitable` cho vượt trần vay).
+pub fn arb_borrow_sanity_skip(borrow: U256, borrow_quote: Address, cfg: &Config) -> Option<PipelineSkip> {
+    if sanity_check_arb_borrow(
+        borrow,
+        borrow_quote,
+        cfg.arb_max_borrow_wei_for(wbnb_addr()),
+        cfg.arb_max_borrow_wei_for(usdt_addr()),
+    ) {
+        None
+    } else {
+        Some(PipelineSkip::SanityReject)
+    }
 }
 
 pub fn decide_paper(victims: &VictimBook, tax_cache: &TaxCache, cfg: &Config, input: &PaperDecision) -> PipelineOutcome {
@@ -3735,5 +3771,64 @@ mod tests {
     #[test]
     fn convert_usdt_to_bnb_wei_zero_reserve_usdt_is_sentinel_max() {
         assert_eq!(convert_usdt_to_bnb_wei(1_000_000, U256::from(100u64), U256::ZERO), u128::MAX);
+    }
+
+    // ===== Cụm `planB-B6-cap-borrow-v3` — trần vay arb → sanity_reject =====
+
+    fn one_bnb_wei() -> U256 {
+        U256::from(1_000_000_000_000_000_000u128)
+    }
+
+    /// Fixture: vay 40 BNB / trần 20 → KHÔNG Simulated (`sanity_reject`).
+    #[test]
+    fn arb_borrow_40_bnb_over_cap_20_is_sanity_reject_not_simulated() {
+        let cfg = test_config();
+        assert_eq!(cfg.arb_max_borrow_bnb, 20.0);
+        let wbnb = addr(WBNB_ADDRESS);
+        let usdt = addr(USDT_ADDRESS);
+        let cap20 = one_bnb_wei() * U256::from(20u64);
+        let borrow40 = one_bnb_wei() * U256::from(40u64);
+        let cap_usdt = cfg.arb_max_borrow_wei_for(usdt);
+
+        assert!(
+            sanity_check_arb_borrow(cap20, wbnb, cap20, cap_usdt),
+            "dung tran 20 BNB van pass"
+        );
+        assert!(
+            !sanity_check_arb_borrow(borrow40, wbnb, cap20, cap_usdt),
+            "40 BNB / tran 20 phai reject"
+        );
+        assert_eq!(
+            arb_borrow_sanity_skip(borrow40, wbnb, &cfg),
+            Some(PipelineSkip::SanityReject),
+            "40 BNB / tran 20 -> sanity_reject, KHONG Simulated"
+        );
+        assert_eq!(
+            arb_borrow_sanity_skip(cap20, wbnb, &cfg),
+            None,
+            "dung tran 20 BNB van duoc di tiep"
+        );
+        // USDT: 40 USDT < 12000 → pass; 13000 > 12000 → reject.
+        let borrow40_usdt = one_bnb_wei() * U256::from(40u64);
+        let borrow13k = one_bnb_wei() * U256::from(13_000u64);
+        assert_eq!(arb_borrow_sanity_skip(borrow40_usdt, usdt, &cfg), None);
+        assert_eq!(
+            arb_borrow_sanity_skip(borrow13k, usdt, &cfg),
+            Some(PipelineSkip::SanityReject)
+        );
+        // Quote la: 3 cua sandwich cu van dung (khong bi cua moi pha).
+        let reserve = U256::from(1000u64);
+        assert!(sanity_check(U256::from(100u64), 0, U256::ZERO, reserve));
+        assert!(!sanity_check(U256::from(101u64), 0, U256::ZERO, reserve));
+    }
+
+    #[test]
+    fn arb_borrow_unknown_quote_is_sanity_reject() {
+        let cfg = test_config();
+        let other = addr("0x1111111111111111111111111111111111111111");
+        assert_eq!(
+            arb_borrow_sanity_skip(one_bnb_wei(), other, &cfg),
+            Some(PipelineSkip::SanityReject)
+        );
     }
 }

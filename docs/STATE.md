@@ -1,8 +1,15 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B5-simarb-v3-measure`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B6-cap-borrow-v3`, 2026-09-17)
 
--3. Cụm mới nhất: `planB-B5-simarb-v3-measure` (BAOCAO51, 2026-09-17) — nối
+-4. Cụm mới nhất: `planB-B6-cap-borrow-v3` (BAOCAO52, 2026-09-17) — kẹp
+    search `sim_arb` TRONG trần `arb_max_borrow_*` (đúng quote chân vay) cho
+    mọi route V2↔V2 / V2↔V3 / V3↔V3 / mixed quote. `clamp_borrow` trước mỗi
+    bước tăng size. `best.borrow > trần` không Simulated; skip
+    `sanity_reject`. Pipeline thêm 2 cửa trần vay. Không nhân borrow ×4.
+    Không contract, không live.
+
+-3. Cụm liền trước: `planB-B5-simarb-v3-measure` (BAOCAO51, 2026-09-17) — nối
     chân V3 (PCS QuoterV2 + Uniswap QuoterV2) vào `sim_arb`, PairBook đọc
     `pairs_arb.txt` khi `strategy="backrun"`, đo list A both_ok đã vet.
     List arb = CHỈ both_ok; nhóm V3 mỏng không sim. Không contract, không live.
@@ -5810,3 +5817,30 @@ Nối chân V3 vào `sim_arb`, đo trên đúng mẫu list A (`pairs_arb.txt`).
 - Fit V3 dùng snapshot hiện tại khi replay log lịch sử (RPC public ~128
   block) — ghi rõ khi đo.
 - Go/No-Go: số thật ô 10 BAOCAO51.
+
+## `planB-B6-cap-borrow-v3` (BAOCAO52, 2026-09-17)
+
+Kẹp cỡ vay flash trên mọi route `sim_arb`. BAOCAO51 live ra 3 dòng
+`simulated` với borrow 40–46 (token 币安人生 / `4`, route V3↔V3): search/fit
+chưa kẹp trần, `sanity_reject` sandwich (3 cửa reserve) không bắt hết.
+
+### Quyết định
+
+- Search ternary (V2 `ArbRoute` và mixed `MixedRoute`) chỉ chạy trong
+  `[0, min(max_borrow, available)]`. Trước mỗi mid/candidate: `clamp_borrow`.
+  Kết thúc: `q.borrow > max_borrow` bị loại (`accept_quote`), không trả
+  Simulated.
+- Trần theo ĐÚNG quote chân vay: WBNB → `arb_max_borrow_bnb` (ship 20),
+  USDT → `arb_max_borrow_usdt` (ship 12000). Quote khác → `sanity_reject`.
+- Skip reason nhất quán: `sanity_reject` (không `unprofitable` cho vượt trần).
+- Pipeline: `sanity_check_arb_borrow` + `arb_borrow_sanity_skip` — 2 cửa mới
+  cạnh 3 cửa sandwich cũ (10%/2%/100% reserve). `handle_backrun_tx` gọi
+  trước khi log `sim.arb simulated`.
+- Không nhân borrow ×4 (đã sửa BAOCAO51 ở `sim_evm`; search dùng đúng `b`).
+- Không contract, không live, không nới both_ok, không paper 6h.
+
+### Còn nợ
+
+- 15 case revm — RPC archive `getStorageAt` `-32000` (nợ BAOCAO51, MISSING).
+- Quote V3 đồng khối với tx (fit ảo quá sâu) — ngoài phạm vi cụm này.
+- Go/No-Go B1 sau khi kẹp trần: cần cửa sổ live ≥6 h (không làm ở cụm này).

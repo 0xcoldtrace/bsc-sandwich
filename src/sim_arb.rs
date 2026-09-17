@@ -35,6 +35,11 @@
 //! QuoterV2): fit virtual CPMM từ ≤2 quote / pool, search closed-form (0
 //! quote thêm), tổng ≤5 lời gọi quoter mỗi route. Route: V2↔V3, V3 tier A↔
 //! V3 tier B (cùng quote). Infinity vẫn chưa sim.
+//!
+//! Cụm `planB-B6-cap-borrow-v3` — search MỌI route (V2↔V2, V2↔V3, V3↔V3,
+//! mixed quote) nằm TRONG trần `max_borrow` đúng quote chân vay. Trước mỗi
+//! bước tăng size: `clamp_borrow`. Kết thúc: `best.borrow > max_borrow` bị
+//! loại, không trả quote đó. Không nhân borrow ×4.
 
 use alloy::primitives::{Address, U256};
 
@@ -100,6 +105,70 @@ pub struct ArbQuote {
 fn u256_to_i128(v: U256) -> Option<i128> {
     let as_u128: u128 = v.try_into().ok()?;
     i128::try_from(as_u128).ok()
+}
+
+/// Cụm `planB-B6-cap-borrow-v3` — kẹp size vào trần vay. Mọi bước tăng size
+/// (ternary mid, lưới 5 điểm, candidate cuối) PHẢI đi qua đây. `size > max`
+/// → `max`; `max = 0` → 0. Không nhân, không nới.
+#[inline]
+pub fn clamp_borrow(size: U256, max_borrow: U256) -> U256 {
+    size.min(max_borrow)
+}
+
+fn accept_quote(q: ArbQuote, max_borrow: U256) -> Option<ArbQuote> {
+    if q.borrow > max_borrow {
+        None
+    } else {
+        Some(q)
+    }
+}
+
+/// Ternary search `borrow` trên `[0, min(max_borrow, available)]`. Mọi điểm
+/// thử đã clamp; kết quả `borrow > max_borrow` bị loại (không Simulated).
+fn search_borrow_capped(
+    max_borrow: U256,
+    available: U256,
+    quote_fn: impl Fn(U256) -> Option<ArbQuote>,
+) -> Option<ArbQuote> {
+    let cap = clamp_borrow(available, max_borrow);
+    if cap.is_zero() {
+        return None;
+    }
+    let at = |raw: U256| -> Option<ArbQuote> {
+        let b = clamp_borrow(raw, cap);
+        if b.is_zero() {
+            return None;
+        }
+        quote_fn(b).and_then(|q| accept_quote(q, max_borrow))
+    };
+    let net_at = |raw: U256| -> i128 { at(raw).map(|q| q.net_wei).unwrap_or(i128::MIN) };
+
+    let mut lo = U256::ZERO;
+    let mut hi = cap;
+    for _ in 0..256 {
+        if hi <= lo + U256::from(1u64) {
+            break;
+        }
+        let third = (hi - lo) / U256::from(3u64);
+        let mid1 = clamp_borrow(lo + third, cap);
+        let mid2 = clamp_borrow(hi - third, cap);
+        if net_at(mid1) < net_at(mid2) {
+            lo = mid1;
+        } else {
+            hi = mid2;
+        }
+    }
+
+    let mut best: Option<ArbQuote> = None;
+    for c in [lo, hi, cap] {
+        let Some(q) = at(c) else {
+            continue;
+        };
+        if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
+            best = Some(q);
+        }
+    }
+    best.and_then(|q| accept_quote(q, max_borrow))
 }
 
 /// Chạy route với 1 mức `borrow`, KHÔNG trừ gas/bribe/flash — dùng cho test
@@ -173,49 +242,11 @@ pub fn search_borrow_for_source(
     bribe_pct: f64,
     bribe_clamp: Option<(u128, u128)>,
 ) -> Option<ArbQuote> {
-    let cap = max_borrow.min(available);
-    if cap.is_zero() {
-        return None;
-    }
-    let mk_pick = |amount: U256| -> Option<FlashPick> {
-        let fee_wei = crate::flash::flash_fee_wei(source, amount, fee_bps)?;
-        Some(FlashPick { source, fee_bps, fee_wei, available })
-    };
-    let net_at = |b: U256| -> i128 {
-        mk_pick(b)
-            .and_then(|p| quote_at(route, b, p, gas_wei, bribe_pct, bribe_clamp))
-            .map(|q| q.net_wei)
-            .unwrap_or(i128::MIN)
-    };
-
-    let mut lo = U256::ZERO;
-    let mut hi = cap;
-    for _ in 0..256 {
-        if hi <= lo + U256::from(1u64) {
-            break;
-        }
-        let third = (hi - lo) / U256::from(3u64);
-        let mid1 = lo + third;
-        let mid2 = hi - third;
-        if net_at(mid1) < net_at(mid2) {
-            lo = mid1;
-        } else {
-            hi = mid2;
-        }
-    }
-
-    let mut best: Option<ArbQuote> = None;
-    for c in [lo, hi, cap] {
-        if c.is_zero() {
-            continue;
-        }
-        if let Some(q) = mk_pick(c).and_then(|p| quote_at(route, c, p, gas_wei, bribe_pct, bribe_clamp)) {
-            if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
-                best = Some(q);
-            }
-        }
-    }
-    best
+    search_borrow_capped(max_borrow, available, |b| {
+        let fee_wei = crate::flash::flash_fee_wei(source, b, fee_bps)?;
+        let pick = FlashPick { source, fee_bps, fee_wei, available };
+        quote_at(route, b, pick, gas_wei, bribe_pct, bribe_clamp)
+    })
 }
 
 /// Thử MỌI nguồn flash đủ sâu cho `route.borrow_quote` rồi trả kết quả có
@@ -261,12 +292,15 @@ pub fn search_best_arb(
         if let Some(q) =
             search_borrow_for_source(route, max_borrow, source, fee_bps, available, gas_wei, bribe_pct, bribe_clamp)
         {
+            if q.borrow > max_borrow {
+                continue;
+            }
             if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
                 best = Some(q);
             }
         }
     }
-    best
+    best.and_then(|q| accept_quote(q, max_borrow))
 }
 
 /// Dựng 2 hướng arb có thể có từ 2 pool của CÙNG token, rồi trả hướng lãi
@@ -636,49 +670,11 @@ pub fn search_borrow_mixed_for_source(
     bribe_pct: f64,
     bribe_clamp: Option<(u128, u128)>,
 ) -> Option<ArbQuote> {
-    let cap = max_borrow.min(available);
-    if cap.is_zero() {
-        return None;
-    }
-    let mk_pick = |amount: U256| -> Option<FlashPick> {
-        let fee_wei = crate::flash::flash_fee_wei(source, amount, fee_bps)?;
-        Some(FlashPick { source, fee_bps, fee_wei, available })
-    };
-    let net_at = |b: U256| -> i128 {
-        mk_pick(b)
-            .and_then(|p| quote_at_mixed(route, b, p, gas_wei, bribe_pct, bribe_clamp))
-            .map(|q| q.net_wei)
-            .unwrap_or(i128::MIN)
-    };
-
-    let mut lo = U256::ZERO;
-    let mut hi = cap;
-    for _ in 0..256 {
-        if hi <= lo + U256::from(1u64) {
-            break;
-        }
-        let third = (hi - lo) / U256::from(3u64);
-        let mid1 = lo + third;
-        let mid2 = hi - third;
-        if net_at(mid1) < net_at(mid2) {
-            lo = mid1;
-        } else {
-            hi = mid2;
-        }
-    }
-
-    let mut best: Option<ArbQuote> = None;
-    for c in [lo, hi, cap] {
-        if c.is_zero() {
-            continue;
-        }
-        if let Some(q) = mk_pick(c).and_then(|p| quote_at_mixed(route, c, p, gas_wei, bribe_pct, bribe_clamp)) {
-            if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
-                best = Some(q);
-            }
-        }
-    }
-    best
+    search_borrow_capped(max_borrow, available, |b| {
+        let fee_wei = crate::flash::flash_fee_wei(source, b, fee_bps)?;
+        let pick = FlashPick { source, fee_bps, fee_wei, available };
+        quote_at_mixed(route, b, pick, gas_wei, bribe_pct, bribe_clamp)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -716,12 +712,15 @@ pub fn search_best_arb_mixed(
         if let Some(q) =
             search_borrow_mixed_for_source(route, max_borrow, source, fee_bps, available, gas_wei, bribe_pct, bribe_clamp)
         {
+            if q.borrow > max_borrow {
+                continue;
+            }
             if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
                 best = Some(q);
             }
         }
     }
-    best
+    best.and_then(|q| accept_quote(q, max_borrow))
 }
 
 pub fn arb_sanity_ok_mixed(route: &MixedRoute, q: &ArbQuote) -> bool {
@@ -827,11 +826,11 @@ pub fn five_borrow_grid(max_borrow: U256) -> [U256; 5] {
     let four = U256::from(4u64);
     let two = U256::from(2u64);
     [
-        (max_borrow / sixteen).max(U256::from(1u64)),
-        (max_borrow / eight).max(U256::from(1u64)),
-        (max_borrow / four).max(U256::from(1u64)),
-        (max_borrow / two).max(U256::from(1u64)),
-        max_borrow.max(U256::from(1u64)),
+        clamp_borrow((max_borrow / sixteen).max(U256::from(1u64)), max_borrow),
+        clamp_borrow((max_borrow / eight).max(U256::from(1u64)), max_borrow),
+        clamp_borrow((max_borrow / four).max(U256::from(1u64)), max_borrow),
+        clamp_borrow((max_borrow / two).max(U256::from(1u64)), max_borrow),
+        clamp_borrow(max_borrow.max(U256::from(1u64)), max_borrow),
     ]
 }
 
@@ -1218,5 +1217,222 @@ mod tests {
             assert!(g[i] >= g[i - 1]);
         }
         assert_eq!(g[4], U256::from(16u64));
+    }
+
+    fn one_bnb() -> U256 {
+        U256::from(1_000_000_000_000_000_000u128)
+    }
+    fn cap20() -> U256 {
+        one_bnb() * U256::from(20u64)
+    }
+    fn cap40() -> U256 {
+        one_bnb() * U256::from(40u64)
+    }
+
+    fn skewed_v2_pair() -> (ArbPool, ArbPool) {
+        let base = 1_000_000_000_000_000_000_000u128;
+        let dear = ArbPool {
+            pair: a(1),
+            quote: wbnb(),
+            reserve_quote: U256::from(base + 200_000_000_000_000_000_000u128),
+            reserve_token: U256::from(base - 150_000_000_000_000_000_000u128),
+        };
+        let cheap = ArbPool {
+            pair: a(2),
+            quote: wbnb(),
+            reserve_quote: U256::from(base),
+            reserve_token: U256::from(base),
+        };
+        (cheap, dear)
+    }
+
+    /// Cụm B6 — search V2↔V2 không vượt trần 20 BNB dù unconstrained tối ưu lớn hơn.
+    #[test]
+    fn search_v2_v2_khong_vuot_tran_20_bnb() {
+        let (cheap, dear) = skewed_v2_pair();
+        let route = ArbRoute { token: a(9), borrow_quote: wbnb(), buy: cheap, sell: dear, bridge: None };
+        let snap = free_snapshot(wbnb(), u128::MAX / 2);
+        let uncapped = search_best_arb(&route, cap40() * U256::from(10u64), &snap, None, 0, 0.0, None);
+        let q = search_best_arb(&route, cap20(), &snap, None, 0, 0.0, None);
+        if let Some(u) = uncapped {
+            assert!(u.borrow <= cap40() * U256::from(10u64));
+        }
+        let q = q.expect("search trong tran 20 van phai ra quote (lai hoac lo)");
+        assert!(q.borrow <= cap20(), "search V2↔V2 borrow={} > tran 20", q.borrow);
+        assert_eq!(q.borrow, clamp_borrow(q.borrow, cap20()));
+    }
+
+    /// Cụm B6 — V2↔V3 MixedRoute.
+    #[test]
+    fn search_v2_v3_khong_vuot_tran_20_bnb() {
+        let base = 1_000_000_000_000_000_000_000u128;
+        let v2 = ArbPool {
+            pair: a(1),
+            quote: wbnb(),
+            reserve_quote: U256::from(base),
+            reserve_token: U256::from(base),
+        };
+        let v3 = ArbV3Pool {
+            pool: a(3),
+            quote: wbnb(),
+            fee: 500,
+            family: V3Family::Pcs,
+            reserve_quote: U256::from(base + 200_000_000_000_000_000_000u128),
+            reserve_token: U256::from(base - 150_000_000_000_000_000_000u128),
+            ok: true,
+        };
+        let venues = [ArbVenue::V2(v2), ArbVenue::V3(v3)];
+        let snap = free_snapshot(wbnb(), u128::MAX / 2);
+        let found = best_arb_for_venues(
+            a(9),
+            &venues,
+            None,
+            U256::ZERO,
+            U256::ZERO,
+            wbnb(),
+            &|_| cap20(),
+            &snap,
+            &|_| 0u128,
+            0.0,
+            None,
+        );
+        assert_eq!(route_kind(venues[0], venues[1]), "v2_v3");
+        if let Some((_, q)) = found {
+            assert!(q.borrow <= cap20(), "V2↔V3 borrow={} > 20 BNB", q.borrow);
+        }
+    }
+
+    /// Cụm B6 — V3↔V3 (BAOCAO51 币安人生 / token 4 cùng kiểu).
+    #[test]
+    fn search_v3_v3_khong_vuot_tran_20_bnb() {
+        let base = 1_000_000_000_000_000_000_000u128;
+        let cheap = ArbV3Pool {
+            pool: a(4),
+            quote: wbnb(),
+            fee: 100,
+            family: V3Family::Uni,
+            reserve_quote: U256::from(base),
+            reserve_token: U256::from(base),
+            ok: true,
+        };
+        let dear = ArbV3Pool {
+            pool: a(5),
+            quote: wbnb(),
+            fee: 500,
+            family: V3Family::Pcs,
+            reserve_quote: U256::from(base + 180_000_000_000_000_000_000u128),
+            reserve_token: U256::from(base - 140_000_000_000_000_000_000u128),
+            ok: true,
+        };
+        let venues = [ArbVenue::V3(cheap), ArbVenue::V3(dear)];
+        let snap = free_snapshot(wbnb(), u128::MAX / 2);
+        let found = best_arb_for_venues(
+            a(9),
+            &venues,
+            None,
+            U256::ZERO,
+            U256::ZERO,
+            wbnb(),
+            &|_| cap20(),
+            &snap,
+            &|_| 0u128,
+            0.0,
+            None,
+        );
+        assert_eq!(route_kind(venues[0], venues[1]), "v3_v3");
+        if let Some((_, q)) = found {
+            assert!(q.borrow <= cap20(), "V3↔V3 borrow={} > 20 BNB", q.borrow);
+        }
+    }
+
+    /// Cụm B6 — mixed quote: trần theo ĐÚNG quote chân vay (USDT ≠ BNB).
+    #[test]
+    fn search_mixed_quote_kep_tran_dung_don_vi() {
+        let base = 1_000_000_000_000_000_000_000u128;
+        let v2_wbnb = ArbPool { pair: a(1), quote: wbnb(), reserve_quote: U256::from(base), reserve_token: U256::from(base) };
+        let v3_usdt = ArbV3Pool {
+            pool: a(6),
+            quote: usdt(),
+            fee: 2500,
+            family: V3Family::Pcs,
+            reserve_quote: U256::from(base * 600 + 80_000_000_000_000_000_000u128 * 600),
+            reserve_token: U256::from(base - 70_000_000_000_000_000_000u128),
+            ok: true,
+        };
+        let venues = [ArbVenue::V2(v2_wbnb), ArbVenue::V3(v3_usdt)];
+        let snap = FlashSnapshot {
+            block: 1,
+            measured_at_unix: 0,
+            states: vec![crate::flash::FlashSourceState {
+                source: FlashSource::InfinityVault,
+                fee_bps: Some(0),
+                available: vec![(wbnb(), U256::from(u128::MAX / 2)), (usdt(), U256::from(u128::MAX / 2))],
+                error: None,
+            }],
+        };
+        let max_for = |q: Address| {
+            if q == wbnb() {
+                cap20()
+            } else {
+                one_bnb() * U256::from(12_000u64)
+            }
+        };
+        let found = best_arb_for_venues(
+            a(9),
+            &venues,
+            Some(a(3)),
+            U256::from(base * 10),
+            U256::from(base * 6000),
+            wbnb(),
+            &max_for,
+            &snap,
+            &|_| 0u128,
+            0.0,
+            None,
+        );
+        if let Some((route, q)) = found {
+            let cap = max_for(route.borrow_quote);
+            assert!(q.borrow <= cap, "mixed quote borrow={} > cap={} quote={:?}", q.borrow, cap, route.borrow_quote);
+        }
+    }
+
+    #[test]
+    fn clamp_borrow_khong_nho_hon_max_va_khong_nhan_x4() {
+        assert_eq!(clamp_borrow(cap40(), cap20()), cap20());
+        assert_eq!(clamp_borrow(cap20(), cap20()), cap20());
+        assert_eq!(clamp_borrow(U256::ZERO, cap20()), U256::ZERO);
+        assert_eq!(clamp_borrow(one_bnb(), cap20()), one_bnb());
+        let g = five_borrow_grid(cap20());
+        for x in g {
+            assert!(x <= cap20(), "grid diem {x} vuot tran");
+        }
+    }
+
+    #[test]
+    fn accept_quote_loai_borrow_40_khi_tran_20() {
+        let p = ArbPool {
+            pair: a(1),
+            quote: wbnb(),
+            reserve_quote: U256::from(1_000_000u64),
+            reserve_token: U256::from(1_000_000u64),
+        };
+        let q = ArbQuote {
+            borrow: cap40(),
+            token_out: U256::from(1u64),
+            quote_sell_out: U256::from(1u64),
+            final_out: U256::from(1u64),
+            flash_source: FlashSource::InfinityVault,
+            flash_fee_bps: 0,
+            flash_fee_wei: U256::ZERO,
+            gas_wei: 0,
+            bribe_wei: 0,
+            gross_wei: 1,
+            profit_before_bribe_wei: 1,
+            net_wei: 1,
+        };
+        assert!(accept_quote(q, cap20()).is_none(), "40 BNB / tran 20 phai loai");
+        let q20 = ArbQuote { borrow: cap20(), ..q };
+        assert!(accept_quote(q20, cap20()).is_some());
+        let _ = p;
     }
 }
