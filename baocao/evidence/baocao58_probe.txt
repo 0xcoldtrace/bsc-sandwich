@@ -1,0 +1,14 @@
+# planB-B8e probe archive — không in URL
+# máy=WSL  git_HEAD=93813c6796a7d76a882a88f25d829f0b8426a38f
+# Cake hash=0x7ba67696c2fcd9c49cf921c5dd52097bedf24ce4c62d0c1a0cf854d9c928cc1d
+# Cake token=0x0e09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82 slot=0x0
+
+RECEIPT_OK host=rpc-bsc.48.club block=0x74c70c0 block_dec=122450112 tx_index=0x52 status=0x1
+STORAGE_FAIL host=bsc.blockrazor.xyz HTTP 403
+STORAGE_FAIL host=rpc-bsc.48.club code=-32000 not supported
+STORAGE_FAIL host=bsc-dataseed1.bnbchain.org code=-32000 missing trie node
+STORAGE_OK host=bsc-mainnet.nodereal.io result_len=66 result_head=0x00000000
+PROBE_VERDICT PASS
+GetBlock: không có trong .env lần này; không dùng (historical FAIL B8b).
+dotenv first-wins bỏ dòng BSC_HTTP_SIM sau (NodeReal). Bin đọc mọi occurrence.
+fork=BlockId::number(victim_receipt_block) post-state apply_victim_raw=no

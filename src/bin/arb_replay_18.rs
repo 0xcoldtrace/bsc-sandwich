@@ -1,6 +1,10 @@
-//! Cụm `planB-B8-simarb-revm-18` — replay đúng 18 dòng `sim.arb simulated`
-//! (BAOCAO53) trên revm, cùng borrow / route_kind / flash source, fork tại
-//! block của victim. Không ký, không gửi.
+//! Cụm `planB-B8e-revm-14-after-gate` — replay đúng 14 dòng `sim.arb simulated`
+//! (BAOCAO57 paper 60' sau cổng B8c) trên revm, cùng borrow / route_kind /
+//! flash `infinity_vault`, fork tại block victim. Không ký, không gửi.
+//!
+//! `--jsonl` mặc định file B8d. Kỳ vọng 14 simulated. Hỗ trợ V2 + V3
+//! (`v2_v3` / `v3_v3`). `lệch_pct` so `size_quote_net_wei` (quoter), không
+//! so paper CPMM. Panic/hàng → MISSING, chạy hết 14.
 //!
 //! Thiếu archive (`eth_getStorageAt` `-32000` / missing trie) → hàng đó
 //! `profit_revm=MISSING`, không đoán lãi.
@@ -8,15 +12,16 @@
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use bsc_sandwich::multivenue::MultiVenueMap;
-use bsc_sandwich::sim_arb::{self, ArbV3Pool, ArbVenue, V3Family};
+use bsc_sandwich::sim_arb::{self, ArbPool, ArbV3Pool, ArbVenue, V3Family};
 use bsc_sandwich::sim_evm;
 use bsc_sandwich::transport;
 use serde_json::Value;
 use std::path::Path;
 use std::str::FromStr;
 
-const DEFAULT_JSONL: &str = "baocao/evidence/baocao53_paper60_simarb.jsonl";
+const DEFAULT_JSONL: &str = "baocao/evidence/baocao57_paper60_simarb.jsonl";
 const DEFAULT_MV: &str = "state/multi_venue.json";
+const CAKE: &str = "0x0e09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82";
 
 fn host_only(url: &str) -> String {
     url::Url::parse(url)
@@ -55,6 +60,51 @@ fn family_of(kind: &str) -> Option<V3Family> {
         "pcs_v3" => Some(V3Family::Pcs),
         "uni_v3" => Some(V3Family::Uni),
         _ => None,
+    }
+}
+
+/// dotenv first-wins bỏ dòng `BSC_HTTP_SIM` sau (NodeReal archive B8b).
+/// Đọc MỌI occurrence, không echo giá trị.
+fn load_all_env_key_urls(path: &Path, key: &str) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((k, v)) = line.split_once('=') else { continue };
+        if k.trim() != key {
+            continue;
+        }
+        let v = v.trim().trim_matches('"').trim_matches('\'');
+        for part in v.split(',') {
+            let u = part.trim();
+            if !u.is_empty() && !out.iter().any(|x: &String| x == u) {
+                out.push(u.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn is_getblock_host(url: &str) -> bool {
+    host_only(url).to_lowercase().contains("getblock")
+}
+
+/// `lệch_pct = (profit_revm - net_quoter) / |net_quoter| * 100` (có dấu).
+fn lech_pct_vs_quoter(quoter: i128, revm: i128) -> f64 {
+    if quoter == 0 {
+        if revm == 0 {
+            0.0
+        } else {
+            999.0
+        }
+    } else {
+        (revm - quoter) as f64 / (quoter.unsigned_abs() as f64) * 100.0
     }
 }
 
@@ -161,6 +211,34 @@ fn lookup_v3(mv: &MultiVenueMap, token: Address, pool: Address, kind: &str) -> O
     }
 }
 
+fn lookup_v2(mv: &MultiVenueMap, token: Address, pair: Address) -> Option<ArbVenue> {
+    let rec = mv.get(token)?;
+    for p in &rec.v2_pools {
+        let Ok(a) = Address::from_str(&p.pair) else { continue };
+        if a != pair {
+            continue;
+        }
+        let Ok(quote) = Address::from_str(&p.quote) else { continue };
+        let reserve_quote = U256::from_str(&p.reserve_quote).ok().unwrap_or(U256::ZERO);
+        let reserve_token = U256::from_str(&p.reserve_token).ok().unwrap_or(U256::ZERO);
+        return Some(ArbVenue::V2(ArbPool {
+            pair,
+            quote,
+            reserve_quote,
+            reserve_token,
+        }));
+    }
+    None
+}
+
+fn lookup_venue(mv: &MultiVenueMap, token: Address, pool: Address, kind: &str) -> Option<ArbVenue> {
+    if kind == "v2" {
+        lookup_v2(mv, token, pool)
+    } else {
+        lookup_v3(mv, token, pool, kind)
+    }
+}
+
 struct Row {
     hash: String,
     token: Address,
@@ -173,6 +251,7 @@ struct Row {
     borrow_quote: Address,
     flash_source: String,
     net_wei: i128,
+    size_quote_net_wei: i128,
     gas_wei: i128,
     bribe_wei: i128,
     flash_fee_wei: U256,
@@ -202,6 +281,8 @@ fn load_simulated(path: &Path) -> Result<Vec<Row>, String> {
             borrow_quote: parse_addr(&gs("borrow_quote")).ok_or_else(|| "borrow_quote".to_string())?,
             flash_source: gs("flash_source"),
             net_wei: parse_i128(&gs("net_wei")).ok_or_else(|| "net_wei".to_string())?,
+            size_quote_net_wei: parse_i128(&gs("size_quote_net_wei"))
+                .ok_or_else(|| "size_quote_net_wei".to_string())?,
             gas_wei: parse_i128(&gs("gas_wei")).unwrap_or(0),
             bribe_wei: parse_i128(&gs("bribe_wei")).unwrap_or(0),
             flash_fee_wei: parse_u256(&gs("flash_fee_wei")).unwrap_or(U256::ZERO),
@@ -237,7 +318,22 @@ async fn main() {
     }
 
     let _ = transport::load_dotenv_defaults(Path::new(".env"));
-    let sim = transport::filter_read_urls(transport::collect_rpc_urls_from_env("BSC_HTTP_SIM"));
+    let mut sim = transport::filter_read_urls(transport::collect_rpc_urls_from_env("BSC_HTTP_SIM"));
+    for u in load_all_env_key_urls(Path::new(".env"), "BSC_HTTP_SIM") {
+        if !sim.contains(&u) {
+            sim.push(u);
+        }
+    }
+    sim.sort_by_key(|u| {
+        let h = host_only(u).to_lowercase();
+        if h.contains("nodereal") {
+            0u8
+        } else if is_getblock_host(u) {
+            9
+        } else {
+            1
+        }
+    });
     let http = transport::filter_read_urls(transport::collect_rpc_urls_from_env("BSC_HTTP"));
     let mut urls = Vec::new();
     for u in sim.iter().chain(http.iter()) {
@@ -283,20 +379,28 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let rows = match load_simulated(Path::new(&jsonl)) {
+    let mut rows = match load_simulated(Path::new(&jsonl)) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("FAIL load jsonl: {e}");
             std::process::exit(1);
         }
     };
-    if rows.len() != 18 {
-        eprintln!("FAIL n_simulated={} (ky vong 18)", rows.len());
+    if rows.is_empty() {
+        eprintln!("FAIL n_simulated=0");
         std::process::exit(1);
     }
-    println!("n_simulated={}", rows.len());
+    let cake = Address::from_str(CAKE).expect("cake");
+    rows.sort_by_key(|r| if r.token == cake { 0u8 } else { 1u8 });
+    let n_unique = rows
+        .iter()
+        .map(|r| r.hash.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    println!("n_simulated={} n_unique_hash={}", rows.len(), n_unique);
+    println!("fork=BlockId::number(victim_receipt_block) post-state apply_victim_raw=no");
     println!(
-        "token\tsymbol\troute\tborrow\tprofit_paper\tprofit_revm\tlech_pct\trevert_yes_no\tblock\thash\tflash\terr"
+        "token\tsymbol\troute\tborrow_BNB\tnet_paper\tnet_quoter\tprofit_revm\tlech_pct_vs_quoter\trevert\tblock\ttx_hash\tflash\terr"
     );
 
     let mut n_ok = 0u32;
@@ -309,13 +413,17 @@ async fn main() {
         let symbol = symbol_of(&mv, row.token);
         let borrow_u = u256_units(row.borrow);
         let paper_u = i128_units(row.net_wei);
+        let quoter_u = i128_units(row.size_quote_net_wei);
+        let miss = |blk: &str, why: String| {
+            println!(
+                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\tMISSING\tMISSING\tMISSING\t{blk}\t{}\t{}\t{why}",
+                row.token, row.route_kind, row.hash, row.flash_source
+            );
+        };
         let hash = match B256::from_str(&row.hash) {
             Ok(h) => h,
             Err(e) => {
-                println!(
-                    "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t\t{}\t{}\thash_parse:{e}",
-                    row.token, row.route_kind, row.hash, row.flash_source
-                );
+                miss("", format!("hash_parse:{e}"));
                 n_missing += 1;
                 continue;
             }
@@ -323,45 +431,30 @@ async fn main() {
         let block = match fetch_block(&providers, hash).await {
             Ok(b) => b,
             Err(err) => {
-                println!(
-                    "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t\t{}\t{}\t{err}",
-                    row.token, row.route_kind, row.hash, row.flash_source
-                );
+                miss("", err);
                 n_missing += 1;
                 continue;
             }
         };
 
-        let Some(buy) = lookup_v3(&mv, row.token, row.pair_buy, &row.buy_kind) else {
-            println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\tno_buy_venue",
-                row.token, row.route_kind, row.hash, row.flash_source
-            );
+        let Some(buy) = lookup_venue(&mv, row.token, row.pair_buy, &row.buy_kind) else {
+            miss(&block.to_string(), "no_buy_venue".into());
             n_missing += 1;
             continue;
         };
-        let Some(sell) = lookup_v3(&mv, row.token, row.pair_sell, &row.sell_kind) else {
-            println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\tno_sell_venue",
-                row.token, row.route_kind, row.hash, row.flash_source
-            );
+        let Some(sell) = lookup_venue(&mv, row.token, row.pair_sell, &row.sell_kind) else {
+            miss(&block.to_string(), "no_sell_venue".into());
             n_missing += 1;
             continue;
         };
         let got_kind = sim_arb::route_kind(buy, sell);
         if got_kind != row.route_kind {
-            println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\troute_mismatch:{got_kind}",
-                row.token, row.route_kind, row.hash, row.flash_source
-            );
+            miss(&block.to_string(), format!("route_mismatch:{got_kind}"));
             n_missing += 1;
             continue;
         }
         if row.flash_source != "infinity_vault" {
-            println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\tflash_mismatch",
-                row.token, row.route_kind, row.hash, row.flash_source
-            );
+            miss(&block.to_string(), "flash_mismatch".into());
             n_missing += 1;
             continue;
         }
@@ -373,7 +466,10 @@ async fn main() {
             if archive_dead.contains(host) {
                 continue;
             }
-            for attempt in 0..5u32 {
+            if host.to_lowercase().contains("getblock") {
+                continue;
+            }
+            for attempt in 0..8u32 {
                 let p2 = p.clone();
                 let token = row.token;
                 let borrow_quote = row.borrow_quote;
@@ -394,10 +490,7 @@ async fn main() {
                 match join.await {
                     Err(_) => {
                         n_missing += 1;
-                        println!(
-                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\tpanic host={host}",
-                            row.token, row.route_kind, row.hash, row.flash_source
-                        );
+                        miss(&block.to_string(), format!("panic host={host}"));
                         done = true;
                         break 'hosts;
                     }
@@ -406,15 +499,15 @@ async fn main() {
                     let borrow_i = i128::try_from(u128::try_from(row.borrow).unwrap_or(0)).unwrap_or(0);
                     let flash_i = i128::try_from(u128::try_from(row.flash_fee_wei).unwrap_or(0)).unwrap_or(0);
                     let net_revm = final_i - borrow_i - flash_i - row.gas_wei - row.bribe_wei;
-                    let lech = sim_arb::profit_lech_pct(row.net_wei, net_revm);
-                    let fail = lech > 20.0;
+                    let lech = lech_pct_vs_quoter(row.size_quote_net_wei, net_revm);
+                    let fail = lech.abs() > 20.0;
                     if fail {
                         n_fail_lech += 1;
                     } else {
                         n_ok += 1;
                     }
                     println!(
-                        "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{:.6}\t{lech:.4}\tno\t{block}\t{}\t{}\t{} host={host}",
+                        "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\t{:.6}\t{lech:.4}\tno\t{block}\t{}\t{}\t{} host={host}",
                         row.token,
                         row.route_kind,
                         i128_units(net_revm),
@@ -431,7 +524,7 @@ async fn main() {
                     if e.is_revert() {
                         n_revert += 1;
                         println!(
-                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tyes\t{block}\t{}\t{}\thost={host} {msg}",
+                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\tMISSING\tMISSING\tyes\t{block}\t{}\t{}\thost={host} {msg}",
                             row.token, row.route_kind, row.hash, row.flash_source
                         );
                         done = true;
@@ -447,16 +540,13 @@ async fn main() {
                             msg
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(
-                            2000 * (attempt as u64 + 1),
+                            5000 * (attempt as u64 + 1),
                         ))
                         .await;
                         continue;
                     } else {
                         n_missing += 1;
-                        println!(
-                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\thost={host} {msg}",
-                            row.token, row.route_kind, row.hash, row.flash_source
-                        );
+                        miss(&block.to_string(), format!("host={host} {msg}"));
                         done = true;
                         break 'hosts;
                     }
@@ -471,18 +561,16 @@ async fn main() {
             } else {
                 format!("RETRY_EXHAUST {last_sim_err}")
             };
-            println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\t{err}",
-                row.token, row.route_kind, row.hash, row.flash_source
-            );
+            miss(&block.to_string(), err);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(8000)).await;
     }
 
     println!(
-        "SUMMARY n=18 n_ok={n_ok} n_fail_lech={n_fail_lech} n_revert={n_revert} n_missing={n_missing} rpc_host={used_host}"
+        "SUMMARY n={} n_unique_hash={n_unique} n_ok={n_ok} n_fail_lech={n_fail_lech} n_revert={n_revert} n_missing={n_missing} rpc_host={used_host}",
+        rows.len()
     );
     println!(
-        "FAIL_rule: lech>20% n={n_fail_lech} revert n={n_revert} (archive/MISSING n={n_missing} khong doan lai)"
+        "FAIL_rule: |lech_vs_quoter|>20% n={n_fail_lech} revert n={n_revert} (archive/MISSING n={n_missing} khong doan lai)"
     );
 }

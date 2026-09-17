@@ -1,15 +1,24 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8d-paper-after-quoter-gate`, 2026-09-18)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8e-revm-14-after-gate`, 2026-09-18)
 
--9. Cụm mới nhất: `planB-B8d-paper-after-quoter-gate` (BAOCAO57, 2026-09-18)
+-9. Cụm mới nhất: `planB-B8e-revm-14-after-gate` (BAOCAO58, 2026-09-18)
+    — replay 14 `sim.arb simulated` B8d (WSL, archive NodeReal) vs revm
+    cùng borrow / route / `infinity_vault`. Fork `BlockId::number(victim
+    receipt block)` post-state, không apply victim raw. 14 unique hash,
+    0 MISSING, 0 revert. 14/14 `profit_revm` < 0, |lệch vs quoter| > 20%
+    (`n_ok=0 n_fail_lech=14`). Cake `v3_v3` borrow 20 BNB: revm −0.179687
+    vs quoter +0.316064, lệch −156.85% → **FAIL số**. Unique v2_v3
+    token-4 / 币安人生 / 我踏马来了 = 3/3 FAIL số. **Không khớp giấy+quoter.
+    Cấm Go B1.** Không contract, không live.
+
+-8. Cụm liền trước: `planB-B8d-paper-after-quoter-gate` (BAOCAO57, 2026-09-18)
     — paper WSL 60' **sau** cổng B8c. `sim.arb` n=82: simulated=14,
     unprofitable=68 (trong đó 2 `size_quote_net_le_0`), sim_error=0,
-    over_cap=0. 14/14 Simulated có `size_quote_net_wei` > 0 (không FAIL
-    thiếu cột quoter). `paper_run.sh` zero `min_profit_*` — **không** gọi
-    số đó là lãi. **Cấm Go B1.** Không contract, không live.
+    over_cap=0. 14/14 Simulated có `size_quote_net_wei` > 0. `paper_run.sh`
+    zero `min_profit_*` — **không** gọi số đó là lãi. **Cấm Go B1.**
 
--8. Cụm liền trước: `planB-B8c-explain-v3-gap` (BAOCAO56, 2026-09-17) — giải
+-7. Cụm liền trước: `planB-B8c-explain-v3-gap` (BAOCAO56, 2026-09-17) — giải
     thích paper+ / revm− trên CASE_CAKE và CASE_LINK. Quoter tuần tự đúng
     cỡ vay khớp revm (âm). Paper dương vì fit 2 điểm USDT→token rồi đảo
     CPMM cho chân bán. Nhãn chính cả 2 case: `QUOTER_KHAC_SWAP`. Cổng:
@@ -17,19 +26,13 @@
     QuoterV2 đúng cỡ vay (`size_quote_allows_simulated`). Không đổi dấu
     `profit_paper`. **Cấm Go B1.** Không “đã sửa xong lãi”.
 
--7. Cụm liền trước: `planB-B8b-replay-archive` (BAOCAO55, 2026-09-17) — chạy
+-6. Cụm liền trước: `planB-B8b-replay-archive` (BAOCAO55, 2026-09-17) — chạy
     lại 18 case B8 trên node archive. `eth_getStorageAt` block `0x74beff9`
     PASS trên NodeReal (2 key), FAIL GetBlock (`-32000` historical state).
     18/18 `profit_revm` có số, 0 revert, 0 MISSING. `n_fail_lech=18`.
     Unique LINK (3 tx, cùng borrow 46.372956) + Cake (1 tx) = 4/4 |lệch|
     > 20% (paper dương, revm âm). **FAIL số**. Không Go B1. Không contract,
     không live.
-
--6. Cụm liền trước: `planB-B8-simarb-revm-18` (BAOCAO54, 2026-09-17) — replay
-    18 `sim.arb simulated` (BAOCAO53) trên revm, cùng borrow / `v3_v3` /
-    `infinity_vault`, fork đúng block victim. 18/18 lấy được block
-    (122417145–122421171). `profit_revm` **MISSING** cả 18 trên 6 host
-    public (không archive). Không đoán lãi. Không contract, không live.
 
 -5. Cụm liền trước: `planB-B7-paper-after-cap` (BAOCAO53, 2026-09-17) — đo lại
     mật độ `sim.arb` SAU kẹp trần B6. Paper WSL 60 phút, `dry_run=true`.
@@ -6065,6 +6068,41 @@ trùng `sim.arb`. `tx.build=0`.
 
 ### Còn nợ
 
-- **Cấm Go B1.** 14 Simulated không phải lãi on-chain; chưa replay revm
-  các hàng này. 18/18 B8b paper+ / revm− vẫn đứng.
+- **Cấm Go B1.** 14 Simulated không phải lãi on-chain. Replay revm: cụm
+  `planB-B8e-revm-14-after-gate` (BAOCAO58) — 14/14 revm âm, |lệch vs
+  quoter| > 20%. 18/18 B8b paper+ / revm− vẫn đứng.
 - Cấm “đã sửa xong lãi”. Quoter net > 0 ≠ profit thật / bundle được chọn.
+
+---
+
+## `planB-B8e-revm-14-after-gate` (BAOCAO58, 2026-09-18)
+
+Replay đúng 14 hàng `sim.arb simulated` B8d (không dùng 18 hàng B8b) trên
+revm, archive NodeReal. Cùng borrow / `route_kind` / flash `infinity_vault`.
+Cổng B8c còn (không sửa cho khớp revm). Không contract, không live.
+
+### Fork
+
+`open_fork` = `AlloyDB` + `BlockId::number(victim receipt block)` =
+post-state block victim. Không apply raw victim.
+
+### Quyết định
+
+- Bin `arb_replay_18`: mặc định jsonl B8d, nhận V2+V3, `lệch_pct` so
+  `size_quote_net_wei` (có dấu). Panic/hàng → MISSING, chạy hết.
+- Probe `eth_getStorageAt` Cake slot 0 tại block victim hàng Cake
+  (122450112) PASS NodeReal. GetBlock không dùng. dotenv first-wins bỏ
+  dòng `BSC_HTTP_SIM` sau → bin đọc mọi occurrence.
+- Ngưỡng: Cake revm ≤ 0 hoặc |lệch| > 20% → FAIL số. Unique v2_v3
+  token-4 / 币安人生 / 我踏马来了 ≥ 1/3 FAIL → FAIL số. ≥1 MISSING → không Go.
+  Khớp ±20% và revm > 0 trên Cake + ≥ nửa unique v2_v3 → “khớp giấy+quoter”,
+  vẫn No-Go B1.
+
+### Số (máy WSL)
+
+- 14 unique hash, 0 MISSING, 0 revert. `n_ok=0` `n_fail_lech=14`.
+- Mọi hàng: paper/quoter > 0, revm < 0, |lệch vs quoter| > 20%.
+- Cake `v3_v3` borrow 20 BNB: net_quoter +0.316064, profit_revm −0.179687,
+  lệch −156.85% → **FAIL số**.
+- Unique v2_v3 3/3 FAIL số (token-4 9 hash, 币安人生 3 hash, 我踏马来了 1 hash).
+- Không khớp giấy+quoter. **Cấm Go B1.** Cấm gọi 14 hàng là lãi.
