@@ -20,7 +20,7 @@ không live. Giữa phiên: “task 60 phút paper dừng lấy dữ liệu rồ
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: điền hash ở dòng `Commit:` cuối file (luật #1).
+Commit nội dung: `5354b8430cfad085b2a12be9e2ae3f9d1ce95898`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -232,4 +232,5 @@ deploy — `config.toml` VPS cần `multivenue_*` (4) + `pairs_arb_path` +
 
 ---
 
-Commit: *(điền sau `git commit`)*
+Commit: `5354b8430cfad085b2a12be9e2ae3f9d1ce95898` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này, không đổi code.
