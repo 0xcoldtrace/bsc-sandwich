@@ -187,6 +187,9 @@ impl MultiVenueMap {
             out.push(ArbVenue::V2(ArbPool { pair, quote, reserve_quote, reserve_token }));
         }
         for p in &rec.v3_pools {
+            if !p.ok {
+                continue;
+            }
             let pool = match Address::from_str(&p.pool) {
                 Ok(a) => a,
                 Err(_) => continue,
@@ -206,6 +209,9 @@ impl MultiVenueMap {
             }));
         }
         for p in &rec.uni_v3_pools {
+            if !p.ok {
+                continue;
+            }
             let pool = match Address::from_str(&p.pool) {
                 Ok(a) => a,
                 Err(_) => continue,
@@ -310,5 +316,49 @@ mod tests {
         let v = m.arb_mixed_venues(Address::from_str(tok).unwrap()).unwrap();
         assert_eq!(v.len(), 2);
         assert!(m.arb_v2_pools(Address::from_str(tok).unwrap()).is_none());
+    }
+
+    /// CASE_CAKE: pool bán 1% `ok=false` (impact 32.7 %) không vào search.
+    /// Token `0x0e09FaBB…cE82`, pool mua `0x7f51c8aa…` fee 2500 ok, pool bán
+    /// `0x55fe5567…` fee 10000 không ok. Hash
+    /// `0xefabc7bfd29e81ed7897df19d18defaa89840f780a7307f5aec021c8d50ff779`.
+    #[test]
+    fn case_cake_bo_pool_v3_ok_false() {
+        let tok = "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82";
+        let buy = "0x7f51c8aaa6b0599abd16674e2b17fec7a9f674a1";
+        let sell_thin = "0x55fe55677e8398ef5c92f01b780403c9a771a1c0";
+        let v2 = "0x0ed7e52944161450477ee417de9cd3a859b14fd0";
+        let s = format!(
+            r#"{{"generated_at_unix":1,"block":2,"infinity_from_block":0,"infinity_to_block":0,"min_reserve_wbnb_wei":"0","min_reserve_usdt_wei":"0","tokens":[{{"token":"{tok}","symbol":"Cake","arb_ready":true,"v2_ok":true,"v3_ok":true,"both_ok":true,"v2_pools":[{{"pair":"{v2}","quote":"{WBNB_ADDRESS}","quote_name":"WBNB","reserve_quote":"100000000000000000000","reserve_token":"1","meets_min":true,"ok":true}}],"v3_pools":[{{"pool":"{buy}","quote":"{USDT_ADDRESS}","quote_name":"USDT","fee":2500,"impact_pct":0.006642,"ok":true}},{{"pool":"{sell_thin}","quote":"{USDT_ADDRESS}","quote_name":"USDT","fee":10000,"impact_pct":32.735278,"ok":false}}],"uni_v3_pools":[],"infinity_pools":[]}}]}}"#
+        );
+        let m = MultiVenueMap::from_json_str(&s).unwrap();
+        let v = m.arb_mixed_venues(Address::from_str(tok).unwrap()).unwrap();
+        let ids: Vec<String> = v.iter().map(|x| format!("{:#x}", x.id())).collect();
+        assert!(ids.iter().any(|x| x == buy), "pool 0.25% ok=true phai con");
+        assert!(
+            !ids.iter().any(|x| x == sell_thin),
+            "pool 1% ok=false CASE_CAKE khong duoc search"
+        );
+    }
+
+    /// CASE_LINK: pool mua Uni fee 3000 `ok=false` (impact 52 %) không vào search.
+    /// Hash `0x0f9be5357e3c820ae8a9decebc786a7fd2c660008334f977bac347d5c148408a`.
+    #[test]
+    fn case_link_bo_pool_uni_ok_false() {
+        let tok = "0x924fa68a0fc644485b8df8abfa0a41c2e7744444";
+        let buy_thin = "0x75c5fbf77c1cd517544487aca4cc41e1ad95aced";
+        let sell = "0xa1ff9406219ffa6bcc3d89c2719dd91d231d4cee";
+        let v2 = "0x66f289de31eef70d52186729d2637ac978cfc56b";
+        let s = format!(
+            r#"{{"generated_at_unix":1,"block":2,"infinity_from_block":0,"infinity_to_block":0,"min_reserve_wbnb_wei":"0","min_reserve_usdt_wei":"0","tokens":[{{"token":"{tok}","symbol":"X","arb_ready":true,"v2_ok":true,"v3_ok":true,"both_ok":true,"v2_pools":[{{"pair":"{v2}","quote":"{WBNB_ADDRESS}","quote_name":"WBNB","reserve_quote":"100000000000000000000","reserve_token":"1","meets_min":true,"ok":true}}],"v3_pools":[{{"pool":"{sell}","quote":"{USDT_ADDRESS}","quote_name":"USDT","fee":10000,"impact_pct":0.224565,"ok":true}}],"uni_v3_pools":[{{"pool":"{buy_thin}","quote":"{USDT_ADDRESS}","quote_name":"USDT","fee":3000,"impact_pct":52.393932,"ok":false}}],"infinity_pools":[]}}]}}"#
+        );
+        let m = MultiVenueMap::from_json_str(&s).unwrap();
+        let v = m.arb_mixed_venues(Address::from_str(tok).unwrap()).unwrap();
+        let ids: Vec<String> = v.iter().map(|x| format!("{:#x}", x.id())).collect();
+        assert!(ids.iter().any(|x| x == sell));
+        assert!(
+            !ids.iter().any(|x| x == buy_thin),
+            "Uni 0.3% ok=false CASE_LINK khong duoc search"
+        );
     }
 }

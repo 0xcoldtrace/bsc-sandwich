@@ -1,0 +1,63 @@
+# BAOCAO56 C2 — thời điểm fork revm (trích source, không đoán)
+
+## arb_replay_18.rs — truyền block victim (receipt), KHÔNG block-1
+
+```
+// src/bin/arb_replay_18.rs  ~323-392
+let block = match fetch_block(&providers, hash).await { Ok(b) => b, ... };
+// fetch_block = eth_getTransactionReceipt → rcpt.block_number
+// (block chứa victim, không phải parent)
+
+sim_evm::simulate_arb_mixed_hops_evm(
+    p2,
+    block,          // fork_block = block victim
+    token,
+    borrow_quote,
+    sell_quote,
+    borrow,
+    buy,
+    sell,
+)
+```
+
+Net revm (cùng file, ~404-408):
+```
+let net_revm = final_i - borrow_i - flash_i - row.gas_wei - row.bribe_wei;
+```
+`row.gas_wei` / `row.bribe_wei` lấy từ dòng paper. `_gas` revm bị bỏ (`Ok((final_out, _gas))`).
+
+## sim_evm.rs::open_fork — AlloyDB tại BlockId::number(fork_block)
+
+```
+// src/sim_evm.rs 235-249
+async fn open_fork(provider: DynProvider, fork_block: u64) -> Result<(ForkDb, u64), SimEvmError> {
+    let block_header = provider
+        .get_block_by_number(alloy::eips::BlockNumberOrTag::Number(fork_block))
+        .await ...
+    let alloy_db = AlloyDB::<...>::new(provider, BlockId::number(fork_block));
+    ...
+}
+```
+JSON-RPC `eth_getStorageAt(..., block N)` = state SAU khi block N đã execute
+(post-state). Không phải parent (N-1).
+
+## sim_evm.rs::simulate_arb_mixed_hops_evm — KHÔNG apply victim
+
+Comment trên hàm (dòng 1789-1790) viết:
+`Fork block-1, (tuỳ chọn) chạy 1 swap victim V2 trước`
+NHƯNG thân hàm:
+- gọi `open_fork(provider, fork_block)` với fork_block = block victim
+- set ERC20 balance attacker = borrow
+- 2 hop `evm_swap_hop` (SwapRouter exactInputSingle)
+- KHÔNG có tham số victim, KHÔNG transact raw victim
+
+Đo on-chain CASE_CAKE / CASE_LINK: slot0 + liquidity pool V3 arb
+ở parent (N-1) TRÙNG BIT với block victim (N). Victim không đụng 2 pool đó
+(CASE_CAKE tx.to = 0xd9c500dff8… ; CASE_LINK tx.to = V2 Router 0x10ed43…).
+FORK_SAI_THỜI_ĐIỂM không giải thích được paper+ / revm−.
+
+## Paper (main.rs handle_backrun_tx)
+
+- Quoter fit tại `current_block` = last_block (pending, thường N-1 / head)
+- `apply_victim_to_venue` trên venue khớp victim (V2 WBNB), KHÔNG đụng 2 pool V3 USDT của route v3_v3
+- Search `route_out_mixed` = CPMM ảo từ fit USDT→token cả 2 pool, chân bán = đảo CPMM

@@ -1,8 +1,16 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8b-replay-archive`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8c-explain-v3-gap`, 2026-09-17)
 
--7. Cụm mới nhất: `planB-B8b-replay-archive` (BAOCAO55, 2026-09-17) — chạy
+-8. Cụm mới nhất: `planB-B8c-explain-v3-gap` (BAOCAO56, 2026-09-17) — giải
+    thích paper+ / revm− trên CASE_CAKE và CASE_LINK. Quoter tuần tự đúng
+    cỡ vay khớp revm (âm). Paper dương vì fit 2 điểm USDT→token rồi đảo
+    CPMM cho chân bán. Nhãn chính cả 2 case: `QUOTER_KHAC_SWAP`. Cổng:
+    `arb_mixed_venues` bỏ V3 `ok=false`; trước Simulated, hop V3 phải qua
+    QuoterV2 đúng cỡ vay (`size_quote_allows_simulated`). Không đổi dấu
+    `profit_paper`. **Cấm Go B1.** Không “đã sửa xong lãi”.
+
+-7. Cụm liền trước: `planB-B8b-replay-archive` (BAOCAO55, 2026-09-17) — chạy
     lại 18 case B8 trên node archive. `eth_getStorageAt` block `0x74beff9`
     PASS trên NodeReal (2 key), FAIL GetBlock (`-32000` historical state).
     18/18 `profit_revm` có số, 0 revert, 0 MISSING. `n_fail_lech=18`.
@@ -5958,3 +5966,56 @@ failover / panic từng hàng → MISSING (không dừng bảng).
   Cake 1 unique: lệch 1363%. Unique LINK+Cake = 4/4 |lệch| > 20% →
   **FAIL số**. Fit V3 ảo (quoter paper) không khớp hop revm.
 - Không Go B1.
+
+## `planB-B8c-explain-v3-gap` (BAOCAO56, 2026-09-17)
+
+Giải thích lệch paper vs revm trên 2 case bắt buộc (Cake, LINK). Không
+đo lại Go/No-Go. Không viết contract.
+
+### Fork revm (đọc source)
+
+`arb_replay_18` lấy `block` từ `eth_getTransactionReceipt`, gọi
+`simulate_arb_mixed_hops_evm(provider, block, ...)`. `open_fork` dùng
+`AlloyDB` + `BlockId::number(fork_block)` = post-state block victim.
+Không apply raw victim. Comment “Fork block-1” trên hàm **sai so với
+code**. On-chain: slot0/liquidity 2 pool V3 arb parent == victim
+(victim không đụng pool đó).
+
+### Vì sao paper dương / revm âm
+
+`fit_arb_v3_pool` chỉ `quoteExactInputSingle(quote → token)` 2 điểm
+(probe ~710 USDT). `route_out_mixed` chân bán = `get_amount_out_v3`
+đảo CPMM. Tái hiện đúng probe + đảo tại parent:
+
+- CASE_CAKE net paper recon = `12.042311300932993008` == BAOCAO53
+- CASE_LINK net paper recon = `4.902730020359564668` == BAOCAO53
+
+Quoter tuần tự (hop1 quote→token, hop2 token→quote, đúng borrow) tại
+cùng block:
+
+- CASE_CAKE hop2 = 42.973630 USDT (paper 207.111571); gross −152.085269
+  khớp revm implied final 42.973631
+- CASE_LINK hop2 = 44.816490 USDT (paper 51.286046); gross −1.556466
+  khớp revm implied final 44.816490
+
+Hop1 Cake khớp paper/quoter (80.988349). Lệch nằm ở chân bán (pool 1%
+`ok=false`, liq nhỏ hơn pool mua ~8 bậc). Infinity fee 0. Gas/bribe
+~0.01036 — `lãi_swap_revm` đã âm, không phải gas.
+
+Nhãn: **QUOTER_KHAC_SWAP** (cả 2 case).
+
+### Cổng (không sửa công thức cho ra số đẹp)
+
+- `arb_mixed_venues`: bỏ V3/Uni `ok=false` (đúng comment “impact ≤ 2 %”).
+  CASE_CAKE pool bán 1% và CASE_LINK pool mua Uni 0.3% ra khỏi search.
+- Trước `Simulated`, hop V3: `quote_mixed_hops_at` (QuoterV2 đúng cỡ
+  vay) → `size_quote_allows_simulated` (net ≤ 0 → `unprofitable`).
+  Quoter lỗi → `sim_error`. Không đổi dấu `profit_paper`. Không xóa
+  test trần B6.
+
+### Còn nợ
+
+- Cấm Go B1. 18/18 paper+ revm− vẫn là sự thật đã đo (B8b).
+- Cổng chặn route `ok=false` + quoter tuần tự âm; không tuyên bố “lãi
+  giấy đã đúng”. Còn nợ: paper dài sau cổng; V2-only không qua cổng
+  quoter (đã đối chiếu EVM ở cụm cũ).

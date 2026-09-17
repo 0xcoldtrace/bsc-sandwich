@@ -2450,6 +2450,9 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
     let mut quoter_calls = 0u32;
     for v in &mut venues {
         if let bsc_sandwich::sim_arb::ArbVenue::V3(p) = v {
+            if !p.ok {
+                continue;
+            }
             let probe = probe_for(p.quote);
             match bsc_sandwich::sim_v3::fit_arb_v3_pool(provider, decoded.token, p, Some(current_block), probe).await {
                 Ok(n) => quoter_calls = quoter_calls.saturating_add(n),
@@ -2665,6 +2668,81 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
                 let mut counts = app_state.skip_counts.write().await;
                 *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
                 return;
+            }
+            // Cụm B8c — paper CPMM ảo (fit 1 chiều rồi đảo) có thể dương trong
+            // khi QuoterV2 đúng cỡ vay / revm âm. Không đổi dấu profit_paper;
+            // chân V3 phải qua quoter tuần tự trước Simulated.
+            let needs_size_quote = matches!(route.buy, bsc_sandwich::sim_arb::ArbVenue::V3(_))
+                || matches!(route.sell, bsc_sandwich::sim_arb::ArbVenue::V3(_));
+            if needs_size_quote {
+                let provider_guard = app_state.provider.read().await;
+                let seq = if let Some(provider) = provider_guard.as_ref() {
+                    bsc_sandwich::sim_v3::quote_mixed_hops_at(provider, &route, q.borrow, Some(current_block)).await
+                } else {
+                    Err("provider=None".into())
+                };
+                drop(provider_guard);
+                match seq {
+                    Ok((_tok, _sell, final_out)) => {
+                        let seq_net = bsc_sandwich::sim_arb::net_from_final_out(
+                            final_out,
+                            q.borrow,
+                            q.flash_fee_wei,
+                            q.gas_wei,
+                            cfg.bribe_pct_of_profit,
+                            clamp,
+                        );
+                        if seq_net.map(bsc_sandwich::sim_arb::size_quote_allows_simulated) != Some(true) {
+                            let skip = pipeline::PipelineSkip::Unprofitable;
+                            app_state.logger.log(
+                                "sim.arb",
+                                serde_json::json!({
+                                    "hash": meta.hash,
+                                    "from": format!("{:#x}", raw.from),
+                                    "token": format!("{:#x}", decoded.token),
+                                    "quote": meta.quote,
+                                    "pair_buy": format!("{:#x}", route.buy.id()),
+                                    "pair_sell": format!("{:#x}", route.sell.id()),
+                                    "route_kind": bsc_sandwich::sim_arb::route_kind(route.buy, route.sell),
+                                    "borrow": q.borrow.to_string(),
+                                    "net_wei": q.net_wei.to_string(),
+                                    "size_quote_final_out": final_out.to_string(),
+                                    "size_quote_net_wei": seq_net.map(|n| n.to_string()),
+                                    "flash_source": q.flash_source.as_str(),
+                                    "decision": "unprofitable",
+                                    "reason": "size_quote_net_le_0",
+                                    "victim_in_competitor_cluster": in_cluster,
+                                    "seen_to_decision_ms": meta.seen_to_decision_ms,
+                                }),
+                            );
+                            pipeline::log_outcome_v2(
+                                &app_state.logger,
+                                raw.from,
+                                token_hint,
+                                "backrun",
+                                &meta,
+                                &PipelineOutcome::Skip(skip),
+                            );
+                            let mut counts = app_state.skip_counts.write().await;
+                            *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let skip = pipeline::PipelineSkip::SimError;
+                        pipeline::log_outcome_v2(
+                            &app_state.logger,
+                            raw.from,
+                            token_hint,
+                            "backrun",
+                            &meta,
+                            &PipelineOutcome::Skip(skip),
+                        );
+                        let mut counts = app_state.skip_counts.write().await;
+                        *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
+                        return;
+                    }
+                }
             }
             app_state.logger.log(
                 "sim.arb",

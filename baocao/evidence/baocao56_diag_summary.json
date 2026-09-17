@@ -1,0 +1,24 @@
+[
+  {
+    "case": "CASE_CAKE",
+    "block": 122418792,
+    "tx_index": 36,
+    "hop1_parent": "80.988348976735579754",
+    "hop2_parent": "42.973630202155320035",
+    "hop1_victim": "80.988348976735579754",
+    "quoter_gross_parent": -152085269329497459714,
+    "quoter_gross_victim": -152085269329497459714,
+    "paper_style_gross_parent": -152087873772699243434
+  },
+  {
+    "case": "CASE_LINK",
+    "block": 122417145,
+    "tx_index": 64,
+    "hop1_parent": "95.42767659020594806",
+    "hop2_parent": "44.816490241708358155",
+    "hop1_victim": "95.42767659020594806",
+    "quoter_gross_parent": -1556466184498190010,
+    "quoter_gross_victim": -1556466184498190010,
+    "paper_style_gross_parent": 2017347182260972394
+  }
+]

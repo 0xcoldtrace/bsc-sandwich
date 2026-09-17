@@ -151,6 +151,52 @@ pub async fn fit_arb_v3_pool(
     Ok(2)
 }
 
+/// Cụm `planB-B8c-explain-v3-gap` — 2 hop đúng cỡ vay: V3 = QuoterV2
+/// `quoteExactInputSingle` (chiều thật của hop), V2 = công thức đóng.
+/// Không dùng CPMM đảo từ fit 1 chiều. Trả `(token_out, quote_sell_out, final_out)`.
+pub async fn quote_mixed_hops_at(
+    provider: &dyn Provider,
+    route: &crate::sim_arb::MixedRoute,
+    borrow: U256,
+    block: Option<u64>,
+) -> Result<(U256, U256, U256), String> {
+    let token_out = match route.buy {
+        crate::sim_arb::ArbVenue::V2(p) => {
+            crate::sim_v2::get_amount_out(borrow, p.reserve_quote, p.reserve_token)
+                .ok_or_else(|| "v2 buy hop fail".to_string())?
+        }
+        crate::sim_arb::ArbVenue::V3(p) => {
+            let quoter = match p.family {
+                crate::sim_arb::V3Family::Pcs => crate::venues::v3_quoter(),
+                crate::sim_arb::V3Family::Uni => crate::venues::uni_v3_quoter(),
+            };
+            quote_exact_input_single_at(provider, quoter, p.quote, route.token, p.fee, borrow, block).await?
+        }
+    };
+    if token_out.is_zero() {
+        return Err("hop1 ra 0".into());
+    }
+    let quote_sell_out = match route.sell {
+        crate::sim_arb::ArbVenue::V2(p) => {
+            crate::sim_v2::get_amount_out(token_out, p.reserve_token, p.reserve_quote)
+                .ok_or_else(|| "v2 sell hop fail".to_string())?
+        }
+        crate::sim_arb::ArbVenue::V3(p) => {
+            let quoter = match p.family {
+                crate::sim_arb::V3Family::Pcs => crate::venues::v3_quoter(),
+                crate::sim_arb::V3Family::Uni => crate::venues::uni_v3_quoter(),
+            };
+            quote_exact_input_single_at(provider, quoter, route.token, p.quote, p.fee, token_out, block).await?
+        }
+    };
+    let final_out = match route.bridge {
+        None => quote_sell_out,
+        Some(b) => crate::sim_v2::get_amount_out(quote_sell_out, b.reserve_in, b.reserve_out)
+            .ok_or_else(|| "bridge hop fail".to_string())?,
+    };
+    Ok((token_out, quote_sell_out, final_out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

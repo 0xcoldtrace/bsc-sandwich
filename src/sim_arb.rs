@@ -497,6 +497,13 @@ impl ArbVenue {
     pub fn is_fitted(self) -> bool {
         !self.reserve_quote().is_zero() && !self.reserve_token().is_zero()
     }
+    /// V3 `ok=false` (impact list > 2 %) không được search. V2 không có cờ này.
+    pub fn v3_ok_or_v2(self) -> bool {
+        match self {
+            ArbVenue::V2(_) => true,
+            ArbVenue::V3(p) => p.ok,
+        }
+    }
 }
 
 pub fn route_kind(buy: ArbVenue, sell: ArbVenue) -> &'static str {
@@ -737,6 +744,31 @@ pub fn search_best_arb_mixed(
     best.and_then(|q| accept_quote(q, max_borrow))
 }
 
+/// Cụm `planB-B8c-explain-v3-gap` — net từ `final_out` tuần tự (QuoterV2 /
+/// revm hop2), cùng kế toán `quote_at_mixed` và `arb_replay_18`:
+/// `final − borrow − flash − gas − bribe`. Không đổi `profit_paper`.
+pub fn net_from_final_out(
+    final_out: U256,
+    borrow: U256,
+    flash_fee_wei: U256,
+    gas_wei: u128,
+    bribe_pct: f64,
+    bribe_clamp: Option<(u128, u128)>,
+) -> Option<i128> {
+    let final_i = u256_to_i128(final_out)?;
+    let borrow_i = u256_to_i128(borrow)?;
+    let fee_i = u256_to_i128(flash_fee_wei)?;
+    let gross_wei = final_i - borrow_i - fee_i;
+    let profit_before_bribe_wei = gross_wei - gas_wei as i128;
+    let bribe_wei = arb_bribe_wei(profit_before_bribe_wei, bribe_pct, bribe_clamp);
+    Some(profit_before_bribe_wei - bribe_wei as i128)
+}
+
+/// Đường nóng: không `Simulated` khi quoter/revm đúng cỡ vay cho net ≤ 0.
+pub fn size_quote_allows_simulated(sequential_net: i128) -> bool {
+    sequential_net > 0
+}
+
 pub fn arb_sanity_ok_mixed(route: &MixedRoute, q: &ArbQuote) -> bool {
     let r = route.buy.reserve_quote();
     if r.is_zero() {
@@ -809,6 +841,9 @@ pub fn best_arb_for_venues(
             let buy = venues[i];
             let sell = venues[j];
             if !buy.is_fitted() || !sell.is_fitted() {
+                continue;
+            }
+            if !buy.v3_ok_or_v2() || !sell.v3_ok_or_v2() {
                 continue;
             }
             let Some(bridge) = make_bridge(buy, sell, bridge_pair, bridge_reserve_wbnb, bridge_reserve_usdt, wbnb) else {
@@ -1487,5 +1522,51 @@ mod tests {
             tsv_h.push(h.to_string());
         }
         assert_eq!(hashes, tsv_h, "jsonl vs tsv hash phai khop thu tu");
+    }
+
+    /// BAOCAO56 / CASE_CAKE — hash `0xefabc7bfd29e81ed7897df19d18defaa89840f780a7307f5aec021c8d50ff779`
+    /// block 122418792. Paper net +12.042 USDT (không đổi dấu). Quoter tuần tự
+    /// / revm final_out 42.973630202155320035 USDT → net < 0 → không Simulated.
+    #[test]
+    fn case_cake_quoter_tuan_tu_am_khong_simulated() {
+        let borrow = U256::from_str("195058899531652779389").unwrap();
+        let paper_net: i128 = 12_042_311_300_932_993_008i128;
+        let quoter_final = U256::from_str("42973630202155319675").unwrap();
+        let gas: u128 = 360_000_000_000_000;
+        assert!(paper_net > 0, "khong doi dau profit_paper");
+        let seq = net_from_final_out(quoter_final, borrow, U256::ZERO, gas, 0.4, None).unwrap();
+        assert!(seq < 0, "CASE_CAKE size-quote net phai am, got {seq}");
+        assert!(
+            !size_quote_allows_simulated(seq),
+            "duong nong khong Simulated khi revm/quoter net < 0"
+        );
+        assert!(
+            !size_quote_allows_simulated(-152_095_629_329_497_459_714i128),
+            "revm net TSV cung chan Simulated"
+        );
+    }
+
+    /// BAOCAO56 / CASE_LINK — hash `0x0f9be5357e3c820ae8a9decebc786a7fd2c660008334f977bac347d5c148408a`
+    /// block 122417145. Paper net +4.902730. Quoter/revm ~ −1.566826.
+    #[test]
+    fn case_link_quoter_tuan_tu_am_khong_simulated() {
+        let borrow = U256::from_str("46372956426206550302").unwrap();
+        let paper_net: i128 = 4_902_730_020_359_564_668;
+        let quoter_final = U256::from_str("44816490241708360292").unwrap();
+        let gas: u128 = 360_000_000_000_000;
+        assert!(paper_net > 0, "khong doi dau profit_paper");
+        let seq = net_from_final_out(quoter_final, borrow, U256::ZERO, gas, 0.4, None).unwrap();
+        assert!(seq < 0, "CASE_LINK size-quote net phai am, got {seq}");
+        assert!(!size_quote_allows_simulated(seq));
+        assert!(!size_quote_allows_simulated(-1_566_826_000_000_000_000));
+    }
+
+    #[test]
+    fn size_quote_duong_van_cho_simulated() {
+        let borrow = U256::from(100u64);
+        let final_out = U256::from(150u64);
+        let seq = net_from_final_out(final_out, borrow, U256::ZERO, 0, 0.0, None).unwrap();
+        assert!(seq > 0);
+        assert!(size_quote_allows_simulated(seq));
     }
 }

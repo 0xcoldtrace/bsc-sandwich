@@ -1,0 +1,14 @@
+may=WSL repo=/home/dmin/bsc-sandwich
+git HEAD luc test (truoc commit cụm) = 006e3cf4ff244709e6ebca9042d47fd8a2c6e757
+chay: cargo test --lib --offline
+       cargo test --bin bsc_sandwich --offline
+(khong rebuild target/release/bsc_sandwich; so lieu = cargo test + git HEAD)
+
+--- cargo test --lib --offline ---
+test result: ok. 468 passed; 0 failed; 19 ignored; finished in 0.24s
+(463 BAOCAO55 + 5 test B8c: case_cake_quoter_tuan_tu_am_khong_simulated,
+ case_link_quoter_tuan_tu_am_khong_simulated, size_quote_duong_van_cho_simulated,
+ case_cake_bo_pool_v3_ok_false, case_link_bo_pool_uni_ok_false)
+
+--- cargo test --bin bsc_sandwich --offline ---
+test result: ok. 18 passed; 0 failed; 0 ignored; finished in 0.21s

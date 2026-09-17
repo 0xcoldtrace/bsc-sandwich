@@ -372,4 +372,5 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | B7 `planB-B7-paper-after-cap` | 53 | Paper WSL 60' sau trần B6: `sim.arb` 154 dòng, simulated=18, unprofitable=136, over_cap=0, borrow max 0,085 BNB / 195 USDT. Không lỗ mixed V3 vượt trần. Không contract, không live. |
 | B8 `planB-B8-simarb-revm-18` | 54 | Replay 18 simulated vs revm cùng block/victim. 18/18 lấy block; 0/18 `profit_revm` (archive `getStorageAt` `-32000` / missing trie trên mọi `BSC_HTTP_SIM`+`BSC_HTTP`). Không đoán lãi. |
 | B8b `planB-B8b-replay-archive` | 55 | Replay 18 case trên node archive. 18/18 có `profit_revm`, 0 revert, 0 MISSING. Unique LINK+Cake 4/4 \|lệch\| > 20% (paper +, revm −). **FAIL số**. Không Go B1. |
+| B8c `planB-B8c-explain-v3-gap` | 56 | Giải thích paper+ / revm− CASE_CAKE+CASE_LINK. Nhãn `QUOTER_KHAC_SWAP`. Cổng: bỏ V3 `ok=false` + QuoterV2 đúng cỡ vay trước Simulated. Không đổi dấu paper. **Cấm Go B1.** |
 | B4 `venue-infinity-v3` (sim Infinity) | — | chờ Go B5; decoder PoolKey/hooks Infinity. |

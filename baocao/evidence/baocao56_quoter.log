@@ -1,0 +1,44 @@
+# BAOCAO56 — eth_call QuoterV2 đã pin, cùng block fork (máy WSL)
+# RPC host = bsc-mainnet.nodereal.io (PASS eth_getStorageAt Cake slot0 block 0x74beff9)
+# Không in URL / token.
+
+PCS QuoterV2 = 0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997
+Uni QuoterV2 = 0x78D78E420Da98ad378D7799bE8f4AF69033EB077
+selector quoteExactInputSingle((address,address,uint256,uint24,uint160)) = 0xc6a5026a
+
+=== CASE_CAKE hash=0xefabc7bfd29e81ed7897df19d18defaa89840f780a7307f5aec021c8d50ff779 ===
+block_number=122418792 tx_index=36 status=0x1
+tx.to=0xd9c500dff816a1da21a48a732d3498bf09dc9aeb
+token=Cake 0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82 quote=USDT
+pool_buy  0x7f51c8aaa6b0599abd16674e2b17fec7a9f674a1  PCS fee=2500 ok_list=true  liq=8294785690619085249511004
+pool_sell 0x55fe55677e8398ef5c92f01b780403c9a771a1c0  PCS fee=10000 ok_list=false liq=74105773214492950866
+on-chain token0=Cake token1=USDT fee khớp list. slot0 parent==victim (tick 8765 / 8737).
+
+hop1 USDT->Cake fee=2500 amount_in=195.058899531652779389
+  parent block 122418791 amount_out=80.988348976735579754 Cake
+  victim block 122418792 amount_out=80.988348976735579754 Cake
+hop2 Cake->USDT fee=10000 amount_in=80.988348976735579754 Cake
+  parent/victim amount_out=42.973630202155320035 USDT
+quoter_gross = 42.973630202155320035 - 195.058899531652779389 = -152.085269329497459714 USDT
+PAPER_RECON (fit 1 chiều USDT->token + đảo CPMM, probe=710.111880 USDT):
+  hop1=80.988348976735581076  hop2=207.111570832585772397
+  gross=12.052671300932993008  net=12.042311300932993008  == live paper BAOCAO53
+
+=== CASE_LINK hash=0x0f9be5357e3c820ae8a9decebc786a7fd2c660008334f977bac347d5c148408a ===
+block_number=122417145 tx_index=64 status=0x1
+tx.to=0x10ed43c718714eb63d5aa57b78b54704e256024e (PCS V2 Router)
+token=0x924fa68a0fc644485b8df8abfa0a41c2e7744444 (list symbol 币安人生; BAOCAO54 ghi LINK)
+pool_buy  0x75c5fbf77c1cd517544487aca4cc41e1ad95aced  Uni fee=3000 ok_list=false impact=52.39%
+pool_sell 0xa1ff9406219ffa6bcc3d89c2719dd91d231d4cee  PCS fee=10000 ok_list=true
+slot0 parent==victim.
+
+hop1 USDT->token fee=3000 amount_in=46.372956426206550302
+  parent/victim amount_out=95.42767659020594806 token
+hop2 token->USDT fee=10000 amount_in=95.42767659020594806
+  parent/victim amount_out=44.816490241708358155 USDT
+quoter_gross = -1.556466184498190010 USDT
+PAPER_RECON: hop1=109.205556823185435639 hop2=51.286046446566114970
+  gross=4.913090020359564668 net=4.902730020359564668 == live paper
+
+Kết luận đo: Quoter tuần tự (đúng chiều hop, đúng cỡ vay) KHỚP revm (âm).
+Paper dương vì fit 2 điểm USDT->token rồi đảo CPMM cho chân bán.
