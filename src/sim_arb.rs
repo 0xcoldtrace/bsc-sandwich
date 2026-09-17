@@ -115,6 +115,20 @@ pub fn clamp_borrow(size: U256, max_borrow: U256) -> U256 {
     size.min(max_borrow)
 }
 
+/// Cụm `planB-B8-simarb-revm-18` — lệch |revm-paper|/|paper| × 100.
+/// `paper == 0` và `revm != 0` → 999 (không chia 0). Ngưỡng cụm: > 20% = FAIL.
+pub fn profit_lech_pct(paper: i128, revm: i128) -> f64 {
+    if paper == 0 {
+        if revm == 0 {
+            0.0
+        } else {
+            999.0
+        }
+    } else {
+        (revm - paper).unsigned_abs() as f64 / paper.unsigned_abs() as f64 * 100.0
+    }
+}
+
 fn accept_quote(q: ArbQuote, max_borrow: U256) -> Option<ArbQuote> {
     if q.borrow > max_borrow {
         None
@@ -1436,5 +1450,42 @@ mod tests {
         let q20 = ArbQuote { borrow: cap20(), ..q };
         assert!(accept_quote(q20, cap20()).is_some());
         let _ = p;
+    }
+
+    #[test]
+    fn profit_lech_pct_nguong_20() {
+        assert_eq!(profit_lech_pct(0, 0), 0.0);
+        assert_eq!(profit_lech_pct(0, 1), 999.0);
+        assert!((profit_lech_pct(100, 120) - 20.0).abs() < 1e-9);
+        assert!(profit_lech_pct(100, 121) > 20.0);
+        assert!(profit_lech_pct(1_813_484_459_285_827_746, 1_813_484_459_285_827_746) < 0.001);
+    }
+
+    #[test]
+    fn baocao53_18_simulated_hashes_khop_tsv() {
+        let jsonl = std::fs::read_to_string("baocao/evidence/baocao53_paper60_simarb.jsonl")
+            .expect("evidence jsonl");
+        let mut hashes = Vec::new();
+        for line in jsonl.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(line).expect("json");
+            if v.get("decision").and_then(|x| x.as_str()) == Some("simulated") {
+                hashes.push(v.get("hash").and_then(|x| x.as_str()).unwrap().to_string());
+            }
+        }
+        assert_eq!(hashes.len(), 18, "BAOCAO53 simulated phai dung 18");
+        let tsv = std::fs::read_to_string("baocao/evidence/baocao53_paper60_simulated.tsv")
+            .expect("evidence tsv");
+        let mut tsv_h = Vec::new();
+        for (i, line) in tsv.lines().enumerate() {
+            if i == 0 || line.is_empty() {
+                continue;
+            }
+            let h = line.split('\t').last().unwrap();
+            tsv_h.push(h.to_string());
+        }
+        assert_eq!(hashes, tsv_h, "jsonl vs tsv hash phai khop thu tu");
     }
 }

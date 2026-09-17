@@ -1,8 +1,16 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B7-paper-after-cap`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8-simarb-revm-18`, 2026-09-17)
 
--5. Cụm mới nhất: `planB-B7-paper-after-cap` (BAOCAO53, 2026-09-17) — đo lại
+-6. Cụm mới nhất: `planB-B8-simarb-revm-18` (BAOCAO54, 2026-09-17) — replay
+    18 `sim.arb simulated` (BAOCAO53) trên revm, cùng borrow / `v3_v3` /
+    `infinity_vault`, fork đúng block victim. 18/18 lấy được block
+    (122417145–122421171). `profit_revm` **MISSING** cả 18: mọi URL
+    `BSC_HTTP_SIM` + `BSC_HTTP` trả `eth_getStorageAt` `-32000` /
+    `missing trie node` / `-32602 archive token` tại block đó. Không đoán
+    lãi, không lệch%, không revert đo được. Không contract, không live.
+
+-5. Cụm liền trước: `planB-B7-paper-after-cap` (BAOCAO53, 2026-09-17) — đo lại
     mật độ `sim.arb` SAU kẹp trần B6. Paper WSL 60 phút, `dry_run=true`.
     `sim.arb` n=154: simulated=18, unprofitable=136, over_cap=0. Borrow max
     0,085 BNB / 195 USDT (trần 20 / 12000). Không lỗ hổng mixed V3 vượt trần
@@ -5888,5 +5896,33 @@ chưa kẹp trần, `sanity_reject` sandwich (3 cửa reserve) không bắt hế
 
 - Go/No-Go B1: cửa sổ 60 phút, p50 2,21 USDT < 5; fit V3 ảo vẫn nợ B5/B6.
   Không kết luận Go.
-- 15 case revm — RPC archive `getStorageAt` `-32000` (MISSING).
+- 15/18 case revm — thử lại ở cụm B8 (BAOCAO54): vẫn MISSING archive.
 - VPS: unit `arc` không tồn tại; không đụng unit đang chạy; không deploy.
+
+## `planB-B8-simarb-revm-18` (BAOCAO54, 2026-09-17)
+
+Replay đúng 18 dòng `sim.arb simulated` của BAOCAO53 trên revm. Cùng
+borrow, `route_kind=v3_v3`, flash `infinity_vault`. Fork tại block
+của victim (lấy `eth_getTransactionReceipt`, TSV không có field block).
+
+### Quyết định
+
+- Bin `arb_replay_18`: đọc jsonl `decision=simulated`, dựng `ArbVenue::V3`
+  từ `multi_venue.json` (fee + family + quote), gọi
+  `simulate_arb_mixed_hops_evm` đúng `borrow`. Net revm =
+  `final_out − borrow − flash_fee − gas_wei − bribe_wei` (gas/bribe
+  lấy từ dòng paper, để lệch chỉ do hop). Ngưỡng FAIL: lệch > 20%
+  hoặc revert (`profit_lech_pct`).
+- RPC: thử hết `BSC_HTTP_SIM` rồi `BSC_HTTP` (6 host connect được).
+  Không thêm URL ngoài `.env`. Không đoán lãi khi archive thiếu.
+- Không sửa `pairs_arb.txt` / `strategy` / cờ live. Không paper 6h.
+  Không contract, không sendRaw, không đụng unit VPS.
+
+### Số (máy WSL)
+
+- 18/18 hash → block 122417145–122421171 (head lúc chạy ~122428423).
+- 0/18 `profit_revm`. Mọi host: `getStorageAt` tại block victim
+  `-32000 not supported` / `missing trie node` / `-32602 archive
+  personal token`. `n_revert=0` (chưa vào hop). `n_fail_lech=0`
+  (không có số để so).
+- Không kết luận fit V3 ảo đúng/sai. Không Go/No-Go B1.

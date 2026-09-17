@@ -35,6 +35,10 @@ path = "src/bin/arb_measure.rs"
 name = "arb_crosscheck"
 path = "src/bin/arb_crosscheck.rs"
 
+[[bin]]
+name = "arb_replay_18"
+path = "src/bin/arb_replay_18.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time", "sync", "signal", "net"] }
 serde = { version = "1", features = ["derive"] }

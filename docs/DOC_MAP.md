@@ -88,6 +88,7 @@
 | `src/discover_mv.rs` | Quy tắc list thuần (V2+V3 cùng quote, ngưỡng, Uniswap không thay thế) + test. |
 | `src/bin/arb_measure.rs` | Replay `sim_arb` trên mẫu swap lớn (log VPS) × `multi_venue.json`. |
 | `src/bin/arb_crosscheck.rs` | Đối chiếu `sim_arb::route_out` với revm 2–3 hop trên fork. |
+| `src/bin/arb_replay_18.rs` | Cụm B8: replay đúng 18 `sim.arb simulated` (BAOCAO53) trên revm, fork block victim. |
 | `src/multivenue.rs` | Load/tra `multi_venue.json` (token → pool V2/V3/Uniswap V3). |
 | `src/flash.rs` / `src/sim_arb.rs` | Nguồn flash + math backrun-arb (cụm B0); B5 thêm chân V3 (PCS+Uni) `ArbVenue`/`MixedRoute`. |
 

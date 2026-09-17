@@ -370,4 +370,5 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | B5 `planB-B5-simarb-v3-measure` | 51 | sim_arb chân V3 + PairBook `pairs_arb.txt`. **No-Go B1** (live 20.9 phút 3 sim không tin; replay 26.3/ngày <30). Xem BAOCAO51 ô 10. |
 | B6 `planB-B6-cap-borrow-v3` | 52 | Kẹp search `sim_arb` trong trần `arb_max_borrow_*`; `sanity_reject` thêm 2 cửa trần vay. Không Simulated nếu borrow > trần. |
 | B7 `planB-B7-paper-after-cap` | 53 | Paper WSL 60' sau trần B6: `sim.arb` 154 dòng, simulated=18, unprofitable=136, over_cap=0, borrow max 0,085 BNB / 195 USDT. Không lỗ mixed V3 vượt trần. Không contract, không live. |
+| B8 `planB-B8-simarb-revm-18` | 54 | Replay 18 simulated vs revm cùng block/victim. 18/18 lấy block; 0/18 `profit_revm` (archive `getStorageAt` `-32000` / missing trie trên mọi `BSC_HTTP_SIM`+`BSC_HTTP`). Không đoán lãi. |
 | B4 `venue-infinity-v3` (sim Infinity) | — | chờ Go B5; decoder PoolKey/hooks Infinity. |

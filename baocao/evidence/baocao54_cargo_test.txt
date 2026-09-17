@@ -1,0 +1,10 @@
+machine=WSL
+git HEAD=e3ae72777e4b0ed81b0a0a2575350bf54f6df16e
+--- cargo test --lib --offline ---
+test result: ok. 463 passed; 0 failed; 19 ignored; finished in 0.25s
+--- cargo test --bin bsc_sandwich --offline ---
+test result: ok. 18 passed; 0 failed; 0 ignored; finished in 0.21s
+--- arb_replay_18 sha256 ---
+453ba5d742d8b2cb03219cbe8ee2675c17a21031aafeb7c1755cda326b01c3a6  target/release/arb_replay_18
+--- bsc_sandwich sha256 (khong rebuild cu cluster nay) ---
+88d3f7824fded9ba26f6b2d7af46c7ddb95d4149316495ba6d299b2f31ad1496  target/release/bsc_sandwich
