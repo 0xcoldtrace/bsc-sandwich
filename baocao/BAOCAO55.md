@@ -20,7 +20,7 @@ flash. Test `--offline`. Docs + evidence. Commit 2 lần. Push PAT một lần
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: `COMMIT_NOI_DUNG`.
+Commit nội dung: `f2a504439c025919ff65708d90f9fcde988cabd2`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -163,4 +163,4 @@ PAT / URL có token. Không lưu PAT vào `git remote`.
 
 ---
 
-Commit: `COMMIT_NOI_DUNG`
+Commit: `f2a504439c025919ff65708d90f9fcde988cabd2`
