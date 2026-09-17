@@ -21,7 +21,7 @@ Cấm contract / sendRaw / sửa AGENTS chiến lược / `pairs.txt` / `victims
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: *(điền sau `git commit`)*
+Commit nội dung: `e4a8b5b5759d43d0e095329b1f85e1d3cce933cc`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -167,4 +167,4 @@ AGENTS.md. Không 15 case revm. Không chạy `discover_multivenue` /
 
 ---
 
-Commit: *(điền sau git commit)*
+Commit: `e4a8b5b5759d43d0e095329b1f85e1d3cce933cc`
