@@ -20,7 +20,7 @@ net < 0. Test `--offline`. Docs + evidence. Commit. Push PAT một lần
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: *(điền sau `git commit`; xem dòng cuối)*.
+Commit nội dung: `b2e04691ff359dfa363ea636541314d6a26993bd`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -267,4 +267,4 @@ commit `.env` / PAT / URL có token. Không đổi dấu `profit_paper`.
 
 ---
 
-Commit: *(điền sau git commit)*
+Commit: `b2e04691ff359dfa363ea636541314d6a26993bd`
