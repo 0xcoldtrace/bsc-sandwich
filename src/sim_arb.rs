@@ -31,11 +31,10 @@
 //! `borrow`. Ternary search trên miền số nguyên hội tụ về vùng tối ưu — cùng
 //! lập luận đã dùng ở `sim_v2::search_max_front_in`.
 //!
-//! # Điều module này KHÔNG làm
-//!
-//! Không ký, không gửi, không dựng bundle. Không sim V3/Infinity (cụm B0 chốt
-//! phạm vi "chỉ Pancake V2 WBNB+USDT"); token có venue thứ 2 ở V3/Infinity
-//! được GHI NHẬN ở `state/multi_venue.json` để Chủ quyết mở venue sau.
+//! Cụm `planB-B5-simarb-v3-measure` — thêm chân V3 (PCS QuoterV2 + Uniswap
+//! QuoterV2): fit virtual CPMM từ ≤2 quote / pool, search closed-form (0
+//! quote thêm), tổng ≤5 lời gọi quoter mỗi route. Route: V2↔V3, V3 tier A↔
+//! V3 tier B (cùng quote). Infinity vẫn chưa sim.
 
 use alloy::primitives::{Address, U256};
 
@@ -371,6 +370,471 @@ pub fn arb_sanity_ok(route: &ArbRoute, q: &ArbQuote) -> bool {
     true
 }
 
+/// Trần lời gọi quoter mỗi lần search 1 route (lệnh B5). Fit 2 điểm + (tuỳ)
+/// 1 verify, hoặc 5 điểm rời — không vượt.
+pub const QUOTER_SEARCH_BUDGET: u32 = 5;
+
+/// PCS V3 hoặc Uniswap V3 BSC (cùng công thức fee 1e6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V3Family {
+    Pcs,
+    Uni,
+}
+
+impl V3Family {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            V3Family::Pcs => "pcs_v3",
+            V3Family::Uni => "uni_v3",
+        }
+    }
+}
+
+/// Pool V3 đã (hoặc chưa) fit virtual reserve. `reserve_*` = 0 nghĩa chưa fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArbV3Pool {
+    pub pool: Address,
+    pub quote: Address,
+    pub fee: u32,
+    pub family: V3Family,
+    pub reserve_quote: U256,
+    pub reserve_token: U256,
+    pub ok: bool,
+}
+
+/// Một chân arb: V2 pair hoặc V3 pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArbVenue {
+    V2(ArbPool),
+    V3(ArbV3Pool),
+}
+
+impl ArbVenue {
+    pub fn id(self) -> Address {
+        match self {
+            ArbVenue::V2(p) => p.pair,
+            ArbVenue::V3(p) => p.pool,
+        }
+    }
+    pub fn quote(self) -> Address {
+        match self {
+            ArbVenue::V2(p) => p.quote,
+            ArbVenue::V3(p) => p.quote,
+        }
+    }
+    pub fn reserve_quote(self) -> U256 {
+        match self {
+            ArbVenue::V2(p) => p.reserve_quote,
+            ArbVenue::V3(p) => p.reserve_quote,
+        }
+    }
+    pub fn reserve_token(self) -> U256 {
+        match self {
+            ArbVenue::V2(p) => p.reserve_token,
+            ArbVenue::V3(p) => p.reserve_token,
+        }
+    }
+    pub fn kind(self) -> &'static str {
+        match self {
+            ArbVenue::V2(_) => "v2",
+            ArbVenue::V3(p) => p.family.as_str(),
+        }
+    }
+    pub fn fee(self) -> Option<u32> {
+        match self {
+            ArbVenue::V2(_) => None,
+            ArbVenue::V3(p) => Some(p.fee),
+        }
+    }
+    pub fn is_fitted(self) -> bool {
+        !self.reserve_quote().is_zero() && !self.reserve_token().is_zero()
+    }
+}
+
+pub fn route_kind(buy: ArbVenue, sell: ArbVenue) -> &'static str {
+    match (buy, sell) {
+        (ArbVenue::V2(_), ArbVenue::V2(_)) => "v2_v2",
+        (ArbVenue::V2(_), ArbVenue::V3(_)) => "v2_v3",
+        (ArbVenue::V3(_), ArbVenue::V2(_)) => "v3_v2",
+        (ArbVenue::V3(_), ArbVenue::V3(_)) => "v3_v3",
+    }
+}
+
+/// Route hỗn hợp V2/V3. V2-only `ArbRoute` vẫn dùng cho test cũ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixedRoute {
+    pub token: Address,
+    pub borrow_quote: Address,
+    pub buy: ArbVenue,
+    pub sell: ArbVenue,
+    pub bridge: Option<BridgeLeg>,
+}
+
+impl From<ArbRoute> for MixedRoute {
+    fn from(r: ArbRoute) -> Self {
+        Self {
+            token: r.token,
+            borrow_quote: r.borrow_quote,
+            buy: ArbVenue::V2(r.buy),
+            sell: ArbVenue::V2(r.sell),
+            bridge: r.bridge,
+        }
+    }
+}
+
+/// V3 CPMM trong 1 tick range: fee đơn vị 1e6 (100=0.01%, 2500=0.25%).
+/// fee=2500 khớp đúng `get_amount_out` V2 (0.25%).
+pub fn get_amount_out_v3(amount_in: U256, reserve_in: U256, reserve_out: U256, fee: u32) -> Option<U256> {
+    if amount_in.is_zero() || reserve_in.is_zero() || reserve_out.is_zero() {
+        return None;
+    }
+    let fee = fee.min(1_000_000);
+    let n = U256::from(1_000_000u64 - u64::from(fee));
+    let d = U256::from(1_000_000u64);
+    let amount_in_with_fee = amount_in.checked_mul(n)?;
+    let numerator = amount_in_with_fee.checked_mul(reserve_out)?;
+    let denominator = reserve_in.checked_mul(d)?.checked_add(amount_in_with_fee)?;
+    if denominator.is_zero() {
+        return None;
+    }
+    Some(numerator / denominator)
+}
+
+/// Fit virtual (R_in, R_out) từ 2 quote cùng chiều. Trả None khi overflow /
+/// 2 điểm thẳng / không lõm.
+pub fn fit_v3_virtual_reserves(fee: u32, a1: U256, o1: U256, a2: U256, o2: U256) -> Option<(U256, U256)> {
+    if a1.is_zero() || a2.is_zero() || o1.is_zero() || o2.is_zero() || a1 == a2 {
+        return None;
+    }
+    let fee = fee.min(1_000_000);
+    let n = U256::from(1_000_000u64 - u64::from(fee));
+    let d = U256::from(1_000_000u64);
+    let (a_lo, o_lo, a_hi, o_hi) = if a2 > a1 { (a1, o1, a2, o2) } else { (a2, o2, a1, o1) };
+    let o_diff = o_hi.checked_sub(o_lo)?;
+    let left = o_lo.checked_mul(a_hi)?;
+    let right = o_hi.checked_mul(a_lo)?;
+    let denom_core = left.checked_sub(right)?;
+    if denom_core.is_zero() {
+        return None;
+    }
+    let numer = a_lo.checked_mul(a_hi)?.checked_mul(n)?.checked_mul(o_diff)?;
+    let denom = d.checked_mul(denom_core)?;
+    let rin = numer.checked_div(denom)?;
+    if rin.is_zero() {
+        return None;
+    }
+    let rout_num = o_lo
+        .checked_mul(d)?
+        .checked_mul(rin)?
+        .checked_add(o_lo.checked_mul(a_lo)?.checked_mul(n)?)?;
+    let rout_den = a_lo.checked_mul(n)?;
+    let rout = rout_num.checked_div(rout_den)?;
+    if rout.is_zero() {
+        return None;
+    }
+    Some((rin, rout))
+}
+
+pub fn apply_victim_to_v3(pool: ArbV3Pool, victim_amount_in: U256, victim_buys_token: bool) -> Option<ArbV3Pool> {
+    if victim_buys_token {
+        let out = get_amount_out_v3(victim_amount_in, pool.reserve_quote, pool.reserve_token, pool.fee)?;
+        Some(ArbV3Pool {
+            reserve_quote: pool.reserve_quote.checked_add(victim_amount_in)?,
+            reserve_token: pool.reserve_token.checked_sub(out)?,
+            ..pool
+        })
+    } else {
+        let out = get_amount_out_v3(victim_amount_in, pool.reserve_token, pool.reserve_quote, pool.fee)?;
+        Some(ArbV3Pool {
+            reserve_token: pool.reserve_token.checked_add(victim_amount_in)?,
+            reserve_quote: pool.reserve_quote.checked_sub(out)?,
+            ..pool
+        })
+    }
+}
+
+pub fn apply_victim_to_venue(v: ArbVenue, amount_in: U256, buys_token: bool) -> Option<ArbVenue> {
+    match v {
+        ArbVenue::V2(p) => apply_victim_to_pool(p, amount_in, buys_token).map(ArbVenue::V2),
+        ArbVenue::V3(p) => apply_victim_to_v3(p, amount_in, buys_token).map(ArbVenue::V3),
+    }
+}
+
+fn hop_out(venue: ArbVenue, amount_in: U256, token_in_is_quote: bool) -> Option<U256> {
+    match venue {
+        ArbVenue::V2(p) => {
+            if token_in_is_quote {
+                get_amount_out(amount_in, p.reserve_quote, p.reserve_token)
+            } else {
+                get_amount_out(amount_in, p.reserve_token, p.reserve_quote)
+            }
+        }
+        ArbVenue::V3(p) => {
+            if token_in_is_quote {
+                get_amount_out_v3(amount_in, p.reserve_quote, p.reserve_token, p.fee)
+            } else {
+                get_amount_out_v3(amount_in, p.reserve_token, p.reserve_quote, p.fee)
+            }
+        }
+    }
+}
+
+/// Chạy mixed route với virtual reserve đã fit (0 RPC).
+pub fn route_out_mixed(route: &MixedRoute, borrow: U256) -> Option<(U256, U256, U256)> {
+    if !route.buy.is_fitted() || !route.sell.is_fitted() {
+        return None;
+    }
+    let token_out = hop_out(route.buy, borrow, true)?;
+    let quote_sell_out = hop_out(route.sell, token_out, false)?;
+    let final_out = match route.bridge {
+        None => quote_sell_out,
+        Some(b) => get_amount_out(quote_sell_out, b.reserve_in, b.reserve_out)?,
+    };
+    Some((token_out, quote_sell_out, final_out))
+}
+
+fn quote_at_mixed(
+    route: &MixedRoute,
+    borrow: U256,
+    pick: FlashPick,
+    gas_wei: u128,
+    bribe_pct: f64,
+    bribe_clamp: Option<(u128, u128)>,
+) -> Option<ArbQuote> {
+    let (token_out, quote_sell_out, final_out) = route_out_mixed(route, borrow)?;
+    let fee_wei = crate::flash::flash_fee_wei(pick.source, borrow, pick.fee_bps)?;
+    let final_i = u256_to_i128(final_out)?;
+    let borrow_i = u256_to_i128(borrow)?;
+    let fee_i = u256_to_i128(fee_wei)?;
+    let gross_wei = final_i - borrow_i - fee_i;
+    let profit_before_bribe_wei = gross_wei - gas_wei as i128;
+    let bribe_wei = arb_bribe_wei(profit_before_bribe_wei, bribe_pct, bribe_clamp);
+    let net_wei = profit_before_bribe_wei - bribe_wei as i128;
+    Some(ArbQuote {
+        borrow,
+        token_out,
+        quote_sell_out,
+        final_out,
+        flash_source: pick.source,
+        flash_fee_bps: pick.fee_bps,
+        flash_fee_wei: fee_wei,
+        gas_wei,
+        bribe_wei,
+        gross_wei,
+        profit_before_bribe_wei,
+        net_wei,
+    })
+}
+
+pub fn search_borrow_mixed_for_source(
+    route: &MixedRoute,
+    max_borrow: U256,
+    source: FlashSource,
+    fee_bps: u32,
+    available: U256,
+    gas_wei: u128,
+    bribe_pct: f64,
+    bribe_clamp: Option<(u128, u128)>,
+) -> Option<ArbQuote> {
+    let cap = max_borrow.min(available);
+    if cap.is_zero() {
+        return None;
+    }
+    let mk_pick = |amount: U256| -> Option<FlashPick> {
+        let fee_wei = crate::flash::flash_fee_wei(source, amount, fee_bps)?;
+        Some(FlashPick { source, fee_bps, fee_wei, available })
+    };
+    let net_at = |b: U256| -> i128 {
+        mk_pick(b)
+            .and_then(|p| quote_at_mixed(route, b, p, gas_wei, bribe_pct, bribe_clamp))
+            .map(|q| q.net_wei)
+            .unwrap_or(i128::MIN)
+    };
+
+    let mut lo = U256::ZERO;
+    let mut hi = cap;
+    for _ in 0..256 {
+        if hi <= lo + U256::from(1u64) {
+            break;
+        }
+        let third = (hi - lo) / U256::from(3u64);
+        let mid1 = lo + third;
+        let mid2 = hi - third;
+        if net_at(mid1) < net_at(mid2) {
+            lo = mid1;
+        } else {
+            hi = mid2;
+        }
+    }
+
+    let mut best: Option<ArbQuote> = None;
+    for c in [lo, hi, cap] {
+        if c.is_zero() {
+            continue;
+        }
+        if let Some(q) = mk_pick(c).and_then(|p| quote_at_mixed(route, c, p, gas_wei, bribe_pct, bribe_clamp)) {
+            if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
+                best = Some(q);
+            }
+        }
+    }
+    best
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn search_best_arb_mixed(
+    route: &MixedRoute,
+    max_borrow: U256,
+    snapshot: &FlashSnapshot,
+    v2_flash_depth: Option<U256>,
+    gas_wei: u128,
+    bribe_pct: f64,
+    bribe_clamp: Option<(u128, u128)>,
+) -> Option<ArbQuote> {
+    let mut best: Option<ArbQuote> = None;
+    for source in FlashSource::all() {
+        let (fee_bps, available) = match source {
+            FlashSource::PancakeV2FlashSwap => match v2_flash_depth {
+                Some(d) => (crate::flash::PANCAKE_V2_FLASH_FEE_BPS, d),
+                None => continue,
+            },
+            _ => {
+                let st = match snapshot.state(source) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let fee = match st.fee_bps {
+                    Some(f) => f,
+                    None => continue,
+                };
+                match st.available_for(route.borrow_quote) {
+                    Some(a) if !a.is_zero() => (fee, a),
+                    _ => continue,
+                }
+            }
+        };
+        if let Some(q) =
+            search_borrow_mixed_for_source(route, max_borrow, source, fee_bps, available, gas_wei, bribe_pct, bribe_clamp)
+        {
+            if best.as_ref().map(|b| q.net_wei > b.net_wei).unwrap_or(true) {
+                best = Some(q);
+            }
+        }
+    }
+    best
+}
+
+pub fn arb_sanity_ok_mixed(route: &MixedRoute, q: &ArbQuote) -> bool {
+    let r = route.buy.reserve_quote();
+    if r.is_zero() {
+        return false;
+    }
+    if q.borrow > r / U256::from(2u64) {
+        return false;
+    }
+    if q.token_out > route.buy.reserve_token() / U256::from(2u64) {
+        return false;
+    }
+    if q.net_wei > 0 {
+        let net_u = U256::from(q.net_wei as u128);
+        if net_u > r / U256::from(20u64) {
+            return false;
+        }
+    }
+    true
+}
+
+fn make_bridge(
+    buy: ArbVenue,
+    sell: ArbVenue,
+    bridge_pair: Option<Address>,
+    bridge_reserve_wbnb: U256,
+    bridge_reserve_usdt: U256,
+    wbnb: Address,
+) -> Option<Option<BridgeLeg>> {
+    if buy.quote() == sell.quote() {
+        return Some(None);
+    }
+    let pair = bridge_pair?;
+    if bridge_reserve_wbnb.is_zero() || bridge_reserve_usdt.is_zero() {
+        return None;
+    }
+    let (reserve_in, reserve_out) = if sell.quote() == wbnb {
+        (bridge_reserve_wbnb, bridge_reserve_usdt)
+    } else {
+        (bridge_reserve_usdt, bridge_reserve_wbnb)
+    };
+    Some(Some(BridgeLeg { pair, reserve_in, reserve_out }))
+}
+
+/// Thử mọi cặp venue (V2↔V3, V3↔V3, V2↔V2), cùng quote ưu tiên; khác quote
+/// cần bridge. Victim đã được `apply_victim_to_venue` sẵn trên đúng chân.
+#[allow(clippy::too_many_arguments)]
+pub fn best_arb_for_venues(
+    token: Address,
+    venues: &[ArbVenue],
+    bridge_pair: Option<Address>,
+    bridge_reserve_wbnb: U256,
+    bridge_reserve_usdt: U256,
+    wbnb: Address,
+    max_borrow_for_quote: &dyn Fn(Address) -> U256,
+    snapshot: &FlashSnapshot,
+    gas_wei_for_quote: &dyn Fn(Address) -> u128,
+    bribe_pct: f64,
+    bribe_clamp: Option<(u128, u128)>,
+) -> Option<(MixedRoute, ArbQuote)> {
+    let n = venues.len();
+    if n < 2 {
+        return None;
+    }
+    let mut best: Option<(MixedRoute, ArbQuote)> = None;
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let buy = venues[i];
+            let sell = venues[j];
+            if !buy.is_fitted() || !sell.is_fitted() {
+                continue;
+            }
+            let Some(bridge) = make_bridge(buy, sell, bridge_pair, bridge_reserve_wbnb, bridge_reserve_usdt, wbnb) else {
+                continue;
+            };
+            let route = MixedRoute { token, borrow_quote: buy.quote(), buy, sell, bridge };
+            let max_borrow = max_borrow_for_quote(buy.quote());
+            let gas_wei = gas_wei_for_quote(buy.quote());
+            let v2_depth = match buy {
+                ArbVenue::V2(p) => Some(p.reserve_quote),
+                ArbVenue::V3(_) => None,
+            };
+            if let Some(q) = search_best_arb_mixed(&route, max_borrow, snapshot, v2_depth, gas_wei, bribe_pct, bribe_clamp)
+            {
+                if best.as_ref().map(|(_, b)| q.net_wei > b.net_wei).unwrap_or(true) {
+                    best = Some((route, q));
+                }
+            }
+        }
+    }
+    best
+}
+
+/// 5 mức vay hình học trong `(0, max]` — dùng khi fit thất bại, mỗi mức 1
+/// quote / chân V3 (V2→V3 = 5 lời gọi, đúng trần).
+pub fn five_borrow_grid(max_borrow: U256) -> [U256; 5] {
+    let sixteen = U256::from(16u64);
+    let eight = U256::from(8u64);
+    let four = U256::from(4u64);
+    let two = U256::from(2u64);
+    [
+        (max_borrow / sixteen).max(U256::from(1u64)),
+        (max_borrow / eight).max(U256::from(1u64)),
+        (max_borrow / four).max(U256::from(1u64)),
+        (max_borrow / two).max(U256::from(1u64)),
+        max_borrow.max(U256::from(1u64)),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +1095,128 @@ mod tests {
         for p in [0.0, 10.0, 40.0, 100.0] {
             assert_eq!(arb_bribe_wei(1_000_000, p, None), crate::pipeline::compute_bribe_wei(1_000_000, p, None));
         }
+    }
+
+    #[test]
+    fn v3_fee_2500_khop_v2_get_amount_out() {
+        let rin = U256::from(1_000_000_000_000_000_000_000u128);
+        let rout = U256::from(2_000_000_000_000_000_000_000u128);
+        let ain = U256::from(10_000_000_000_000_000_000u128);
+        let v2 = get_amount_out(ain, rin, rout).unwrap();
+        let v3 = get_amount_out_v3(ain, rin, rout, 2500).unwrap();
+        assert_eq!(v2, v3, "fee V3 2500 phai khop V2 0.25%");
+    }
+
+    #[test]
+    fn fit_v3_khoi_phuc_reserve() {
+        let rin = U256::from(5_000_000_000_000_000_000_000u128);
+        let rout = U256::from(8_000_000_000_000_000_000_000u128);
+        let fee = 500u32;
+        let a1 = U256::from(200_000_000_000_000_000u128); // 0.2
+        let a2 = U256::from(1_000_000_000_000_000_000u128); // 1
+        let o1 = get_amount_out_v3(a1, rin, rout, fee).unwrap();
+        let o2 = get_amount_out_v3(a2, rin, rout, fee).unwrap();
+        let (fr, fo) = fit_v3_virtual_reserves(fee, a1, o1, a2, o2).unwrap();
+        let o1b = get_amount_out_v3(a1, fr, fo, fee).unwrap();
+        let o2b = get_amount_out_v3(a2, fr, fo, fee).unwrap();
+        let d1 = if o1 > o1b { o1 - o1b } else { o1b - o1 };
+        let d2 = if o2 > o2b { o2 - o2b } else { o2b - o2 };
+        assert!(d1 * U256::from(1000u64) < o1, "fit lech o1 > 0.1%");
+        assert!(d2 * U256::from(1000u64) < o2, "fit lech o2 > 0.1%");
+    }
+
+    #[test]
+    fn v2_v3_lech_gia_thi_arb_co_lai() {
+        let base = 1_000_000_000_000_000_000_000u128;
+        let v2 = ArbPool {
+            pair: a(1),
+            quote: wbnb(),
+            reserve_quote: U256::from(base),
+            reserve_token: U256::from(base),
+        };
+        // V3 dat hon: nhieu quote, it token (victim vua mua).
+        let v3 = ArbV3Pool {
+            pool: a(3),
+            quote: wbnb(),
+            fee: 500,
+            family: V3Family::Pcs,
+            reserve_quote: U256::from(base + 80_000_000_000_000_000_000u128),
+            reserve_token: U256::from(base - 70_000_000_000_000_000_000u128),
+            ok: true,
+        };
+        let venues = [ArbVenue::V2(v2), ArbVenue::V3(v3)];
+        let snap = free_snapshot(wbnb(), u128::MAX / 2);
+        let max = U256::from(200_000_000_000_000_000_000u128);
+        let (route, q) = best_arb_for_venues(
+            a(9),
+            &venues,
+            None,
+            U256::ZERO,
+            U256::ZERO,
+            wbnb(),
+            &|_| max,
+            &snap,
+            &|_| 0u128,
+            0.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(route_kind(route.buy, route.sell), "v2_v3");
+        assert!(q.net_wei > 0, "v2 re / v3 dat phai co lai, net={}", q.net_wei);
+        assert_eq!(route.buy.id(), v2.pair);
+        assert_eq!(route.sell.id(), v3.pool);
+    }
+
+    #[test]
+    fn v3_v3_khac_tier_lech_gia() {
+        let base = 1_000_000_000_000_000_000_000u128;
+        let cheap = ArbV3Pool {
+            pool: a(4),
+            quote: wbnb(),
+            fee: 100,
+            family: V3Family::Pcs,
+            reserve_quote: U256::from(base),
+            reserve_token: U256::from(base),
+            ok: true,
+        };
+        let dear = ArbV3Pool {
+            pool: a(5),
+            quote: wbnb(),
+            fee: 500,
+            family: V3Family::Uni,
+            reserve_quote: U256::from(base + 60_000_000_000_000_000_000u128),
+            reserve_token: U256::from(base - 50_000_000_000_000_000_000u128),
+            ok: true,
+        };
+        let venues = [ArbVenue::V3(cheap), ArbVenue::V3(dear)];
+        let snap = free_snapshot(wbnb(), u128::MAX / 2);
+        let max = U256::from(100_000_000_000_000_000_000u128);
+        let (route, q) = best_arb_for_venues(
+            a(9),
+            &venues,
+            None,
+            U256::ZERO,
+            U256::ZERO,
+            wbnb(),
+            &|_| max,
+            &snap,
+            &|_| 0u128,
+            0.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(route_kind(route.buy, route.sell), "v3_v3");
+        assert!(q.net_wei > 0);
+        assert_eq!(route.buy.id(), cheap.pool);
+    }
+
+    #[test]
+    fn five_borrow_grid_5_diem_tang() {
+        let g = five_borrow_grid(U256::from(16u64));
+        assert_eq!(g.len(), 5);
+        for i in 1..5 {
+            assert!(g[i] >= g[i - 1]);
+        }
+        assert_eq!(g[4], U256::from(16u64));
     }
 }

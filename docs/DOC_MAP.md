@@ -35,7 +35,7 @@
 | `.gitignore` / `.gitattributes` | Loại trừ file nhạy cảm/sinh ra lúc chạy; ép line-ending. |
 | `victims.txt` | Mode 1 (wallet-mode) — hiện TẮT (`wallet_scan_enabled=false`), file chỉ còn 1 dòng comment ghi rõ lý do + định dạng cũ, giữ lại vì `config.toml` vẫn trỏ `victims_path` (thiếu file = fail load). |
 | `pairs.txt` | Mode 2 (pair-mode) — nguồn candidate DUY NHẤT đang bật (`config pairs_path`). Token do Chủ tự vet tay, xem README.md mục 4. |
-| `pairs_arb.txt` | List A backrun-arb (BAOCAO50): token `both_ok` đã vet `2026-09-17`. **Không** thay `pairs.txt`. Bot chưa đọc file này cho tới khi đổi `pairs_path` / nối sim_arb. |
+| `pairs_arb.txt` | List A backrun-arb (BAOCAO50 vet, BAOCAO51 nối bot): token `both_ok` đã vet `2026-09-17`. Config `pairs_arb_path`. Khi `strategy="backrun"` PairBook + vet nền đọc file này, không đè `pairs.txt`. |
 
 ### `docs/`
 
@@ -89,7 +89,7 @@
 | `src/bin/arb_measure.rs` | Replay `sim_arb` trên mẫu swap lớn (log VPS) × `multi_venue.json`. |
 | `src/bin/arb_crosscheck.rs` | Đối chiếu `sim_arb::route_out` với revm 2–3 hop trên fork. |
 | `src/multivenue.rs` | Load/tra `multi_venue.json` (token → pool V2/V3/Uniswap V3). |
-| `src/flash.rs` / `src/sim_arb.rs` | Nguồn flash + math backrun-arb (cụm B0). |
+| `src/flash.rs` / `src/sim_arb.rs` | Nguồn flash + math backrun-arb (cụm B0); B5 thêm chân V3 (PCS+Uni) `ArbVenue`/`MixedRoute`. |
 
 ### `web/` (dashboard tĩnh, serve qua `axum`)
 

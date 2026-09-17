@@ -1,0 +1,53 @@
+== may chay: WSL (repo: /home/dmin/bsc-sandwich) ==
+BSC_WS host = bsc-rpc.publicnode.com,wss (KHONG in URL day du)
+  -> khop publicnode, OK
+== cargo build --release ==
+warning: field `log_index` is never read
+   --> src/bin/competitor_recon.rs:193:5
+    |
+190 | struct SwapRow {
+    |        ------- field in this struct
+...
+193 |     log_index: u64,
+    |     ^^^^^^^^^
+    |
+    = note: `SwapRow` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `block`, `tx_index`, `from`, `to`, and `status_ok` are never read
+   --> src/bin/competitor_recon.rs:301:5
+    |
+300 | struct TxDetail {
+    |        -------- fields in this struct
+301 |     block: u64,
+    |     ^^^^^
+302 |     tx_index: u64,
+    |     ^^^^^^^^
+303 |     from: Address,
+    |     ^^^^
+304 |     to: Option<Address>,
+    |     ^^
+...
+307 |     status_ok: bool,
+    |     ^^^^^^^^^
+
+warning: `bsc_sandwich` (bin "competitor_recon") generated 2 warnings
+    Finished `release` profile [optimized] target(s) in 0.28s
+== binary sha256 = 6c4abc694925201d2643cd2bbce66d0a3e7bfdef8c217f00b211444ee4d6af8c ==
+== git HEAD = af62ac99f9963edd2a77badb264f6e8fd2c7c455 ==
+da xoa state/halt.lock (neu co)
+== config TAM (chi nguong ve 0 + web_port + live_mode neu co --live-mode, GIU NGUYEN sim_engine/pair_scan_universal/scan_quote_usdt tu config.toml that), port 8796 ==
+== pairs_arb.txt (list A, strategy=backrun): total=28 vetted=28 ==
+== pairs.txt (grep tho, xem sim.evm/pair.unvetted trong log de co so that): tong=133 vetted=133 chua_vet=0 ==
+== chay bot 60 phut, log -> logs/paper_run_1789620247.log (bot.jsonl tu dong 225300) ==
+PID=3180222
+======== DUNG SOM theo lenh Chu (khong doi het 60 phut) ========
+may: WSL
+binary sha256: 6c4abc694925201d2643cd2bbce66d0a3e7bfdef8c217f00b211444ee4d6af8c
+git HEAD luc chay: af62ac99f9963edd2a77badb264f6e8fd2c7c455
+cua so: 2026-09-17T04:44:07Z .. 2026-09-17T05:05:02Z = 20.92 phut
+uptime_sec API truoc halt=1117
+halt.triggered 2026-09-17T05:04:59Z
+/api/pairs count=28
+/api/skips: xem baocao51_paper60_skips.json
+sim.arb: 11 (simulated=3 unprofitable=8) — baocao51_paper60_simarb.txt

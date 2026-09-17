@@ -236,6 +236,30 @@ So 2 giá trị này với `git log -1 --format=%H` và `sha256sum` chạy trên
 `AGENTS.md` (Dev = WSL, Production = VPS, phải cùng commit). Ghi cả 2 cặp
 giá trị vào BAOCAO khi báo cáo đã deploy.
 
+### 7b. Config VPS — field bắt buộc khi nhận binary mới (CHƯA deploy cụm này)
+
+Binary từ `planB-B4-multivenue-tool` (BAOCAO48) trở đi **fail load** nếu
+`config.toml` trên VPS thiếu 4 field ngưỡng list đa venue. Thêm vào file
+RIÊNG trên VPS **trước** khi copy binary (bài học BAOCAO46):
+
+```toml
+multivenue_min_v2_bnb = 50
+multivenue_min_v2_usdt = 35000
+multivenue_min_v3_impact_pct = 2
+multivenue_probe_bnb = 1
+```
+
+Cụm `planB-B5-simarb-v3-measure` (BAOCAO51) thêm 2 field nữa — VPS phải có
+**trước** khi nhận binary này (thiếu = fail load). **Chưa deploy** phiên này:
+
+```toml
+pairs_arb_path = "pairs_arb.txt"
+gas_units_arb_v3 = 360000
+```
+
+`pairs_arb.txt` (list A both_ok đã vet) phải có trên VPS nếu `strategy="backrun"`
+(PairBook đọc file này). Không đè `pairs.txt`.
+
 ### 8. Logrotate cho `logs/bot.jsonl`
 
 `logs/bot.jsonl` không tự xoay vòng — nếu chạy VPS dài ngày, thêm 1 file

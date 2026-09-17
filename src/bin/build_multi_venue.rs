@@ -71,6 +71,7 @@ async fn main() {
                             reserve_quote: rq.to_string(),
                             reserve_token: rt.to_string(),
                             meets_min: rq >= min,
+                            ok: rq >= min,
                         });
                     }
                     Err(e) => eprintln!("getReserves fail token={token:#x} quote={quote:#x}: {e}"),
@@ -89,20 +90,31 @@ async fn main() {
                             quote: format!("{quote:#x}"),
                             quote_name: quote_name(quote).to_string(),
                             fee,
+                            impact_pct: None,
+                            ok: false,
                         });
                     }
                 }
                 Err(e) => eprintln!("getPool v3 fail token={token:#x}: {e}"),
             }
         }
-        let deep: Vec<_> = v2_pools.iter().filter(|p| p.meets_min).collect();
+        let v2_ok = v2_pools.iter().any(|p| p.meets_min);
+        let deep_n = v2_pools.iter().filter(|p| p.meets_min).count();
         let rec = TokenVenues {
             token: format!("{token:#x}"),
             symbol: symbol.clone(),
-            arb_ready: deep.len() >= 2,
+            arb_ready: deep_n >= 2,
             v2_pools,
             v3_pools,
             infinity_pools: Vec::new(),
+            uni_v3_pools: Vec::new(),
+            vol24h_bnb: None,
+            v2_ok,
+            v3_ok: false,
+            both_ok: false,
+            verified: None,
+            proxy: None,
+            from_pairs: true,
         };
         if (i + 1) % 20 == 0 || i + 1 == tokens.len() {
             println!("  progress {}/{} last={} v2={} arb_ready={}", i + 1, tokens.len(), rec.token, rec.v2_pools.len(), rec.arb_ready);
@@ -179,6 +191,13 @@ async fn main() {
         bridge_reserve_wbnb: br_w,
         bridge_reserve_usdt: br_u,
         tokens: token_recs,
+        source: Some("build_multi_venue".into()),
+        hours: None,
+        scanned_tokens: None,
+        v2_ok_count: None,
+        v3_ok_count: None,
+        both_ok_count: None,
+        volume_method: None,
     };
     let out_path = Path::new(&cfg.multi_venue_path);
     if let Some(parent) = out_path.parent() {

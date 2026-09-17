@@ -55,6 +55,9 @@ pub const V2_FACTORY_ADDRESS: &str = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73
 pub const V2_ROUTER_ADDRESS: &str = "0x10ED43C718714eb63d5aA57B78B54704E256024E";
 pub const V3_FACTORY_ADDRESS: &str = "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865";
 pub const V3_QUOTER_V2_ADDRESS: &str = "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997";
+/// Pancake V3 SwapRouter — pin DEX_REGISTRY (getCode_len=12154), dùng
+/// `exactInputSingle` (có deadline) cho chân V3 của ArbExecutor / revm.
+pub const V3_SWAP_ROUTER_ADDRESS: &str = "0x1b81D678ffb9C0263b24A97847620C99d213eB14";
 /// Infinity pool managers — đã pin `DEX_REGISTRY.md` mục V4 (getCode > 0).
 pub const CL_POOL_MANAGER_ADDRESS: &str = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b";
 pub const BIN_POOL_MANAGER_ADDRESS: &str = "0xC697d2898e0D09264376196696c51D7aBbbAA4a9";
@@ -103,7 +106,7 @@ impl Venue {
 pub static PANCAKE_ROUTERS: LazyLock<[(&str, Venue); 5]> = LazyLock::new(|| {
     [
         (V2_ROUTER_ADDRESS, Venue::V2),
-        ("0x1b81D678ffb9C0263b24A97847620C99d213eB14", Venue::V3), // SwapRouter (v3)
+        (V3_SWAP_ROUTER_ADDRESS, Venue::V3), // SwapRouter (v3)
         ("0x13f4EA83D0bd40E75C8222255bc855a974568Dd4", Venue::SmartRouter), // Smart Router
         ("0x1A0A18AC4BECDDbd6389559687d1A73d8927E416", Venue::UniversalRouter), // UR v3, cu
         ("0xd9C500DfF816a1Da21A48A732d3498Bf09dc9AEB", Venue::UniversalRouter), // UR Infinity
@@ -116,6 +119,32 @@ pub fn venue_for_router(to: Address) -> Option<Venue> {
     PANCAKE_ROUTERS.iter().find_map(|(addr, venue)| {
         (Address::from_str(addr).expect("router da pin phai la address hop le") == to).then_some(*venue)
     })
+}
+
+/// Cụm `planB-B5-simarb-v3-measure` — gate backrun: 5 router Pancake +
+/// Uniswap V3 SwapRouter02 (cùng ABI `exactInputSingle` không deadline).
+/// Sandwich vẫn chỉ 5 Pancake (`venue_for_router`).
+pub fn is_backrun_router(to: Address) -> bool {
+    if venue_for_router(to).is_some() {
+        return true;
+    }
+    Address::from_str(UNI_V3_SWAP_ROUTER02_ADDRESS).map(|a| a == to).unwrap_or(false)
+}
+
+pub fn v3_swap_router() -> Address {
+    Address::from_str(V3_SWAP_ROUTER_ADDRESS).expect("V3_SWAP_ROUTER pin")
+}
+
+pub fn uni_v3_swap_router02() -> Address {
+    Address::from_str(UNI_V3_SWAP_ROUTER02_ADDRESS).expect("UNI_V3_SWAP_ROUTER02 pin")
+}
+
+pub fn v3_quoter() -> Address {
+    Address::from_str(V3_QUOTER_V2_ADDRESS).expect("V3_QUOTER_V2 pin")
+}
+
+pub fn uni_v3_quoter() -> Address {
+    Address::from_str(UNI_V3_QUOTER_V2_ADDRESS).expect("UNI_V3_QUOTER_V2 pin")
 }
 
 pub fn registry_snapshot(scan_v2: bool, scan_v3: bool, scan_v4: bool, live_v2: bool, live_v3: bool, live_v4: bool) -> Vec<VenueInfo> {
@@ -251,6 +280,10 @@ mod tests {
         assert_eq!(UNI_V3_QUOTER_V2_ADDRESS, "0x78D78E420Da98ad378D7799bE8f4AF69033EB077");
         assert_eq!(UNI_V3_SWAP_ROUTER02_ADDRESS, "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2");
         assert_eq!(UNI_V3_FEE_TIERS, [100, 500, 3000, 10000]);
+        assert_eq!(V3_SWAP_ROUTER_ADDRESS, "0x1b81D678ffb9C0263b24A97847620C99d213eB14");
+        let uni = Address::from_str(UNI_V3_SWAP_ROUTER02_ADDRESS).unwrap();
+        assert!(is_backrun_router(uni));
+        assert!(venue_for_router(uni).is_none());
         assert!(UNI_V3_FACTORY_GET_CODE_LEN > 0);
         assert!(UNI_V3_QUOTER_V2_GET_CODE_LEN > 0);
         assert!(UNI_V3_SWAP_ROUTER02_GET_CODE_LEN > 0);

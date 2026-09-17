@@ -80,6 +80,10 @@ pub struct Config {
     /// Cụm pair-mode — đường dẫn `pairs.txt` (`PairBook`), cùng khuôn
     /// `victims_path`. Field bắt buộc (thiếu = fail load).
     pub pairs_path: String,
+    /// Cụm `planB-B5-simarb-v3-measure` — list A backrun-arb (`pairs_arb.txt`,
+    /// token `both_ok` đã vet). Khi `strategy="backrun"` PairBook + vet nền
+    /// đọc file này thay `pairs_path`. Không đè `pairs.txt`. Thiếu = fail load.
+    pub pairs_arb_path: String,
     /// Chu kỳ hot-reload `pairs.txt` (giây) — cùng cơ chế
     /// `PairBook::reload_if_due`/`victims_reload_sec`.
     pub pairs_reload_sec: u64,
@@ -331,6 +335,11 @@ pub struct Config {
     /// Như trên, cho route arb vay bằng Pancake V2 flash swap (`pancakeCall`).
     pub gas_units_arb_v2flash: u64,
 
+    /// Cụm `planB-B5-simarb-v3-measure` — gas UNIT fallback cho route có chân
+    /// V3 (PCS SwapRouter `exactInputSingle` hoặc Uniswap SwapRouter02). Đo
+    /// thật bằng revm ở `arb_crosscheck`; ship 360000 (p50 hops 275k + ~80k).
+    pub gas_units_arb_v3: u64,
+
     /// Cụm `planB-B4-multivenue-tool` — ngưỡng V2 reserve_quote (BNB) để 1
     /// phía V2 được tính vào list đa venue. Ship `50`. CLI `--min-v2-bnb` đè.
     pub multivenue_min_v2_bnb: f64,
@@ -515,6 +524,16 @@ impl Config {
     /// trong production path (cùng quy ước `sim_engine_is_evm`).
     pub fn strategy_is_backrun(&self) -> bool {
         self.strategy == "backrun"
+    }
+
+    /// Cụm `planB-B5-simarb-v3-measure` — PairBook đọc list A khi backrun,
+    /// `pairs.txt` khi sandwich. Điểm đọc DUY NHẤT của 2 path.
+    pub fn active_pairs_path(&self) -> &str {
+        if self.strategy_is_backrun() {
+            &self.pairs_arb_path
+        } else {
+            &self.pairs_path
+        }
     }
 
     /// Trần vay flash (wei) theo quote asset.
@@ -853,6 +872,7 @@ tax_cache_blocks = 30
 allow_tax_inject = true
 executor_deadline_buffer_sec = 120
 pairs_path = "pairs.txt"
+pairs_arb_path = "pairs_arb.txt"
 pairs_reload_sec = 30
 pairs_min_swap_bnb = 0.05
 pair_scan_universal = false
@@ -885,6 +905,7 @@ flash_source_interval_sec = 300
 multi_venue_path = "state/multi_venue.json"
 gas_units_arb_infinity = 420000
 gas_units_arb_v2flash = 380000
+gas_units_arb_v3 = 360000
 allow_competitor_victims = false
 multivenue_min_v2_bnb = 50
 multivenue_min_v2_usdt = 35000
@@ -1494,5 +1515,28 @@ multivenue_probe_bnb = 1
         assert_eq!(cfg.multivenue_min_v2_usdt, 35_000.0);
         assert_eq!(cfg.multivenue_min_v3_impact_pct, 2.0);
         assert_eq!(cfg.multivenue_probe_bnb, 1.0);
+    }
+
+    /// Cụm `planB-B5-simarb-v3-measure` — 2 field mới bắt buộc.
+    #[test]
+    fn missing_pairs_arb_or_gas_units_arb_v3_fail_load() {
+        for needle in ["pairs_arb_path = \"pairs_arb.txt\"\n", "gas_units_arb_v3 = 360000\n"] {
+            let toml_str = base_toml().replace(needle, "");
+            let err = Config::from_str(&toml_str).unwrap_err();
+            match err {
+                ConfigError::Parse(_) => {}
+                other => panic!("expected Parse error khi thieu '{needle}', got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn pairs_arb_and_gas_units_arb_v3_ship_defaults() {
+        let cfg = Config::from_str(&base_toml()).unwrap();
+        assert_eq!(cfg.pairs_arb_path, "pairs_arb.txt");
+        assert_eq!(cfg.gas_units_arb_v3, 360_000);
+        assert_eq!(cfg.active_pairs_path(), "pairs_arb.txt");
+        let sandwich = Config::from_str(&base_toml().replace("strategy = \"backrun\"", "strategy = \"sandwich\"")).unwrap();
+        assert_eq!(sandwich.active_pairs_path(), "pairs.txt");
     }
 }

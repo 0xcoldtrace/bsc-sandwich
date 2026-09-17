@@ -170,9 +170,11 @@ impl TokenProbe {
     pub fn both_ok(&self) -> bool {
         qualifies_v2_v3(&self.v2, &self.v3, &self.uni_v3)
     }
-    /// Vào list: `both_ok` **hoặc** (từ pairs.txt **và** có pool V3 PCS/Uni).
+    /// Vào list arb: CHỈ `both_ok` (V2 đủ ngưỡng VÀ V3 impact ≤ 2 %).
+    /// Nhóm "có V3 nhưng mỏng" là list theo dõi, KHÔNG sim (AGENTS.md điểm 7
+    /// sửa lại ở cụm `planB-B5-simarb-v3-measure`). Bỏ luật nới pairs.txt.
     pub fn keep_in_list(&self) -> bool {
-        self.both_ok() || (self.from_pairs && self.has_any_v3_pool())
+        self.both_ok()
     }
 }
 
@@ -486,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn pairs_txt_with_any_v3_is_kept_even_if_impact_fails() {
+    fn pairs_txt_with_thin_v3_is_not_kept() {
         let p = TokenProbe {
             token: a(9),
             symbol: Some("OLD".into()),
@@ -500,7 +502,7 @@ mod tests {
         };
         assert!(!p.both_ok());
         assert!(p.has_any_v3_pool());
-        assert!(p.keep_in_list());
+        assert!(!p.keep_in_list(), "list arb CHI both_ok, bo luat noi pairs+V3 mong");
     }
 
     #[test]

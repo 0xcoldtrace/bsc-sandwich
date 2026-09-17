@@ -1,15 +1,19 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-listA-vet`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B5-simarb-v3-measure`, 2026-09-17)
 
--2. Cụm mới nhất: `planB-listA-vet` (BAOCAO50, 2026-09-17) — tách 2 list từ
+-3. Cụm mới nhất: `planB-B5-simarb-v3-measure` (BAOCAO51, 2026-09-17) — nối
+    chân V3 (PCS QuoterV2 + Uniswap QuoterV2) vào `sim_arb`, PairBook đọc
+    `pairs_arb.txt` khi `strategy="backrun"`, đo list A both_ok đã vet.
+    List arb = CHỈ both_ok; nhóm V3 mỏng không sim. Không contract, không live.
+
+-2. Cụm liền trước: `planB-listA-vet` (BAOCAO50, 2026-09-17) — tách 2 list từ
     quét 4 h (BAOCAO49): **List A** 34 token `both_ok` (cột 6 TSV, không phải
     cột cuối) → `vet_bsc_token` Windows `--date 2026-09-17` → **PASS 28** ghi
     `pairs_arb.txt` (file MỚI, không đè `pairs.txt`); FAIL 6 toàn proxy
     EIP-1967 Binance-Peg (USDC/AVAX/UNI/DOGE/NEAR/INJ), không `--allow-proxy`.
     **List B** 75 token keep nhưng không `both_ok` (V3 mỏng) — chỉ theo dõi,
-    `baocao/evidence/baocao50_listB_watch.txt`. Chưa nối `pairs_path`, chưa
-    sim_arb, chưa contract.
+    `baocao/evidence/baocao50_listB_watch.txt`.
 
 -1b. Cụm liền trước: `planB-B4-multivenue-tool` (BAOCAO48, 2026-09-16) — TOOL
     `discover_multivenue` + list đa venue MỚI (không dùng `pairs.txt` meme) +
@@ -5776,3 +5780,33 @@ NEAR, INJ. Dynamic tax 0/0/0 cả 34 (kể cả FAIL).
 
 `pairs.txt` / `config.toml` `pairs_path` **không** đổi. Bot chưa đọc
 `pairs_arb.txt`. sim_arb / contract / live không làm ở cụm này.
+
+## `planB-B5-simarb-v3-measure` (BAOCAO51, 2026-09-17)
+
+Nối chân V3 vào `sim_arb`, đo trên đúng mẫu list A (`pairs_arb.txt`).
+
+### Quyết định
+
+- PairBook khi `strategy="backrun"` đọc `pairs_arb_path` (ship `pairs_arb.txt`);
+  sandwich vẫn `pairs_path`. Vet nền dùng cùng PairBook.
+- `multi_venue.json` cung cấp V2 + V3 PCS + Uni V3 (tier, `ok` = impact ≤ 2 %).
+  `arb_mixed_venues`: ≥2 venue (không đòi ≥2 V2).
+- Chân V3: 2 `eth_call` QuoterV2 (PCS hoặc Uni) → `fit_v3_virtual_reserves` →
+  search closed-form 0 quote thêm (≤5 / route). Cache theo (pool, block) vì
+  fit 1 lần / pool / block.
+- Route: V2→V3, V3→V2, V3 tier A→V3 tier B, cùng quote; khác quote cần bridge
+  WBNB/USDT thật.
+- Chi phí: phí tier (trong quoter) + phí flash + gas (`gas_units_arb_v3`) +
+  bribe 40 %.
+- Decoder backrun nhận V3 (bỏ `venue_unpinned`); thêm Uniswap SwapRouter02 vào
+  gate backrun (sandwich vẫn 5 Pancake).
+- List: `keep_in_list = both_ok` only. Bỏ luật nới pairs+V3 mỏng.
+- Config mới bắt buộc: `pairs_arb_path`, `gas_units_arb_v3`.
+- Không contract, không live, không deploy VPS.
+
+### Còn nợ
+
+- Infinity CL/hooks — ngoài phạm vi (chờ B4 sim).
+- Fit V3 dùng snapshot hiện tại khi replay log lịch sử (RPC public ~128
+  block) — ghi rõ khi đo.
+- Go/No-Go: số thật ô 10 BAOCAO51.

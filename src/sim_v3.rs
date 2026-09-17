@@ -34,6 +34,8 @@ use alloy::providers::Provider;
 use alloy::rpc::types::eth::TransactionRequest;
 use std::sync::LazyLock;
 
+use crate::sim_arb::{ArbV3Pool, V3Family};
+
 fn selector(sig: &str) -> [u8; 4] {
     let hash = keccak256(sig.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
@@ -90,10 +92,63 @@ pub async fn quote_exact_input_single(
     fee: u32,
     amount_in: U256,
 ) -> Result<U256, String> {
+    quote_exact_input_single_at(provider, quoter, token_in, token_out, fee, amount_in, None).await
+}
+
+/// Cụm `planB-B5-simarb-v3-measure` — cùng calldata, có thể ghim block
+/// (`eth_call` tại block, cache phía caller theo `(pool, block)`).
+pub async fn quote_exact_input_single_at(
+    provider: &dyn Provider,
+    quoter: Address,
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    amount_in: U256,
+    block: Option<u64>,
+) -> Result<U256, String> {
     let calldata = build_quote_calldata(token_in, token_out, fee, amount_in);
     let tx = TransactionRequest::default().to(quoter).input(calldata.into());
-    let ret = provider.call(tx).await.map_err(|e| format!("eth_call quoteExactInputSingle that bai: {e}"))?;
+    let ret = if let Some(b) = block {
+        provider
+            .call(tx)
+            .block(alloy::eips::BlockId::number(b))
+            .await
+            .map_err(|e| format!("eth_call quoteExactInputSingle block={b} that bai: {e}"))?
+    } else {
+        provider
+            .call(tx)
+            .await
+            .map_err(|e| format!("eth_call quoteExactInputSingle that bai: {e}"))?
+    };
     decode_quote_amount_out(&ret).ok_or_else(|| "quoteExactInputSingle tra ve du lieu qua ngan".to_string())
+}
+
+/// Fit virtual CPMM cho 1 pool V3 bằng 2 `eth_call` QuoterV2 (đúng trần
+/// ≤5 / route khi mỗi pool fit 1 lần rồi search closed-form 0 quote thêm).
+/// `probe` = cỡ quote (wei) — dùng `1 BNB` hoặc tương đương USDT.
+pub async fn fit_arb_v3_pool(
+    provider: &dyn Provider,
+    token: Address,
+    p: &mut ArbV3Pool,
+    block: Option<u64>,
+    probe: U256,
+) -> Result<u32, String> {
+    if !p.reserve_quote.is_zero() && !p.reserve_token.is_zero() {
+        return Ok(0);
+    }
+    let quoter = match p.family {
+        V3Family::Pcs => crate::venues::v3_quoter(),
+        V3Family::Uni => crate::venues::uni_v3_quoter(),
+    };
+    let a1 = (probe / U256::from(5u64)).max(U256::from(10_000_000_000_000_000u64));
+    let a2 = probe.max(a1 + U256::from(1u64));
+    let o1 = quote_exact_input_single_at(provider, quoter, p.quote, token, p.fee, a1, block).await?;
+    let o2 = quote_exact_input_single_at(provider, quoter, p.quote, token, p.fee, a2, block).await?;
+    let (rq, rt) = crate::sim_arb::fit_v3_virtual_reserves(p.fee, a1, o1, a2, o2)
+        .ok_or_else(|| format!("fit v3 fail pool={:#x} fee={}", p.pool, p.fee))?;
+    p.reserve_quote = rq;
+    p.reserve_token = rt;
+    Ok(2)
 }
 
 #[cfg(test)]

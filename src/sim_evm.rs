@@ -30,7 +30,7 @@
 //! đầu. Việc thu hẹp thêm bằng vài điểm quanh ước lượng (`refine_candidates`)
 //! có hỗ trợ nhưng mặc định gọi 1 điểm duy nhất, xem `pipeline.rs`.
 
-use alloy::primitives::{Address, Bytes, TxKind, U256};
+use alloy::primitives::{keccak256, Address, Bytes, TxKind, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::sol;
 use alloy::sol_types::SolCall;
@@ -42,8 +42,11 @@ use revm::state::AccountInfo;
 use revm::{Context, Database, ExecuteCommitEvm, ExecuteEvm, MainBuilder, MainContext};
 use std::str::FromStr;
 
+use crate::sim_arb::{ArbVenue, V3Family};
 use crate::transport::PendingTxRaw;
-use crate::venues::{V2_ROUTER_ADDRESS, WBNB_ADDRESS};
+use crate::venues::{
+    UNI_V3_SWAP_ROUTER02_ADDRESS, V2_ROUTER_ADDRESS, V3_SWAP_ROUTER_ADDRESS, WBNB_ADDRESS,
+};
 
 sol! {
     interface IPancakeV2RouterFeeOnTransfer {
@@ -1659,6 +1662,178 @@ pub async fn simulate_arb_hops_evm(
         sell_out
     } else {
         run_swap(&mut evm, quote_sell, quote_buy, sell_out)?
+    };
+    Ok((final_out, total_gas))
+}
+
+fn word_addr(a: Address) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(a.as_slice());
+    w
+}
+fn word_u256(v: U256) -> [u8; 32] {
+    v.to_be_bytes::<32>()
+}
+fn word_u24(v: u32) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    let b = v.to_be_bytes();
+    w[29..32].copy_from_slice(&b[1..4]);
+    w
+}
+
+fn calldata_pcs_exact_input_single(
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    recipient: Address,
+    amount_in: U256,
+) -> Vec<u8> {
+    let h = keccak256("exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))");
+    let mut out = vec![h[0], h[1], h[2], h[3]];
+    out.extend_from_slice(&word_addr(token_in));
+    out.extend_from_slice(&word_addr(token_out));
+    out.extend_from_slice(&word_u24(fee));
+    out.extend_from_slice(&word_addr(recipient));
+    out.extend_from_slice(&word_u256(U256::from(DEADLINE_MAX)));
+    out.extend_from_slice(&word_u256(amount_in));
+    out.extend_from_slice(&word_u256(U256::ZERO));
+    out.extend_from_slice(&word_u256(U256::ZERO));
+    out
+}
+
+fn calldata_uni_exact_input_single(
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    recipient: Address,
+    amount_in: U256,
+) -> Vec<u8> {
+    let h = keccak256("exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))");
+    let mut out = vec![h[0], h[1], h[2], h[3]];
+    out.extend_from_slice(&word_addr(token_in));
+    out.extend_from_slice(&word_addr(token_out));
+    out.extend_from_slice(&word_u24(fee));
+    out.extend_from_slice(&word_addr(recipient));
+    out.extend_from_slice(&word_u256(amount_in));
+    out.extend_from_slice(&word_u256(U256::ZERO));
+    out.extend_from_slice(&word_u256(U256::ZERO));
+    out
+}
+
+fn v3_router_for(family: V3Family) -> Address {
+    match family {
+        V3Family::Pcs => Address::from_str(V3_SWAP_ROUTER_ADDRESS).expect("pcs v3 router"),
+        V3Family::Uni => Address::from_str(UNI_V3_SWAP_ROUTER02_ADDRESS).expect("uni v3 router"),
+    }
+}
+
+/// Cụm `planB-B5-simarb-v3-measure` — 1 hop V2 (Pancake Router) hoặc V3
+/// (PCS SwapRouter / Uniswap SwapRouter02). Trả `(amount_out, gas)`.
+fn evm_swap_hop(
+    evm: &mut ForkEvm,
+    attacker: Address,
+    token_in: Address,
+    token_out: Address,
+    amount: U256,
+    venue: ArbVenue,
+) -> Result<(U256, u64), SimEvmError> {
+    let (spender, data) = match venue {
+        ArbVenue::V2(_) => {
+            let data = IPancakeV2RouterFeeOnTransfer::swapExactTokensForTokensSupportingFeeOnTransferTokensCall {
+                amountIn: amount,
+                amountOutMin: U256::ZERO,
+                path: vec![token_in, token_out],
+                to: attacker,
+                deadline: U256::from(DEADLINE_MAX),
+            }
+            .abi_encode();
+            (router(), data)
+        }
+        ArbVenue::V3(p) => {
+            let r = v3_router_for(p.family);
+            let data = match p.family {
+                V3Family::Pcs => calldata_pcs_exact_input_single(token_in, token_out, p.fee, attacker, amount),
+                V3Family::Uni => calldata_uni_exact_input_single(token_in, token_out, p.fee, attacker, amount),
+            };
+            (r, data)
+        }
+    };
+    let approve = IERC20Min::approveCall { spender, amount: U256::MAX }.abi_encode();
+    let atx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(token_in))
+        .gas_limit(200_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(approve))
+        .build_fill();
+    let _ = evm.transact_commit(atx).map_err(|e| SimEvmError::Exec(format!("approve: {e:?}")))?;
+    let tx = TxEnv::builder()
+        .caller(attacker)
+        .kind(TxKind::Call(spender))
+        .gas_limit(3_000_000)
+        .gas_price(0)
+        .nonce(0)
+        .chain_id(Some(56))
+        .data(Bytes::from(data))
+        .build_fill();
+    let r = evm.transact_commit(tx).map_err(|e| SimEvmError::Exec(format!("hop {token_in:#x}->{token_out:#x}: {e:?}")))?;
+    if !r.is_success() {
+        return Err(SimEvmError::Revert(format!("hop revert: {r:?}")));
+    }
+    let out = read_balance(evm, token_out, attacker)?;
+    Ok((out, r.tx_gas_used()))
+}
+
+/// Fork `block-1`, (tuỳ chọn) chạy 1 swap victim V2 trước, rồi 2 hop arb
+/// V2/V3. Dùng đối chiếu `route_out_mixed`.
+pub async fn simulate_arb_mixed_hops_evm(
+    provider: DynProvider,
+    fork_block: u64,
+    token: Address,
+    borrow_quote: Address,
+    sell_quote: Address,
+    borrow: U256,
+    buy: ArbVenue,
+    sell: ArbVenue,
+) -> Result<(U256, u64), SimEvmError> {
+    let (mut db, ts) = open_fork(provider, fork_block).await?;
+    db.insert_account_info(attacker_address(), AccountInfo::from_balance(U256::from(FUND_BNB_WEI)));
+    let mut evm = build_evm(db, fork_block, ts);
+    let attacker = attacker_address();
+    let slot = probe_erc20_balance_slot(&mut evm, borrow_quote, attacker)?;
+    // Cap dung `borrow` (khong x4): `read_balance` cuoi hop la final_out,
+    // neu nap 4x thi so du con lai 3x+out lam lech doi chieu sim_arb.
+    set_erc20_balance(&mut evm, borrow_quote, attacker, slot, borrow)?;
+
+    let mut total_gas = 0u64;
+    let (tok, g1) = evm_swap_hop(&mut evm, attacker, borrow_quote, token, borrow, buy)?;
+    total_gas = total_gas.saturating_add(g1);
+    if tok.is_zero() {
+        return Err(SimEvmError::Exec("hop1 ra 0".into()));
+    }
+    let (sell_out, g2) = evm_swap_hop(&mut evm, attacker, token, sell_quote, tok, sell)?;
+    total_gas = total_gas.saturating_add(g2);
+    let final_out = if sell_quote == borrow_quote {
+        sell_out
+    } else {
+        // bridge V2 WBNB/USDT
+        let (bridged, g3) = evm_swap_hop(
+            &mut evm,
+            attacker,
+            sell_quote,
+            borrow_quote,
+            sell_out,
+            ArbVenue::V2(crate::sim_arb::ArbPool {
+                pair: Address::ZERO,
+                quote: borrow_quote,
+                reserve_quote: U256::ZERO,
+                reserve_token: U256::ZERO,
+            }),
+        )?;
+        total_gas = total_gas.saturating_add(g3);
+        bridged
     };
     Ok((final_out, total_gas))
 }

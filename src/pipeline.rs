@@ -1727,7 +1727,7 @@ mod tests {
              max_roundtrip_tax = 0.005\ntax_cache_blocks = 30\n\
              allow_tax_inject = true\n\
              executor_deadline_buffer_sec = 120\n\
-             pairs_path = \"pairs.txt\"\npairs_reload_sec = 30\npairs_min_swap_bnb = 0.05\n\
+             pairs_path = \"pairs.txt\"\npairs_arb_path = \"pairs_arb.txt\"\npairs_reload_sec = 30\npairs_min_swap_bnb = 0.05\n\
              pair_scan_universal = false\n\
              wallet_scan_enabled = true\npair_scan_enabled = true\n\
              scan_quote_usdt = false\nmin_profit_usdt = 3.0\n\
@@ -1740,7 +1740,7 @@ mod tests {
              live_mode = \"off\"\nallow_competitor_victims = false\n\
              strategy = \"backrun\"\narb_max_borrow_bnb = 20.0\narb_max_borrow_usdt = 12000.0\n\
              flash_source_interval_sec = 300\nmulti_venue_path = \"state/multi_venue.json\"\n\
-             gas_units_arb_infinity = 420000\ngas_units_arb_v2flash = 330000\n\
+             gas_units_arb_infinity = 420000\ngas_units_arb_v2flash = 330000\ngas_units_arb_v3 = 360000\n\
              multivenue_min_v2_bnb = 50\nmultivenue_min_v2_usdt = 35000\n\
              multivenue_min_v3_impact_pct = 2\nmultivenue_probe_bnb = 1\n",
         );

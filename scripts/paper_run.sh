@@ -154,6 +154,10 @@ echo "== config TAM (chi nguong ve 0 + web_port + live_mode neu co --live-mode, 
 # co "vetted YYYY-MM-DD" hop le / con lai chua vet) - grep tho, KHONG phai
 # nguon su that (nguon su that la PairBook::reload luc bot chay that, dong
 # nay chi de Chu/Grok nhin nhanh khong can doi bot boot) ----
+PAIRS_ARB_TOTAL=$( { grep -cE '^0x' pairs_arb.txt 2>/dev/null || true; } )
+PAIRS_ARB_TOTAL="${PAIRS_ARB_TOTAL:-0}"
+PAIRS_ARB_VETTED=$( { grep -E '^0x' pairs_arb.txt 2>/dev/null | { grep -cE '\|[[:space:]]*vetted[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}' || true; }; } )
+echo "== pairs_arb.txt (list A, strategy=backrun): total=$PAIRS_ARB_TOTAL vetted=$PAIRS_ARB_VETTED =="
 PAIRS_TOTAL=$( { grep -cE '^0x' pairs.txt 2>/dev/null || true; } )
 PAIRS_TOTAL="${PAIRS_TOTAL:-0}"
 PAIRS_VETTED=$( { grep -E '^0x' pairs.txt 2>/dev/null | { grep -cE '\|[[:space:]]*vetted[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}' || true; }; } )

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::sim_arb::ArbPool;
+use crate::sim_arb::{ArbPool, ArbV3Pool, ArbVenue, V3Family};
 use crate::venues::{USDT_ADDRESS, WBNB_ADDRESS};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -171,6 +171,65 @@ impl MultiVenueMap {
         self.by_token.get(&token)
     }
 
+    /// Cụm `planB-B5-simarb-v3-measure` — V2 (meets_min) + V3/Uni (`ok` =
+    /// impact ≤ 2 %). `None` nếu <2 venue. Không đòi ≥2 V2.
+    pub fn arb_mixed_venues(&self, token: Address) -> Option<Vec<ArbVenue>> {
+        let rec = self.by_token.get(&token)?;
+        let mut out = Vec::new();
+        for p in &rec.v2_pools {
+            if !p.meets_min && !p.ok {
+                continue;
+            }
+            let pair = Address::from_str(&p.pair).ok()?;
+            let quote = Address::from_str(&p.quote).ok()?;
+            let reserve_quote = U256::from_str(&p.reserve_quote).ok().unwrap_or(U256::ZERO);
+            let reserve_token = U256::from_str(&p.reserve_token).ok().unwrap_or(U256::ZERO);
+            out.push(ArbVenue::V2(ArbPool { pair, quote, reserve_quote, reserve_token }));
+        }
+        for p in &rec.v3_pools {
+            let pool = match Address::from_str(&p.pool) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let quote = match Address::from_str(&p.quote) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            out.push(ArbVenue::V3(ArbV3Pool {
+                pool,
+                quote,
+                fee: p.fee,
+                family: V3Family::Pcs,
+                reserve_quote: U256::ZERO,
+                reserve_token: U256::ZERO,
+                ok: p.ok,
+            }));
+        }
+        for p in &rec.uni_v3_pools {
+            let pool = match Address::from_str(&p.pool) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let quote = match Address::from_str(&p.quote) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            out.push(ArbVenue::V3(ArbV3Pool {
+                pool,
+                quote,
+                fee: p.fee,
+                family: V3Family::Uni,
+                reserve_quote: U256::ZERO,
+                reserve_token: U256::ZERO,
+                ok: p.ok,
+            }));
+        }
+        if out.len() < 2 {
+            return None;
+        }
+        Some(out)
+    }
+
     /// Pool V2 đủ sâu (≥2) của token — `None` nếu không arb_ready.
     pub fn arb_v2_pools(&self, token: Address) -> Option<Vec<ArbPool>> {
         let rec = self.by_token.get(&token)?;
@@ -239,5 +298,17 @@ mod tests {
         let m = MultiVenueMap::from_json_str(&s).unwrap();
         let pools = m.arb_v2_pools(Address::from_str(tok).unwrap()).unwrap();
         assert_eq!(pools.len(), 2);
+    }
+
+    #[test]
+    fn mixed_venues_v2_plus_v3_ok() {
+        let tok = "0x00000000000000000000000000000000000000aa";
+        let s = format!(
+            r#"{{"generated_at_unix":1,"block":2,"infinity_from_block":0,"infinity_to_block":0,"min_reserve_wbnb_wei":"0","min_reserve_usdt_wei":"0","tokens":[{{"token":"{tok}","symbol":"X","arb_ready":false,"v2_ok":true,"v3_ok":true,"both_ok":true,"v2_pools":[{{"pair":"0x0000000000000000000000000000000000000001","quote":"{WBNB_ADDRESS}","quote_name":"WBNB","reserve_quote":"100000000000000000000","reserve_token":"1","meets_min":true,"ok":true}}],"v3_pools":[{{"pool":"0x0000000000000000000000000000000000000003","quote":"{WBNB_ADDRESS}","quote_name":"WBNB","fee":2500,"impact_pct":0.1,"ok":true}}],"uni_v3_pools":[],"infinity_pools":[]}}]}}"#
+        );
+        let m = MultiVenueMap::from_json_str(&s).unwrap();
+        let v = m.arb_mixed_venues(Address::from_str(tok).unwrap()).unwrap();
+        assert_eq!(v.len(), 2);
+        assert!(m.arb_v2_pools(Address::from_str(tok).unwrap()).is_none());
     }
 }

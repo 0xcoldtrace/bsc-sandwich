@@ -207,17 +207,17 @@ lãi mô phỏng là kẹp ví burner của cụm bot `0xB406…` — cần chen
    V3) trước, không viết contract.
 6. **Vốn**: ví tay chỉ giữ BNB cho gas + bribe; lãi về ví kho ngay trong tx;
    contract không giữ vốn.
-7. **List đa venue (cụm `planB-B4-multivenue-tool` + BAOCAO49).** List MỚI,
-   không dùng list meme cũ làm nguồn DUY NHẤT. Venue: PCS V2 + PCS V3 +
-   Uniswap V3 BSC. KHÔNG THENA, KHÔNG Biswap. Đường volume: token vào list
-   khi PCS V2 đủ ngưỡng VÀ ≥1 pool V3 **cùng quote** đủ impact — V3 =
-   PCS V3 **hoặc** Uniswap V3 (impact ≤ 2 % khi bán 1 BNB quy đổi). Ngưỡng
-   V2: `reserve_quote` ≥ 50 BNB (≥ 35.000 USDT). **Bổ sung** 129 token
-   `pairs.txt`: nếu có pool V3 (PCS hoặc Uniswap) thì lấy, không cần đợi
-   top-volume. Nguồn volume: top 500 token Swap log PCS V2+V3 (`getLogs`
-   dải 1000 block) — KHÔNG quét cả chain. Tool: `discover_multivenue
-   --hours N --pairs pairs.txt`. Output `state/multi_venue.json` + TSV +
-   `state/multi_venue_candidates.txt` (`vetted` trống).
+7. **List đa venue (sửa `planB-B5-simarb-v3-measure`).** List arb = CHỈ
+   token **both_ok** (V2 đủ ngưỡng VÀ V3 impact ≤ 2 % cùng quote — PCS V3
+   **hoặc** Uniswap V3). File: `pairs_arb.txt` (`config pairs_arb_path`),
+   PairBook + vet nền đọc khi `strategy="backrun"`. Nhóm "có V3 nhưng mỏng"
+   là list theo dõi (`baocao/evidence/baocao50_listB_watch.txt`), **KHÔNG
+   sim, không kết luận**. Bỏ luật nới "pairs.txt có V3 bất kỳ thì giữ".
+   Venue: PCS V2 + PCS V3 + Uniswap V3 BSC. KHÔNG THENA, KHÔNG Biswap.
+   Ngưỡng V2: `reserve_quote` ≥ 50 BNB (≥ 35.000 USDT). Nguồn volume: top
+   500 token Swap log PCS V2+V3 (`getLogs` dải 1000 block). Tool:
+   `discover_multivenue --hours N --pairs pairs.txt`. Output
+   `state/multi_venue.json` + TSV + `state/multi_venue_candidates.txt`.
 
 ### 2026-09-15 — mode 2 (nền, vẫn áp dụng cho phần lọc/vet)
 
@@ -290,7 +290,7 @@ Claude (Điều hành) ĐẠT khi có ô 5. Thợ không viết ĐẠT.
 
 ## Config — thiếu field = fail load
 
-`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted gas_units_front gas_units_back gas_price_max_gwei bribe_pct_of_profit bribe_min_bnb bribe_max_bnb bribe_mode live_mode allow_competitor_victims strategy arb_max_borrow_bnb arb_max_borrow_usdt flash_source_interval_sec multi_venue_path gas_units_arb_infinity gas_units_arb_v2flash multivenue_min_v2_bnb multivenue_min_v2_usdt multivenue_min_v3_impact_pct multivenue_probe_bnb`
+`chain_id dry_run allow_live bot_armed scan_v2 scan_v3 scan_v4 live_v2 live_v3 live_v4 min_profit_bnb max_front_bnb min_reserve_wbnb victims_path victims_reload_sec config_reload_sec pending_poll_ms pending_txpool_max_per_poll gas_reserve_bnb_wei front_max_gas_bnb_wei back_max_gas_bnb_wei tx_timeout_sec ws_silence_sec max_consecutive_loss max_exposure_bnb web_bind web_port max_roundtrip_tax tax_cache_blocks allow_tax_inject executor_deadline_buffer_sec pairs_path pairs_arb_path pairs_reload_sec pairs_min_swap_bnb pair_scan_universal wallet_scan_enabled pair_scan_enabled scan_quote_usdt min_profit_usdt max_front_usdt min_reserve_usdt sim_engine tax_cache_ttl_sec front_slippage_bps back_slippage_bps pairs_vet_interval_sec pairs_require_vetted gas_units_front gas_units_back gas_price_max_gwei bribe_pct_of_profit bribe_min_bnb bribe_max_bnb bribe_mode live_mode allow_competitor_victims strategy arb_max_borrow_bnb arb_max_borrow_usdt flash_source_interval_sec multi_venue_path gas_units_arb_infinity gas_units_arb_v2flash gas_units_arb_v3 multivenue_min_v2_bnb multivenue_min_v2_usdt multivenue_min_v3_impact_pct multivenue_probe_bnb`
 
 Danh sách trên là nguồn sự thật THỨ HAI; nguồn thứ nhất là `src/config.rs` — thêm field ở code thì thêm vào đây và vào `config.toml` cả WSL lẫn VPS cùng lúc. Cụm `planB-backrun-opportunity` (BAOCAO46) thêm 7 field; cụm `planB-B4-multivenue-tool` (BAOCAO48) thêm 4 field ngưỡng list đa venue (`multivenue_min_v2_bnb`/`multivenue_min_v2_usdt`/`multivenue_min_v3_impact_pct`/`multivenue_probe_bnb`). `gas_units_arb_*` hiện là ước lượng thô, CHƯA đo revm (nợ B0). VPS phải cập nhật 4 field mới **trước** khi deploy binary BAOCAO48 (thiếu = fail load).
 

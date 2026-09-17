@@ -63,6 +63,9 @@ executor_deadline_buffer_sec = 120
 # pairs.txt, khác victims.txt (theo dõi ĐỊA CHỈ VÍ). min_swap là NGƯỠNG
 # GLOBAL áp dụng cho MỌI pool trong pairs.txt (không có min riêng từng pool).
 pairs_path = "pairs.txt"
+# Cụm `planB-B5-simarb-v3-measure`: list A (both_ok đã vet). Khi
+# strategy="backrun" PairBook + vet nền đọc file này, không đè pairs.txt.
+pairs_arb_path = "pairs_arb.txt"
 pairs_reload_sec = 30
 pairs_min_swap_bnb = 0.05
 
@@ -218,6 +221,10 @@ multi_venue_path = "state/multi_venue.json"
 # overhead -> 380000. Chua phai toan bo lock path trong 1 tx revm.
 gas_units_arb_infinity = 420000
 gas_units_arb_v2flash = 380000
+# Gas UNIT fallback route có chân V3 (PCS SwapRouter / Uniswap SwapRouter02).
+# Đo revm hops p50=275105 (7 case CAT/BUSD/Cheems/XVS, WSL) + ~80k lock/overhead
+# -> 360000. Trần cũ 450000.
+gas_units_arb_v3 = 360000
 
 # Cum `planB-B4-multivenue-tool` — nguong list da venue (PCS V2 + PCS V3).
 # CLI `discover_multivenue --min-v2-bnb` / `--min-v3-impact-pct` / `--probe-bnb` de.

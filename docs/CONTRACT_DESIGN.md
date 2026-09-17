@@ -414,8 +414,21 @@ Bốn hàm `external` chỉ khác nguồn vay; đều gọi `_route` nội bộ:
 | `flashBalancer(address[] tokens, uint256[] amounts, bytes route, uint256 minProfit)` | Balancer V2 Vault | `flashLoan` / `receiveFlashLoan` — trên BSC gần rỗng, giữ entry để nếu vault được nạp lại |
 | `flashV2Pair(address pair, uint256 amount0Out, uint256 amount1Out, bytes route, uint256 minProfit)` | Pancake V2 `pancakeCall` | `pair.swap(..., data)` |
 
-`route` encode: `(address token, address buyPair, address sellPair, address borrowQuote, uint256 borrow, bool needBridge, address bridgePair)`.
+`route` encode (B0, V2-only): `(address token, address buyPair, address sellPair, address borrowQuote, uint256 borrow, bool needBridge, address bridgePair)`.
 `_route` thực hiện: swap V2 mua pool rẻ → swap V2 bán pool đắt → (nếu khác quote) swap WBNB↔USDT qua `bridgePair`.
+
+### Chân V3 (cụm `planB-B5-simarb-v3-measure` — thiết kế, CHƯA code)
+
+Bổ sung 2 hop V3 vào `_route` (cùng `minProfit` / bribe / không giữ vốn):
+
+| Family | Router đã pin | Calldata |
+|---|---|---|
+| Pancake V3 | SwapRouter `0x1b81D678ffb9C0263b24A97847620C99d213eB14` | `exactInputSingle((tokenIn,tokenOut,fee,recipient,deadline,amountIn,amountOutMinimum,sqrtPriceLimitX96))` — **có deadline** |
+| Uniswap V3 BSC | SwapRouter02 `0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2` | `exactInputSingle((tokenIn,tokenOut,fee,recipient,amountIn,amountOutMinimum,sqrtPriceLimitX96))` — **không deadline** |
+
+`route` mở rộng: thêm `uint8 buyKind` / `sellKind` (`0=V2 pair`, `1=PCS V3`, `2=Uni V3`) + `uint24 buyFee` / `sellFee` (0 khi V2). `_route` chọn router + selector theo kind; approve max 1 lần lúc deploy cho cả 2 SwapRouter (WBNB/USDT). Không đoán tick/hooks — chỉ `exactInputSingle` 1 hop. Infinity CL vẫn ngoài phạm vi (chờ B4 sim).
+
+Thứ tự hop không đổi: flash → mua venue rẻ → bán venue đắt → (bridge) → trả nợ → `minProfit` → bribe → treasury.
 
 ### `minProfit` revert
 
