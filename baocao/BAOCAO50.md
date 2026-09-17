@@ -17,7 +17,7 @@ dòng PASS → `pairs_arb.txt` (file mới).
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: `COMMIT_HASH_PLACEHOLDER`.
+Commit nội dung: `a732b564bb31fb39afdc30be72024a29b37ce976`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -124,4 +124,5 @@ Không vet List B.
 
 ---
 
-Commit: `COMMIT_HASH_PLACEHOLDER`
+Commit: `a732b564bb31fb39afdc30be72024a29b37ce976` (toàn bộ nội dung cụm).
+Commit sau đó chỉ điền hash này vào ô 3 + dòng này, không đổi code.
