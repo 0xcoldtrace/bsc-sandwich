@@ -74,6 +74,47 @@ fn is_archive_err(s: &str) -> bool {
     ) || s.to_lowercase().contains("historical")
 }
 
+fn is_rate_limit(s: &str) -> bool {
+    let l = s.to_lowercase();
+    l.contains("-32005")
+        || l.contains("limit exceeded")
+        || l.contains("api usage limit")
+        || l.contains("too many requests")
+        || l.contains("429")
+}
+
+async fn fetch_block(
+    providers: &[(String, alloy::providers::DynProvider)],
+    hash: B256,
+) -> Result<u64, String> {
+    let mut last = "no_provider".to_string();
+    for attempt in 0..6u32 {
+        let mut saw_rate = false;
+        for (id, p) in providers {
+            match p.get_transaction_receipt(hash).await {
+                Ok(Some(rcpt)) => match rcpt.block_number {
+                    Some(b) => return Ok(b),
+                    None => last = format!("host={id} receipt.block_number=None"),
+                },
+                Ok(None) => last = format!("host={id} receipt=None"),
+                Err(e) => {
+                    let msg = redact(&e.to_string());
+                    last = format!("host={id} {msg}");
+                    if is_rate_limit(&msg) {
+                        saw_rate = true;
+                    }
+                }
+            }
+        }
+        if saw_rate {
+            tokio::time::sleep(std::time::Duration::from_millis(1500 * (attempt as u64 + 1))).await;
+            continue;
+        }
+        break;
+    }
+    Err(last)
+}
+
 fn lookup_v3(mv: &MultiVenueMap, token: Address, pool: Address, kind: &str) -> Option<ArbVenue> {
     let rec = mv.get(token)?;
     let family = family_of(kind)?;
@@ -217,11 +258,11 @@ async fn main() {
     );
 
     let mut providers: Vec<(String, alloy::providers::DynProvider)> = Vec::new();
-    for u in &urls {
+    for (i, u) in urls.iter().enumerate() {
         match ProviderBuilder::new().connect(u).await {
             Ok(p) => match p.get_block_number().await {
                 Ok(bn) => {
-                    let h = host_only(u);
+                    let h = format!("{}#{}", host_only(u), i);
                     println!("connect_ok host={h} head={bn}");
                     providers.push((h, p.erased()));
                 }
@@ -235,7 +276,6 @@ async fn main() {
         std::process::exit(1);
     }
     let used_host = providers.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>().join(",");
-    let dyn_p = providers[0].1.clone();
     let mv = match MultiVenueMap::load_from_path(Path::new(&mv_path)) {
         Ok(m) => m,
         Err(e) => {
@@ -280,22 +320,16 @@ async fn main() {
                 continue;
             }
         };
-        let (block, block_err) = match dyn_p.get_transaction_receipt(hash).await {
-            Ok(Some(rcpt)) => match rcpt.block_number {
-                Some(b) => (Some(b), None),
-                None => (None, Some("receipt.block_number=None".to_string())),
-            },
-            Ok(None) => (None, Some("receipt=None".to_string())),
-            Err(e) => (None, Some(redact(&e.to_string()))),
-        };
-        let Some(block) = block else {
-            let err = block_err.unwrap_or_else(|| "no_block".into());
-            println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t\t{}\t{}\t{err}",
-                row.token, row.route_kind, row.hash, row.flash_source
-            );
-            n_missing += 1;
-            continue;
+        let block = match fetch_block(&providers, hash).await {
+            Ok(b) => b,
+            Err(err) => {
+                println!(
+                    "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t\t{}\t{}\t{err}",
+                    row.token, row.route_kind, row.hash, row.flash_source
+                );
+                n_missing += 1;
+                continue;
+            }
         };
 
         let Some(buy) = lookup_v3(&mv, row.token, row.pair_buy, &row.buy_kind) else {
@@ -334,23 +368,40 @@ async fn main() {
 
         let sell_quote = sell.quote();
         let mut done = false;
-        for (host, p) in &providers {
+        let mut last_sim_err = String::new();
+        'hosts: for (host, p) in &providers {
             if archive_dead.contains(host) {
                 continue;
             }
-            match sim_evm::simulate_arb_mixed_hops_evm(
-                p.clone(),
-                block,
-                row.token,
-                row.borrow_quote,
-                sell_quote,
-                row.borrow,
-                buy,
-                sell,
-            )
-            .await
-            {
-                Ok((final_out, _gas)) => {
+            for attempt in 0..5u32 {
+                let p2 = p.clone();
+                let token = row.token;
+                let borrow_quote = row.borrow_quote;
+                let borrow = row.borrow;
+                let join = tokio::spawn(async move {
+                    sim_evm::simulate_arb_mixed_hops_evm(
+                        p2,
+                        block,
+                        token,
+                        borrow_quote,
+                        sell_quote,
+                        borrow,
+                        buy,
+                        sell,
+                    )
+                    .await
+                });
+                match join.await {
+                    Err(_) => {
+                        n_missing += 1;
+                        println!(
+                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\tpanic host={host}",
+                            row.token, row.route_kind, row.hash, row.flash_source
+                        );
+                        done = true;
+                        break 'hosts;
+                    }
+                    Ok(Ok((final_out, _gas))) => {
                     let final_i = i128::try_from(u128::try_from(final_out).unwrap_or(0)).unwrap_or(0);
                     let borrow_i = i128::try_from(u128::try_from(row.borrow).unwrap_or(0)).unwrap_or(0);
                     let flash_i = i128::try_from(u128::try_from(row.flash_fee_wei).unwrap_or(0)).unwrap_or(0);
@@ -372,10 +423,11 @@ async fn main() {
                         if fail { "FAIL_LECH>20" } else { "ok" }
                     );
                     done = true;
-                    break;
-                }
-                Err(e) => {
+                    break 'hosts;
+                    }
+                    Ok(Err(e)) => {
                     let msg = redact(&e.to_string());
+                    last_sim_err = format!("host={host} {msg}");
                     if e.is_revert() {
                         n_revert += 1;
                         println!(
@@ -383,10 +435,21 @@ async fn main() {
                             row.token, row.route_kind, row.hash, row.flash_source
                         );
                         done = true;
-                        break;
+                        break 'hosts;
                     } else if is_archive_err(&msg) {
                         eprintln!("archive_fail host={host} block={block} {}", msg);
                         archive_dead.insert(host.clone());
+                        continue 'hosts;
+                    } else if is_rate_limit(&msg) {
+                        eprintln!(
+                            "rate_limit host={host} attempt={} block={block} {}",
+                            attempt + 1,
+                            msg
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            2000 * (attempt as u64 + 1),
+                        ))
+                        .await;
                         continue;
                     } else {
                         n_missing += 1;
@@ -395,18 +458,25 @@ async fn main() {
                             row.token, row.route_kind, row.hash, row.flash_source
                         );
                         done = true;
-                        break;
+                        break 'hosts;
+                    }
                     }
                 }
             }
         }
         if !done {
             n_missing += 1;
+            let err = if last_sim_err.is_empty() {
+                format!("ARCHIVE all_rpc getStorageAt -32000/missing_trie hosts={used_host}")
+            } else {
+                format!("RETRY_EXHAUST {last_sim_err}")
+            };
             println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\tARCHIVE all_rpc getStorageAt -32000/missing_trie hosts={used_host}",
+                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\tMISSING\tMISSING\tMISSING\t{block}\t{}\t{}\t{err}",
                 row.token, row.route_kind, row.hash, row.flash_source
             );
         }
+        tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
     }
 
     println!(

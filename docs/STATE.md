@@ -1,14 +1,20 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8-simarb-revm-18`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8b-replay-archive`, 2026-09-17)
 
--6. Cụm mới nhất: `planB-B8-simarb-revm-18` (BAOCAO54, 2026-09-17) — replay
+-7. Cụm mới nhất: `planB-B8b-replay-archive` (BAOCAO55, 2026-09-17) — chạy
+    lại 18 case B8 trên node archive. `eth_getStorageAt` block `0x74beff9`
+    PASS trên NodeReal (2 key), FAIL GetBlock (`-32000` historical state).
+    18/18 `profit_revm` có số, 0 revert, 0 MISSING. `n_fail_lech=18`.
+    Unique LINK (3 tx, cùng borrow 46.372956) + Cake (1 tx) = 4/4 |lệch|
+    > 20% (paper dương, revm âm). **FAIL số**. Không Go B1. Không contract,
+    không live.
+
+-6. Cụm liền trước: `planB-B8-simarb-revm-18` (BAOCAO54, 2026-09-17) — replay
     18 `sim.arb simulated` (BAOCAO53) trên revm, cùng borrow / `v3_v3` /
     `infinity_vault`, fork đúng block victim. 18/18 lấy được block
-    (122417145–122421171). `profit_revm` **MISSING** cả 18: mọi URL
-    `BSC_HTTP_SIM` + `BSC_HTTP` trả `eth_getStorageAt` `-32000` /
-    `missing trie node` / `-32602 archive token` tại block đó. Không đoán
-    lãi, không lệch%, không revert đo được. Không contract, không live.
+    (122417145–122421171). `profit_revm` **MISSING** cả 18 trên 6 host
+    public (không archive). Không đoán lãi. Không contract, không live.
 
 -5. Cụm liền trước: `planB-B7-paper-after-cap` (BAOCAO53, 2026-09-17) — đo lại
     mật độ `sim.arb` SAU kẹp trần B6. Paper WSL 60 phút, `dry_run=true`.
@@ -5926,3 +5932,29 @@ của victim (lấy `eth_getTransactionReceipt`, TSV không có field block).
   personal token`. `n_revert=0` (chưa vào hop). `n_fail_lech=0`
   (không có số để so).
 - Không kết luận fit V3 ảo đúng/sai. Không Go/No-Go B1.
+
+## `planB-B8b-replay-archive` (BAOCAO55, 2026-09-17)
+
+Chạy lại đúng 18 hàng BAOCAO54 trên RPC archive Chủ dán (`RPC_LIST`).
+Không viết tool mới. Bin `arb_replay_18` thêm retry `-32005` / receipt
+failover / panic từng hàng → MISSING (không dừng bảng).
+
+### Quyết định
+
+- URL đầu PASS `eth_getStorageAt` block `0x74beff9` → `BSC_HTTP_SIM`
+  process-only (không commit `.env`). GetBlock FAIL historical state —
+  không dùng. Không sửa 6 host public đã fail B8.
+- Cùng borrow / `v3_v3` / `infinity_vault` / fork block victim.
+- Ngưỡng: |lệch| > 20% hoặc revert ≥ 1/4 unique LINK+Cake → FAIL số.
+  ≥1 MISSING revm → không Go. Khớp ±20% unique LINK+Cake → “khớp giấy”,
+  vẫn No-Go B1.
+- Không contract, không live, không nới list, không paper 6h.
+
+### Số (máy WSL)
+
+- 18/18 `profit_revm` có số. `n_ok=0` `n_fail_lech=18` `n_revert=0`
+  `n_missing=0`. Paper dương, revm âm mọi hàng.
+- LINK 3 unique `tx_hash` (cùng borrow 46.372956): lệch 131.96% cả 3.
+  Cake 1 unique: lệch 1363%. Unique LINK+Cake = 4/4 |lệch| > 20% →
+  **FAIL số**. Fit V3 ảo (quoter paper) không khớp hop revm.
+- Không Go B1.
