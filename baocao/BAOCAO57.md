@@ -20,7 +20,7 @@ PAT một lần (không lưu remote).
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: *(điền sau `git log -1 --format=%H`)*
+Commit nội dung: `761be543092e9c69efe328f8621b2e01d5bdadfb`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -201,4 +201,4 @@ AGENTS.md. Không paper 6h. Không đụng unit VPS. Không sửa
 
 ---
 
-Commit: *(điền sau commit)*
+Commit: `761be543092e9c69efe328f8621b2e01d5bdadfb`
