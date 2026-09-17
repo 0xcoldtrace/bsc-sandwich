@@ -1,0 +1,11 @@
+window_lines=70117 start=257026
+skips_from_jsonl={"arb_no_second_venue": 1, "below_min": 100, "decode_fail": 12747, "not_in_list": 15863, "not_quote_pair": 1140, "sanity_reject": 1, "unprofitable": 136}
+sim.arb n=154 simulated=18 unprofitable=136 other=0
+sim.arb_by_decision={"simulated": 18, "unprofitable": 136}
+route_kind={"v2_v3": 131, "v3_v3": 23}
+borrow_bnb n=136 min=0.000000 p50=0.000000 max=0.084906 BNB
+borrow_usdt n=18 min=32.325603 p50=36.103055 max=195.058900 USDT
+over_cap_lines=0  (ky vong 0)
+profit_simulated_bnb n=0 sum=0.000000 p50=n/a max=n/a
+profit_simulated_usdt n=18 sum=56.090562 p50=2.175682 max=12.042311
+key_skips={"sanity_reject": 1, "arb_no_second_venue": 1, "below_min": 100, "unprofitable": 136, "arb_no_flash_source": 0}

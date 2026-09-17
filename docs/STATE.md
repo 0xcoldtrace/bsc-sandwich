@@ -1,8 +1,15 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B6-cap-borrow-v3`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B7-paper-after-cap`, 2026-09-17)
 
--4. Cụm mới nhất: `planB-B6-cap-borrow-v3` (BAOCAO52, 2026-09-17) — kẹp
+-5. Cụm mới nhất: `planB-B7-paper-after-cap` (BAOCAO53, 2026-09-17) — đo lại
+    mật độ `sim.arb` SAU kẹp trần B6. Paper WSL 60 phút, `dry_run=true`.
+    `sim.arb` n=154: simulated=18, unprofitable=136, over_cap=0. Borrow max
+    0,085 BNB / 195 USDT (trần 20 / 12000). Không lỗ hổng mixed V3 vượt trần
+    (search + test siết `expect`). Không contract, không live, không đụng
+    unit `arc`.
+
+-4. Cụm liền trước: `planB-B6-cap-borrow-v3` (BAOCAO52, 2026-09-17) — kẹp
     search `sim_arb` TRONG trần `arb_max_borrow_*` (đúng quote chân vay) cho
     mọi route V2↔V2 / V2↔V3 / V3↔V3 / mixed quote. `clamp_borrow` trước mỗi
     bước tăng size. `best.borrow > trần` không Simulated; skip
@@ -5844,3 +5851,42 @@ chưa kẹp trần, `sanity_reject` sandwich (3 cửa reserve) không bắt hế
 - 15 case revm — RPC archive `getStorageAt` `-32000` (nợ BAOCAO51, MISSING).
 - Quote V3 đồng khối với tx (fit ảo quá sâu) — ngoài phạm vi cụm này.
 - Go/No-Go B1 sau khi kẹp trần: cần cửa sổ live ≥6 h (không làm ở cụm này).
+
+## `planB-B7-paper-after-cap` (BAOCAO53, 2026-09-17)
+
+Đo mật độ `sim.arb` sau kẹp trần B6. Không viết contract, không đổi
+`strategy`, không bật live.
+
+### Quyết định / xác nhận
+
+- Search mọi route (kể mixed V3) vẫn đi `search_borrow_capped`. Test
+  V2↔V3 / V3↔V3 / mixed quote siết `expect` quote (không `if let` nuốt
+  None). `borrow > cap` → `PipelineSkip::SanityReject`, không Simulated.
+- Log `sim.arb` nhánh `unprofitable` thêm `borrow_quote` +
+  `profit_before_bribe_wei` (cùng field với `simulated`) để đo trần đúng
+  đơn vị mixed quote.
+- Paper WSL 60 phút, port 8798, `dry_run=true`. `paper_run.sh` chỉ hạ
+  ngưỡng kinh tế về 0; `arb_max_borrow_*` / `strategy` giữ ship.
+
+### Số (máy WSL, xem BAOCAO53 ô 5)
+
+- Binary `sha256=88d3f7824fded9ba26f6b2d7af46c7ddb95d4149316495ba6d299b2f31ad1496`
+  HEAD lúc paper `feac61ad66770cbb74aecad4e33f87bc8c850fe0` (working tree cụm này).
+- `/api/skips`: simulated không nằm trong skips; `unprofitable=136`
+  `sanity_reject=1` `arb_no_second_venue=1` `below_min=100`.
+- `sim.arb` n=154: simulated=18 unprofitable=136 over_cap=0.
+- Borrow: WBNB n=136 max=0,085 BNB; USDT n=18 (cả 18 simulated) max=195,06
+  USDT. Trần 20 / 12000 không bị chạm cửa sổ này.
+- 18 simulated toàn `v3_v3` quote USDT, flash `infinity_vault`, không cụm
+  đối thủ: token `4` 14, LINK 3, Cake 1. `net_wei` đã trừ gas+bribe. p50
+  2,21 USDT; tổng 56,09 USDT / 60 phút. Ship `min_profit_usdt=3` (paper
+  đã zero) thì còn 4/18 (3 LINK + 1 Cake).
+- `sanity_reject=1`: BabyDoge V2, cửa reserve `arb_sanity_ok_mixed` (không
+  phải vượt `arb_max_borrow_*`).
+
+### Còn nợ
+
+- Go/No-Go B1: cửa sổ 60 phút, p50 2,21 USDT < 5; fit V3 ảo vẫn nợ B5/B6.
+  Không kết luận Go.
+- 15 case revm — RPC archive `getStorageAt` `-32000` (MISSING).
+- VPS: unit `arc` không tồn tại; không đụng unit đang chạy; không deploy.

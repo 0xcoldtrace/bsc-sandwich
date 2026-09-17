@@ -1297,9 +1297,8 @@ mod tests {
             None,
         );
         assert_eq!(route_kind(venues[0], venues[1]), "v2_v3");
-        if let Some((_, q)) = found {
-            assert!(q.borrow <= cap20(), "V2↔V3 borrow={} > 20 BNB", q.borrow);
-        }
+        let (_, q) = found.expect("V2↔V3 pool lech phai ra quote");
+        assert!(q.borrow <= cap20(), "V2↔V3 borrow={} > 20 BNB", q.borrow);
     }
 
     /// Cụm B6 — V3↔V3 (BAOCAO51 币安人生 / token 4 cùng kiểu).
@@ -1340,9 +1339,8 @@ mod tests {
             None,
         );
         assert_eq!(route_kind(venues[0], venues[1]), "v3_v3");
-        if let Some((_, q)) = found {
-            assert!(q.borrow <= cap20(), "V3↔V3 borrow={} > 20 BNB", q.borrow);
-        }
+        let (_, q) = found.expect("V3↔V3 pool lech phai ra quote");
+        assert!(q.borrow <= cap20(), "V3↔V3 borrow={} > 20 BNB", q.borrow);
     }
 
     /// Cụm B6 — mixed quote: trần theo ĐÚNG quote chân vay (USDT ≠ BNB).
@@ -1390,9 +1388,13 @@ mod tests {
             0.0,
             None,
         );
-        if let Some((route, q)) = found {
-            let cap = max_for(route.borrow_quote);
-            assert!(q.borrow <= cap, "mixed quote borrow={} > cap={} quote={:?}", q.borrow, cap, route.borrow_quote);
+        let (route, q) = found.expect("mixed quote V2 WBNB ↔ V3 USDT lech phai ra quote");
+        let cap = max_for(route.borrow_quote);
+        assert!(q.borrow <= cap, "mixed quote borrow={} > cap={} quote={:?}", q.borrow, cap, route.borrow_quote);
+        if route.borrow_quote == wbnb() {
+            assert!(q.borrow <= cap20());
+        } else {
+            assert!(q.borrow <= one_bnb() * U256::from(12_000u64));
         }
     }
 
