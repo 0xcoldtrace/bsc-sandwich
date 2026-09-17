@@ -21,7 +21,7 @@ Không đụng unit VPS (Chủ không dán host).
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: *(điền hash sau `git commit`)*
+Commit nội dung: `2d00d0db79d2377875d36e7dcd02d8868147d562`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -157,4 +157,4 @@ Không đụng unit VPS. Không đoán `profit_revm`.
 
 ---
 
-Commit: *(điền sau git commit)*
+Commit: `2d00d0db79d2377875d36e7dcd02d8868147d562`
