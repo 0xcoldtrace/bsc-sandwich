@@ -1,0 +1,27 @@
+window_lines=90978 start=327143
+skips_from_jsonl={"below_min": 108, "decode_fail": 19997, "not_in_list": 18494, "not_quote_pair": 1485, "sanity_reject": 1, "unprofitable": 68}
+sim.arb n=82 simulated=14 unprofitable=68 sim_error=0 other=0
+sim.arb_by_decision={"simulated": 14, "unprofitable": 68}
+sim.arb_reasons={"size_quote_net_le_0": 2}
+route_kind={"v2_v3": 81, "v3_v3": 1}
+borrow_bnb n=82 min=0.000000 p50=0.000000 max=20.000000 BNB
+borrow_usdt n=0 USDT
+over_cap_lines=0  (ky vong 0)
+key_skips={"sanity_reject": 1, "arb_no_second_venue": 0, "below_min": 108, "unprofitable": 68, "sim_error": 0, "arb_no_flash_source": 0}
+simulated_rows=14
+SIM token=0x924fa68a0fc644485b8df8abfa0a41c2e7744444 route=v2_v3 borrow=1.989860 net_paper=0.005752 net_quoter=0.005752 size_quote_applied=True hash=0xbc42244db9572b202239761ec2ac20804b0854eef01139f89bc1aae0aab97013
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.585473 net_paper=0.013411 net_quoter=0.013411 size_quote_applied=True hash=0x657218fc2621df92676029346db880a163276d26d4baf15e88caeaf7d5990f53
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.585506 net_paper=0.013412 net_quoter=0.013412 size_quote_applied=True hash=0x403cc445f991e782235cdfb664430fcc7d07acd4b5b998a8e934a1dde4b98569
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.454692 net_paper=0.012053 net_quoter=0.012053 size_quote_applied=True hash=0xce7aafe720bb455a6b2e5a385ab7079023564d97e107ead18361b7fa34fc8e5a
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.502680 net_paper=0.012558 net_quoter=0.012558 size_quote_applied=True hash=0xc71f56666fc398f6238b6228ff41c727c99467bc8664791f9a032bf5e3ec859b
+SIM token=0x924fa68a0fc644485b8df8abfa0a41c2e7744444 route=v2_v3 borrow=1.975102 net_paper=0.005664 net_quoter=0.005664 size_quote_applied=True hash=0x02896c83fc327e5185f797ec25a8fb7bb6b23fa0a7b2e644f64eba9070c061d8
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.400094 net_paper=0.011538 net_quoter=0.011538 size_quote_applied=True hash=0x85d57a7caf41df976d9f9b9845fbde51b3d27cbd3bfceadf0f84d6b7a325c530
+SIM token=0xc51a9250795c0186a6fb4a7d20a90330651e4444 route=v2_v3 borrow=2.600822 net_paper=0.010795 net_quoter=0.010795 size_quote_applied=True hash=0xc0020ff64a7ed162876224265a3147fa5028b82a2085c35a1a03e0cb856b5c30
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.535789 net_paper=0.012845 net_quoter=0.012849 size_quote_applied=True hash=0x73a4958a796e7ab9b603ad368fcd9d2f014266a31de3866cd7ea752dd8fd6a15
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.490468 net_paper=0.012371 net_quoter=0.012375 size_quote_applied=True hash=0x2799839cb99839c0f5289cdce7213024fc940036ef7ae140bb57c5e4041f8481
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.517964 net_paper=0.012597 net_quoter=0.012600 size_quote_applied=True hash=0xcdb08900af6f7ae32b14cacbebc414c7de197c0a01f8bc6851fb18f8a21534c4
+SIM token=0x0a43fc31a73013089df59194872ecae4cae14444 route=v2_v3 borrow=2.590105 net_paper=0.013384 net_quoter=0.013396 size_quote_applied=True hash=0x493cd4d9043a4686a6dfa3588a389f14b0eeeb5205e3e6421eb0bb3ff75ab5fb
+SIM token=0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82 route=v3_v3 borrow=20.000000 net_paper=0.319424 net_quoter=0.316064 size_quote_applied=True hash=0x7ba67696c2fcd9c49cf921c5dd52097bedf24ce4c62d0c1a0cf854d9c928cc1d
+SIM token=0x924fa68a0fc644485b8df8abfa0a41c2e7744444 route=v2_v3 borrow=1.959313 net_paper=0.005570 net_quoter=0.005570 size_quote_applied=True hash=0x216d32058da248d92a71f5cb58851e1424a6d14ae3e1aa1f1f0505eb3047edc6
+simulated_missing_quoter=0
+simulated_quoter_le_0=0

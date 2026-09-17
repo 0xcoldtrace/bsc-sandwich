@@ -2672,8 +2672,11 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
             // Cụm B8c — paper CPMM ảo (fit 1 chiều rồi đảo) có thể dương trong
             // khi QuoterV2 đúng cỡ vay / revm âm. Không đổi dấu profit_paper;
             // chân V3 phải qua quoter tuần tự trước Simulated.
+            // B8d: giữ size_quote_net_wei trên dòng Simulated để chứng minh
+            // quoter net > 0 (không cột quoter khi simulated > 0 = FAIL).
             let needs_size_quote = matches!(route.buy, bsc_sandwich::sim_arb::ArbVenue::V3(_))
                 || matches!(route.sell, bsc_sandwich::sim_arb::ArbVenue::V3(_));
+            let mut size_quote_net_wei: Option<String> = None;
             if needs_size_quote {
                 let provider_guard = app_state.provider.read().await;
                 let seq = if let Some(provider) = provider_guard.as_ref() {
@@ -2727,9 +2730,29 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
                             *counts.entry(skip.as_str().to_string()).or_insert(0) += 1;
                             return;
                         }
+                        size_quote_net_wei = seq_net.map(|n| n.to_string());
                     }
                     Err(_) => {
                         let skip = pipeline::PipelineSkip::SimError;
+                        app_state.logger.log(
+                            "sim.arb",
+                            serde_json::json!({
+                                "hash": meta.hash,
+                                "from": format!("{:#x}", raw.from),
+                                "token": format!("{:#x}", decoded.token),
+                                "quote": meta.quote,
+                                "pair_buy": format!("{:#x}", route.buy.id()),
+                                "pair_sell": format!("{:#x}", route.sell.id()),
+                                "route_kind": bsc_sandwich::sim_arb::route_kind(route.buy, route.sell),
+                                "borrow": q.borrow.to_string(),
+                                "net_wei": q.net_wei.to_string(),
+                                "flash_source": q.flash_source.as_str(),
+                                "decision": "sim_error",
+                                "reason": "size_quote_rpc",
+                                "victim_in_competitor_cluster": in_cluster,
+                                "seen_to_decision_ms": meta.seen_to_decision_ms,
+                            }),
+                        );
                         pipeline::log_outcome_v2(
                             &app_state.logger,
                             raw.from,
@@ -2758,7 +2781,10 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
                     "buy_kind": route.buy.kind(),
                     "sell_kind": route.sell.kind(),
                     "borrow": q.borrow.to_string(),
+                    "borrow_quote": format!("{:#x}", route.borrow_quote),
                     "net_wei": q.net_wei.to_string(),
+                    "size_quote_net_wei": size_quote_net_wei,
+                    "size_quote_applied": needs_size_quote,
                     "gross_wei": q.gross_wei.to_string(),
                     "profit_before_bribe_wei": q.profit_before_bribe_wei.to_string(),
                     "flash_source": q.flash_source.as_str(),
@@ -2772,7 +2798,6 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
                     "amount_in_bnb_equiv": meta.amount_in_bnb_equiv,
                     "victim_in_competitor_cluster": in_cluster,
                     "seen_to_decision_ms": meta.seen_to_decision_ms,
-                    "borrow_quote": format!("{:#x}", route.borrow_quote),
                 }),
             );
         }

@@ -1,8 +1,15 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8c-explain-v3-gap`, 2026-09-17)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8d-paper-after-quoter-gate`, 2026-09-18)
 
--8. Cụm mới nhất: `planB-B8c-explain-v3-gap` (BAOCAO56, 2026-09-17) — giải
+-9. Cụm mới nhất: `planB-B8d-paper-after-quoter-gate` (BAOCAO57, 2026-09-18)
+    — paper WSL 60' **sau** cổng B8c. `sim.arb` n=82: simulated=14,
+    unprofitable=68 (trong đó 2 `size_quote_net_le_0`), sim_error=0,
+    over_cap=0. 14/14 Simulated có `size_quote_net_wei` > 0 (không FAIL
+    thiếu cột quoter). `paper_run.sh` zero `min_profit_*` — **không** gọi
+    số đó là lãi. **Cấm Go B1.** Không contract, không live.
+
+-8. Cụm liền trước: `planB-B8c-explain-v3-gap` (BAOCAO56, 2026-09-17) — giải
     thích paper+ / revm− trên CASE_CAKE và CASE_LINK. Quoter tuần tự đúng
     cỡ vay khớp revm (âm). Paper dương vì fit 2 điểm USDT→token rồi đảo
     CPMM cho chân bán. Nhãn chính cả 2 case: `QUOTER_KHAC_SWAP`. Cổng:
@@ -6017,5 +6024,47 @@ Nhãn: **QUOTER_KHAC_SWAP** (cả 2 case).
 
 - Cấm Go B1. 18/18 paper+ revm− vẫn là sự thật đã đo (B8b).
 - Cổng chặn route `ok=false` + quoter tuần tự âm; không tuyên bố “lãi
-  giấy đã đúng”. Còn nợ: paper dài sau cổng; V2-only không qua cổng
-  quoter (đã đối chiếu EVM ở cụm cũ).
+  giấy đã đúng”. Paper 60' sau cổng: cụm `planB-B8d-paper-after-quoter-gate`
+  (BAOCAO57). V2-only không qua cổng quoter (đã đối chiếu EVM ở cụm cũ).
+
+---
+
+## `planB-B8d-paper-after-quoter-gate` (BAOCAO57, 2026-09-18)
+
+Paper dry-run WSL ≥ 60 phút sau cổng B8c. Không nới `pairs_arb`. Không
+đổi công thức CPMM / `fit_v3_virtual_reserves`. Không contract, không live.
+
+Cổng còn: `arb_mixed_venues` `continue` khi `!p.ok` (V3 và Uni);
+`handle_backrun_tx` gọi `quote_mixed_hops_at` + `size_quote_allows_simulated`
+trước log `decision=simulated`. B8d thêm `size_quote_net_wei` /
+`size_quote_applied` trên dòng Simulated (và `sim.arb` `sim_error` khi
+quoter RPC lỗi) — không đổi dấu `profit_paper`.
+
+### Paper 60' (WSL)
+
+- Máy WSL `/home/dmin/bsc-sandwich`. Port 8798.
+- `dry_run=true` `allow_live=false` `bot_armed=false` (boot log).
+- `sha256sum target/release/bsc_sandwich` =
+  `4e793c643d1c16a0855561e20f830157925b91c60a69512a0065fc07551af7a0`
+- `git HEAD` lúc paper = `192b428b487c9b65be29889d2556b54a7bce3c46`
+  (working tree có log B8d, chưa commit).
+- Cửa sổ jsonl `start_line=327143`, ts
+  `2026-09-17T16:12:10Z`–`2026-09-17T17:17:44Z`. `PAPER_EXIT=0`.
+- `paper_run.sh` zero `min_profit_bnb`/`min_profit_usdt`. Cấm gọi Simulated
+  là lãi.
+
+`sim.arb` n=82: simulated=14, unprofitable=68, sim_error=0, over_cap=0.
+Route: v2_v3=81, v3_v3=1. Borrow toàn WBNB, max=20.000 (= trần B6),
+USDT n=0. Skip: below_min=108, arb_no_second_venue=0, sanity_reject=1,
+sim_error=0. 2 unprofitable `reason=size_quote_net_le_0` (SKYAI paper+
+quoter−). 14/14 Simulated có `size_quote_net_wei` > 0,
+`size_quote_applied=true`, flash `infinity_vault`.
+
+`funnel.minute` `simulated=0` là bucket `sim.evm` sandwich — **không**
+trùng `sim.arb`. `tx.build=0`.
+
+### Còn nợ
+
+- **Cấm Go B1.** 14 Simulated không phải lãi on-chain; chưa replay revm
+  các hàng này. 18/18 B8b paper+ / revm− vẫn đứng.
+- Cấm “đã sửa xong lãi”. Quoter net > 0 ≠ profit thật / bundle được chọn.

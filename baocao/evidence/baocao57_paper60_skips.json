@@ -1,0 +1,17 @@
+{
+  "sim_arb_n": 82,
+  "sim_error": 0,
+  "simulated": 14,
+  "size_quote_net_le_0": 2,
+  "skips": {
+    "below_min": 108,
+    "decode_fail": 19997,
+    "not_in_list": 18494,
+    "not_quote_pair": 1485,
+    "sanity_reject": 1,
+    "unprofitable": 68
+  },
+  "source": "jsonl_window",
+  "start_line": 327143,
+  "unprofitable": 68
+}
