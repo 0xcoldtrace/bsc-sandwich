@@ -21,7 +21,7 @@ Commit + push PAT một lần (không lưu remote).
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: HASH_SAU_COMMIT
+Commit nội dung: `075c089574a0a343bafd6e9d16afddcf21f227b8`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -165,4 +165,4 @@ giữ. Search `best_arb_for_venues` vẫn CPMM snapshot để *tìm* route —
 cổng trước Simulated mới quote chain. Không tuyên bố mật độ/lãi.
 Không Go B1.
 
-Commit: HASH_SAU_COMMIT
+Commit: 075c089574a0a343bafd6e9d16afddcf21f227b8
