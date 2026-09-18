@@ -12,8 +12,9 @@
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use bsc_sandwich::multivenue::MultiVenueMap;
-use bsc_sandwich::sim_arb::{self, ArbPool, ArbV3Pool, ArbVenue, V3Family};
+use bsc_sandwich::sim_arb::{self, ArbPool, ArbV3Pool, ArbVenue, BridgeLeg, MixedRoute, V3Family};
 use bsc_sandwich::sim_evm;
+use bsc_sandwich::sim_v3;
 use bsc_sandwich::transport;
 use serde_json::Value;
 use std::path::Path;
@@ -302,6 +303,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut jsonl = DEFAULT_JSONL.to_string();
     let mut mv_path = DEFAULT_MV.to_string();
+    let mut hash_filter: Option<std::collections::HashSet<String>> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -311,6 +313,15 @@ async fn main() {
             }
             "--multi-venue" => {
                 mv_path = args[i + 1].clone();
+                i += 2;
+            }
+            "--hashes" => {
+                let set = args[i + 1]
+                    .split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                hash_filter = Some(set);
                 i += 2;
             }
             _ => i += 1,
@@ -386,6 +397,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    if let Some(ref want) = hash_filter {
+        rows.retain(|r| want.contains(&r.hash.to_lowercase()));
+    }
     if rows.is_empty() {
         eprintln!("FAIL n_simulated=0");
         std::process::exit(1);
@@ -400,7 +414,7 @@ async fn main() {
     println!("n_simulated={} n_unique_hash={}", rows.len(), n_unique);
     println!("fork=BlockId::number(victim_receipt_block) post-state apply_victim_raw=no");
     println!(
-        "token\tsymbol\troute\tborrow_BNB\tnet_paper\tnet_quoter\tprofit_revm\tlech_pct_vs_quoter\trevert\tblock\ttx_hash\tflash\terr"
+        "token\tsymbol\troute\tborrow_BNB\tnet_paper\tnet_quoter_log\tnet_quoter_now\tprofit_revm\tlech_pct_vs_quoter_now\thop1\thop2\thop3\trevert\tblock\ttx_hash\tflash\terr"
     );
 
     let mut n_ok = 0u32;
@@ -416,7 +430,7 @@ async fn main() {
         let quoter_u = i128_units(row.size_quote_net_wei);
         let miss = |blk: &str, why: String| {
             println!(
-                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\tMISSING\tMISSING\tMISSING\t{blk}\t{}\t{}\t{why}",
+                "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\tMISSING\tMISSING\tMISSING\tMISSING\tMISSING\tMISSING\tMISSING\t{blk}\t{}\t{}\t{why}",
                 row.token, row.route_kind, row.hash, row.flash_source
             );
         };
@@ -499,21 +513,63 @@ async fn main() {
                     let borrow_i = i128::try_from(u128::try_from(row.borrow).unwrap_or(0)).unwrap_or(0);
                     let flash_i = i128::try_from(u128::try_from(row.flash_fee_wei).unwrap_or(0)).unwrap_or(0);
                     let net_revm = final_i - borrow_i - flash_i - row.gas_wei - row.bribe_wei;
-                    let lech = lech_pct_vs_quoter(row.size_quote_net_wei, net_revm);
-                    let fail = lech.abs() > 20.0;
+                    let bridge = if buy.quote() == sell.quote() {
+                        None
+                    } else {
+                        Some(BridgeLeg {
+                            pair: mv.bridge_pair.unwrap_or(alloy::primitives::Address::ZERO),
+                            reserve_in: mv.bridge_reserve_usdt,
+                            reserve_out: mv.bridge_reserve_wbnb,
+                        })
+                    };
+                    let route = MixedRoute {
+                        token: row.token,
+                        borrow_quote: row.borrow_quote,
+                        buy,
+                        sell,
+                        bridge,
+                    };
+                    let (net_now, hop1_s, hop2_s, hop3_s) =
+                        match sim_v3::quote_mixed_hops_at(p, &route, row.borrow, Some(block)).await {
+                            Ok((h1, h2, h3)) => {
+                                let h3i = i128::try_from(u128::try_from(h3).unwrap_or(0)).unwrap_or(0);
+                                let n = h3i - borrow_i - flash_i - row.gas_wei - row.bribe_wei;
+                                (Some(n), format!("{h1}"), format!("{h2}"), format!("{h3}"))
+                            }
+                            Err(e) => (
+                                None,
+                                "MISSING".into(),
+                                "MISSING".into(),
+                                format!("quote_fail:{}", redact(&e)),
+                            ),
+                        };
+                    let quoter_now = net_now.unwrap_or(row.size_quote_net_wei);
+                    let lech = lech_pct_vs_quoter(quoter_now, net_revm);
+                    let fail = net_now.map(|n| n > 0 && lech.abs() > 20.0).unwrap_or(true);
                     if fail {
                         n_fail_lech += 1;
                     } else {
                         n_ok += 1;
                     }
+                    let now_s = net_now
+                        .map(|n| format!("{:.6}", i128_units(n)))
+                        .unwrap_or_else(|| "MISSING".into());
+                    let gate = if net_now.map(|n| n > 0).unwrap_or(false) {
+                        if fail {
+                            "FAIL_LECH>20"
+                        } else {
+                            "ok"
+                        }
+                    } else {
+                        "GATE_NO_SIM"
+                    };
                     println!(
-                        "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\t{:.6}\t{lech:.4}\tno\t{block}\t{}\t{}\t{} host={host}",
+                        "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\t{now_s}\t{:.6}\t{lech:.4}\t{hop1_s}\t{hop2_s}\t{hop3_s}\tno\t{block}\t{}\t{}\t{gate} host={host}",
                         row.token,
                         row.route_kind,
                         i128_units(net_revm),
                         row.hash,
                         row.flash_source,
-                        if fail { "FAIL_LECH>20" } else { "ok" }
                     );
                     done = true;
                     break 'hosts;
@@ -524,7 +580,7 @@ async fn main() {
                     if e.is_revert() {
                         n_revert += 1;
                         println!(
-                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\tMISSING\tMISSING\tyes\t{block}\t{}\t{}\thost={host} {msg}",
+                            "{:#x}\t{symbol}\t{}\t{borrow_u:.6}\t{paper_u:.6}\t{quoter_u:.6}\tMISSING\tMISSING\tMISSING\tMISSING\tMISSING\tMISSING\tyes\t{block}\t{}\t{}\thost={host} {msg}",
                             row.token, row.route_kind, row.hash, row.flash_source
                         );
                         done = true;

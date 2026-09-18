@@ -1,0 +1,122 @@
+{
+  "snap_bridge_wbnb": 53507083413731134572126,
+  "snap_bridge_usdt": 37996015600097767345798691,
+  "cases": [
+    {
+      "name": "CASE_V2V3",
+      "hash": "0x657218fc2621df92676029346db880a163276d26d4baf15e88caeaf7d5990f53",
+      "block": 122443922,
+      "parent": 122443921,
+      "tx_index": 104,
+      "status": "0x1",
+      "to": "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+      "buy_token0": "0x0a43fc31a73013089df59194872ecae4cae14444",
+      "buy_token1": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "buy_fee": "MISSING host=bsc-dataseed1.bnbchain.org {\"code\": -32000, \"message\": \"missing trie node\"}",
+      "sell_token0": "0x0a43fc31a73013089df59194872ecae4cae14444",
+      "sell_token1": "0x55d398326f99059ff775485246999027b3197955",
+      "sell_fee": 2500,
+      "bridge_token0": "0x55d398326f99059ff775485246999027b3197955",
+      "bridge_token1": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "bridge_parent_wbnb": 52726423315480885925615,
+      "bridge_parent_usdt": 38361844467197518558894722,
+      "bridge_victim_wbnb": 52726425144702285014362,
+      "bridge_victim_usdt": 38361843139649218918555932,
+      "blocks": {
+        "parent": {
+          "block": 122443921,
+          "hop1_token": 83934500854544042473364,
+          "hop1_src": "v2_getAmountsOut",
+          "hop2_usdt": 1856835127939649224385,
+          "hop2_src": "quoter_v3",
+          "hop3_chain_wbnb": 2545623148891280862,
+          "hop3_snap_wbnb": 2608184439073185518,
+          "hop3_parent_res_wbnb": 2545623148891280862,
+          "hop3_victim_res_wbnb": 2545623325295268235,
+          "net_chain": -49150968108676581,
+          "net_snap": 13410322073228075,
+          "net_parent_res": -49150968108676581,
+          "net_victim_res": -49150791704689208
+        },
+        "victim": {
+          "block": 122443922,
+          "hop1_token": 83934529616754722608221,
+          "hop1_src": "v2_getAmountsOut",
+          "hop2_usdt": 1856835760200432861333,
+          "hop2_src": "quoter_v3",
+          "hop3_chain_wbnb": 2545624192049708604,
+          "hop3_snap_wbnb": 2608185327128527626,
+          "hop3_parent_res_wbnb": 2545624015645661168,
+          "hop3_victim_res_wbnb": 2545624192049708604,
+          "net_chain": -49149924950248839,
+          "net_snap": 13411210128570183,
+          "net_parent_res": -49150101354296275,
+          "net_victim_res": -49149924950248839
+        }
+      },
+      "v2_buy_parent": {
+        "rq": 1098506945763809032402,
+        "rt": 35835113955911239162315786
+      },
+      "v2_buy_victim": {
+        "rq": 1098506757564148718095,
+        "rt": 35835120110683501585023498
+      },
+      "v2_hop1_cpmm_parent": 83934500854544042473364,
+      "v2_hop1_cpmm_victim": 83934529616754722608221
+    },
+    {
+      "name": "CASE_CAKE",
+      "hash": "0x7ba67696c2fcd9c49cf921c5dd52097bedf24ce4c62d0c1a0cf854d9c928cc1d",
+      "block": 122450112,
+      "parent": 122450111,
+      "tx_index": 82,
+      "status": "0x1",
+      "to": "0x1b81d678ffb9c0263b24a97847620c99d213eb14",
+      "buy_token0": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+      "buy_token1": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "buy_fee": 500,
+      "sell_token0": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
+      "sell_token1": "0x55d398326f99059ff775485246999027b3197955",
+      "sell_fee": 2500,
+      "bridge_token0": "0x55d398326f99059ff775485246999027b3197955",
+      "bridge_token1": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "bridge_parent_wbnb": 52715192020610577512200,
+      "bridge_parent_usdt": 38371541063293283965490677,
+      "bridge_victim_wbnb": 52715192020610577512200,
+      "bridge_victim_usdt": 38371541063293283965490677,
+      "blocks": {
+        "parent": {
+          "block": 122450111,
+          "hop1_token": 5951422212192607019709,
+          "hop1_src": "quoter_v3",
+          "hop2_usdt": 14475709425851465308056,
+          "hop2_src": "quoter_v3",
+          "hop3_chain_wbnb": 19829689536224740174,
+          "hop3_snap_wbnb": 20326423527379767828,
+          "hop3_parent_res_wbnb": 19829689536224740174,
+          "hop3_victim_res_wbnb": 19829689536224740174,
+          "net_chain": -180670463775259826,
+          "net_snap": 316063527379767828,
+          "net_parent_res": -180670463775259826,
+          "net_victim_res": -180670463775259826
+        },
+        "victim": {
+          "block": 122450112,
+          "hop1_token": 5951717958786851307760,
+          "hop1_src": "quoter_v3",
+          "hop2_usdt": 14476427969477887440537,
+          "hop2_src": "quoter_v3",
+          "hop3_chain_wbnb": 19830673469829505051,
+          "hop3_snap_wbnb": 20327432104784807849,
+          "hop3_parent_res_wbnb": 19830673469829505051,
+          "hop3_victim_res_wbnb": 19830673469829505051,
+          "net_chain": -179686530170494949,
+          "net_snap": 317072104784807849,
+          "net_parent_res": -179686530170494949,
+          "net_victim_res": -179686530170494949
+        }
+      }
+    }
+  ]
+}

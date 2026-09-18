@@ -1569,4 +1569,70 @@ mod tests {
         assert!(seq > 0);
         assert!(size_quote_allows_simulated(seq));
     }
+
+    /// BAOCAO59 / CASE_V2V3 hash
+    /// `0x657218fc2621df92676029346db880a163276d26d4baf15e88caeaf7d5990f53`
+    /// block 122443922. Paper/SNAP net +0.013411 (không đổi dấu). Bridge
+    /// `getAmountsOut` parent/victim + revm B8e net < 0 → không Simulated.
+    #[test]
+    fn b8f_case_v2v3_chain_bridge_am_khong_simulated() {
+        let borrow = U256::from_str("2585473203347248311").unwrap();
+        let paper_net: i128 = 13_411_370_479_063_696;
+        let snap_final = U256::from_str("2608184439073185518").unwrap();
+        let chain_parent_final = U256::from_str("2545623148891280862").unwrap();
+        let chain_victim_final = U256::from_str("2545624192049708604").unwrap();
+        let gas: u128 = 360_000_000_000_000;
+        let clamp = Some((500_000_000_000_000u128, 10_000_000_000_000_000u128));
+        assert!(paper_net > 0, "khong doi dau profit_paper");
+        let snap = net_from_final_out(snap_final, borrow, U256::ZERO, gas, 0.4, clamp).unwrap();
+        assert!(snap > 0, "snapshot cu se Simulated (bug B8f), got {snap}");
+        let parent = net_from_final_out(chain_parent_final, borrow, U256::ZERO, gas, 0.4, clamp).unwrap();
+        let victim = net_from_final_out(chain_victim_final, borrow, U256::ZERO, gas, 0.4, clamp).unwrap();
+        assert!(parent < 0, "parent chain bridge phai am, got {parent}");
+        assert!(victim < 0, "victim/revm chain bridge phai am, got {victim}");
+        assert!(!size_quote_allows_simulated(parent));
+        assert!(!size_quote_allows_simulated(victim));
+        assert!(!size_quote_allows_simulated(-49_149_924_950_248_839i128));
+    }
+
+    /// BAOCAO59 / CASE_CAKE B8d hash
+    /// `0x7ba67696c2fcd9c49cf921c5dd52097bedf24ce4c62d0c1a0cf854d9c928cc1d`
+    /// block 122450112. Paper/SNAP +0.316064. Chain/revm −0.179687.
+    /// Cổng B8c CASE_CAKE USDT (`0xefabc7bf…`) giữ nguyên test trên.
+    #[test]
+    fn b8f_case_cake_wbnb_chain_bridge_am_khong_simulated() {
+        let borrow = U256::from_str("20000000000000000000").unwrap();
+        let paper_net: i128 = 319_424_347_243_675_688;
+        let snap_final = U256::from_str("20326423527379767828").unwrap();
+        let chain_parent_final = U256::from_str("19829689536224740174").unwrap();
+        let chain_victim_final = U256::from_str("19830673469829505051").unwrap();
+        let gas: u128 = 360_000_000_000_000;
+        let clamp = Some((500_000_000_000_000u128, 10_000_000_000_000_000u128));
+        assert!(paper_net > 0, "khong doi dau profit_paper");
+        let snap = net_from_final_out(snap_final, borrow, U256::ZERO, gas, 0.4, clamp).unwrap();
+        assert!(snap > 0, "snapshot cu se Simulated (bug B8f), got {snap}");
+        let parent = net_from_final_out(chain_parent_final, borrow, U256::ZERO, gas, 0.4, clamp).unwrap();
+        let victim = net_from_final_out(chain_victim_final, borrow, U256::ZERO, gas, 0.4, clamp).unwrap();
+        assert!(parent < 0, "parent chain bridge phai am, got {parent}");
+        assert!(victim < 0, "victim/revm chain bridge phai am, got {victim}");
+        assert!(!size_quote_allows_simulated(parent));
+        assert!(!size_quote_allows_simulated(victim));
+        assert!(!size_quote_allows_simulated(-179_686_530_170_494_949i128));
+    }
+
+    /// Snapshot 710.11 USDT/BNB vs chain parent 727.56 — cùng hop2 USDT,
+    /// CPMM SNAP dương, CPMM live âm. Không sửa `fit_v3_virtual_reserves`.
+    #[test]
+    fn b8f_bridge_snapshot_khac_reserve_live() {
+        let usdt_out = U256::from_str("1856835127939649224385").unwrap();
+        let snap_u = U256::from_str("37996015600097767345798691").unwrap();
+        let snap_w = U256::from_str("53507083413731134572126").unwrap();
+        let live_u = U256::from_str("38361844467197518558894722").unwrap();
+        let live_w = U256::from_str("52726423315480885925615").unwrap();
+        let snap = crate::sim_v2::get_amount_out(usdt_out, snap_u, snap_w).unwrap();
+        let live = crate::sim_v2::get_amount_out(usdt_out, live_u, live_w).unwrap();
+        assert_eq!(snap, U256::from_str("2608184439073185518").unwrap());
+        assert_eq!(live, U256::from_str("2545623148891280862").unwrap());
+        assert!(snap > live, "snapshot cho ra nhieu WBNB hon chain");
+    }
 }

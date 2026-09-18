@@ -2674,6 +2674,8 @@ async fn handle_backrun_tx(app_state: AppState, raw: PendingTxRaw, cfg: Config, 
             // chân V3 phải qua quoter tuần tự trước Simulated.
             // B8d: giữ size_quote_net_wei trên dòng Simulated để chứng minh
             // quoter net > 0 (không cột quoter khi simulated > 0 = FAIL).
+            // B8f: `quote_mixed_hops_at` chân bridge = getAmountsOut cùng block
+            // (không snapshot multi_venue). net≤0 / hop fail → không Simulated.
             let needs_size_quote = matches!(route.buy, bsc_sandwich::sim_arb::ArbVenue::V3(_))
                 || matches!(route.sell, bsc_sandwich::sim_arb::ArbVenue::V3(_));
             let mut size_quote_net_wei: Option<String> = None;

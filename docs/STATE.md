@@ -1,8 +1,18 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8e-revm-14-after-gate`, 2026-09-18)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8f-audit-then-fix-sim`, 2026-09-18)
 
--9. Cụm mới nhất: `planB-B8e-revm-14-after-gate` (BAOCAO58, 2026-09-18)
+-10. Cụm mới nhất: `planB-B8f-audit-then-fix-sim` (BAOCAO59, 2026-09-18)
+    — audit 2 case B8e (token-4 `v2_v3` + Cake `v3_v3` WBNB) rồi sửa **một
+    lần** cổng Simulated. Lệch quoter+/revm− = chân bridge USDT→WBNB dùng
+    reserve snapshot `multi_venue.json` (710,11 USDT/BNB, block 122246764)
+    chứ không `getAmountsOut` cùng block-fork (~727,6). Sau fix:
+    `quote_mixed_hops_at` hop V2 + bridge = `getAmountsOut` tại đúng
+    `block`; 2 hash replay net_quoter_now = profit_revm (âm), lệch 0 %,
+    `GATE_NO_SIM`. Cổng B8c (`ok=false`) giữ. Không đổi dấu paper. **Cấm
+    Go B1.** Không contract, không live, không gọi là lãi.
+
+-9. Cụm liền trước: `planB-B8e-revm-14-after-gate` (BAOCAO58, 2026-09-18)
     — replay 14 `sim.arb simulated` B8d (WSL, archive NodeReal) vs revm
     cùng borrow / route / `infinity_vault`. Fork `BlockId::number(victim
     receipt block)` post-state, không apply victim raw. 14 unique hash,
@@ -6106,3 +6116,41 @@ post-state block victim. Không apply raw victim.
   lệch −156.85% → **FAIL số**.
 - Unique v2_v3 3/3 FAIL số (token-4 9 hash, 币安人生 3 hash, 我踏马来了 1 hash).
 - Không khớp giấy+quoter. **Cấm Go B1.** Cấm gọi 14 hàng là lãi.
+
+---
+
+## `planB-B8f-audit-then-fix-sim` (BAOCAO59, 2026-09-18)
+
+Audit độc lập 2 hash B8e rồi sửa **một lần** cổng Simulated. Không nới
+list, không đổi dấu `profit_paper`, không tháo `ok=false`, không paper 60'.
+
+### Audit (trước khi sửa `src`)
+
+14/14 Simulated B8d: mua WBNB, bán V3 USDT, bridge USDT→WBNB. Cổng B8c
+quote hop V3 đúng cỡ nhưng hop3 dùng CPMM snapshot `multi_venue.json`
+block 122246764 (710,11 USDT/BNB). Revm/`getAmountsOut` tại parent và
+victim ~727,6 USDT/BNB. Toàn bộ |quoter−revm| nằm ở hop3.
+
+- CASE_V2V3 hash `0x657218fc…990f53` block 122443922 idx 104: SNAP net
+  +0.013411, chain/revm −0.049150. Paper quoter block = `last_block`
+  (latest mined ≈ parent). Revm `BlockId::number(victim)` post-state,
+  không apply raw.
+- CASE_CAKE hash `0x7ba67696…28cc1d` block 122450112 idx 82: SNAP
+  +0.316064, chain/revm −0.179687. pair_buy PCS 500 WBNB / pair_sell
+  PCS 2500 USDT `ok=true` (khác CASE_CAKE USDT B8c).
+
+Nhãn: **KHAC** (bridge snapshot). Không `QUOTER_KHAC_SWAP` đảo CPMM.
+
+### Cổng
+
+`quote_mixed_hops_at`: hop V2 + chân bridge = `eth_call getAmountsOut`
+tại cùng `block` với QuoterV2. net≤0 / hop fail → không Simulated.
+Fixture 2 hash (số audit/B8e): chain/revm net≤0 →
+`!size_quote_allows_simulated`. Cổng B8c `ok=false` giữ.
+
+### Replay 2 hash (sau fix, WSL, NodeReal)
+
+`net_quoter_now` = `profit_revm`, lệch 0 %. Cả 2 `GATE_NO_SIM`. 0 revert,
+0 MISSING. Revm vẫn âm — cổng chặn Simulated (test + replay).
+
+**Cấm Go B1.** Cấm gọi là lãi.

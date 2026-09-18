@@ -43,6 +43,8 @@ fn selector(sig: &str) -> [u8; 4] {
 
 static SEL_QUOTE_EXACT_INPUT_SINGLE: LazyLock<[u8; 4]> =
     LazyLock::new(|| selector("quoteExactInputSingle((address,address,uint256,uint24,uint160))"));
+static SEL_GET_AMOUNTS_OUT: LazyLock<[u8; 4]> =
+    LazyLock::new(|| selector("getAmountsOut(uint256,address[])"));
 
 fn encode_address_word(a: Address, out: &mut Vec<u8>) {
     out.extend_from_slice(&[0u8; 12]);
@@ -151,9 +153,65 @@ pub async fn fit_arb_v3_pool(
     Ok(2)
 }
 
-/// Cụm `planB-B8c-explain-v3-gap` — 2 hop đúng cỡ vay: V3 = QuoterV2
-/// `quoteExactInputSingle` (chiều thật của hop), V2 = công thức đóng.
-/// Không dùng CPMM đảo từ fit 1 chiều. Trả `(token_out, quote_sell_out, final_out)`.
+/// `eth_call` `getAmountsOut` V2 Router đã pin, cùng `block` với QuoterV2.
+/// Chân bridge USDT↔WBNB phải đi đường này — không dùng reserve snapshot
+/// `multi_venue.json` (B8f: snapshot 710 USDT/BNB vs chain ~728 → Simulated giả).
+pub fn build_get_amounts_out_calldata(amount_in: U256, path: &[Address]) -> Vec<u8> {
+    let mut out = SEL_GET_AMOUNTS_OUT.to_vec();
+    encode_uint256_word(amount_in, &mut out);
+    let mut offset_word = [0u8; 32];
+    offset_word[31] = 0x40;
+    out.extend_from_slice(&offset_word);
+    let mut len_word = [0u8; 32];
+    len_word[31] = path.len() as u8;
+    out.extend_from_slice(&len_word);
+    for a in path {
+        encode_address_word(*a, &mut out);
+    }
+    out
+}
+
+fn decode_last_amounts_out(ret: &[u8]) -> Option<U256> {
+    if ret.len() < 64 {
+        return None;
+    }
+    let len = usize::try_from(U256::from_be_slice(&ret[32..64])).ok()?;
+    if len == 0 {
+        return None;
+    }
+    let last_start = 64 + (len - 1) * 32;
+    ret.get(last_start..last_start + 32).map(U256::from_be_slice)
+}
+
+pub async fn quote_v2_path_at(
+    provider: &dyn Provider,
+    token_in: Address,
+    token_out: Address,
+    amount_in: U256,
+    block: Option<u64>,
+) -> Result<U256, String> {
+    let router = crate::venues::v2_router();
+    let calldata = build_get_amounts_out_calldata(amount_in, &[token_in, token_out]);
+    let tx = TransactionRequest::default().to(router).input(calldata.into());
+    let ret = if let Some(b) = block {
+        provider
+            .call(tx)
+            .block(alloy::eips::BlockId::number(b))
+            .await
+            .map_err(|e| format!("eth_call getAmountsOut block={b} that bai: {e}"))?
+    } else {
+        provider
+            .call(tx)
+            .await
+            .map_err(|e| format!("eth_call getAmountsOut that bai: {e}"))?
+    };
+    decode_last_amounts_out(&ret).ok_or_else(|| "getAmountsOut tra ve du lieu qua ngan".to_string())
+}
+
+/// Cụm `planB-B8c-explain-v3-gap` — hop V3 = QuoterV2 đúng chiều đúng cỡ vay.
+/// Cụm `planB-B8f-audit-then-fix-sim` — hop V2 + chân bridge = `getAmountsOut`
+/// tại **cùng** `block` (không CPMM snapshot `multi_venue`). Trả
+/// `(token_out, quote_sell_out, final_out)`.
 pub async fn quote_mixed_hops_at(
     provider: &dyn Provider,
     route: &crate::sim_arb::MixedRoute,
@@ -162,8 +220,7 @@ pub async fn quote_mixed_hops_at(
 ) -> Result<(U256, U256, U256), String> {
     let token_out = match route.buy {
         crate::sim_arb::ArbVenue::V2(p) => {
-            crate::sim_v2::get_amount_out(borrow, p.reserve_quote, p.reserve_token)
-                .ok_or_else(|| "v2 buy hop fail".to_string())?
+            quote_v2_path_at(provider, p.quote, route.token, borrow, block).await?
         }
         crate::sim_arb::ArbVenue::V3(p) => {
             let quoter = match p.family {
@@ -178,8 +235,7 @@ pub async fn quote_mixed_hops_at(
     }
     let quote_sell_out = match route.sell {
         crate::sim_arb::ArbVenue::V2(p) => {
-            crate::sim_v2::get_amount_out(token_out, p.reserve_token, p.reserve_quote)
-                .ok_or_else(|| "v2 sell hop fail".to_string())?
+            quote_v2_path_at(provider, route.token, p.quote, token_out, block).await?
         }
         crate::sim_arb::ArbVenue::V3(p) => {
             let quoter = match p.family {
@@ -191,8 +247,16 @@ pub async fn quote_mixed_hops_at(
     };
     let final_out = match route.bridge {
         None => quote_sell_out,
-        Some(b) => crate::sim_v2::get_amount_out(quote_sell_out, b.reserve_in, b.reserve_out)
-            .ok_or_else(|| "bridge hop fail".to_string())?,
+        Some(_) => {
+            quote_v2_path_at(
+                provider,
+                route.sell.quote(),
+                route.borrow_quote,
+                quote_sell_out,
+                block,
+            )
+            .await?
+        }
     };
     Ok((token_out, quote_sell_out, final_out))
 }
@@ -224,6 +288,19 @@ mod tests {
         assert_eq!(u32::from_be_bytes([0, fee_word[29], fee_word[30], fee_word[31]]), 2500);
         // sqrtPriceLimitX96 (word idx 4) = 0
         assert_eq!(&calldata[4 + 128..4 + 160], [0u8; 32]);
+    }
+
+    #[test]
+    fn get_amounts_out_calldata_amount_then_path() {
+        let wbnb = addr("0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c");
+        let usdt = addr("0x55d398326f99059ff775485246999027b3197955");
+        let data = build_get_amounts_out_calldata(U256::from(1_000_000u64), &[usdt, wbnb]);
+        assert_eq!(&data[0..4], SEL_GET_AMOUNTS_OUT.as_slice());
+        assert_eq!(U256::from_be_slice(&data[4..36]), U256::from(1_000_000u64));
+        assert_eq!(U256::from_be_slice(&data[36..68]), U256::from(0x40u64));
+        assert_eq!(U256::from_be_slice(&data[68..100]), U256::from(2u64));
+        assert_eq!(&data[100 + 12..132], usdt.as_slice());
+        assert_eq!(&data[132 + 12..164], wbnb.as_slice());
     }
 
     #[test]

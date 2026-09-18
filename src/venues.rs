@@ -131,6 +131,10 @@ pub fn is_backrun_router(to: Address) -> bool {
     Address::from_str(UNI_V3_SWAP_ROUTER02_ADDRESS).map(|a| a == to).unwrap_or(false)
 }
 
+pub fn v2_router() -> Address {
+    Address::from_str(V2_ROUTER_ADDRESS).expect("V2_ROUTER pin")
+}
+
 pub fn v3_swap_router() -> Address {
     Address::from_str(V3_SWAP_ROUTER_ADDRESS).expect("V3_SWAP_ROUTER pin")
 }
