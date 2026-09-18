@@ -1,8 +1,17 @@
 # docs/STATE.md — Quyết định kỹ thuật cố định
 
-## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8f-audit-then-fix-sim`, 2026-09-18)
+## TRẠNG THÁI HIỆN TẠI (đọc trước, cập nhật ở cụm `planB-B8g-paper-after-live-bridge`, 2026-09-18)
 
--10. Cụm mới nhất: `planB-B8f-audit-then-fix-sim` (BAOCAO59, 2026-09-18)
+-11. Cụm mới nhất: `planB-B8g-paper-after-live-bridge` (BAOCAO60, 2026-09-18)
+    — paper WSL 60' **sau** cổng B8f (`getAmountsOut` hop V2 + bridge cùng
+    block, không snapshot `multi_venue`). `sim.arb` n=52: simulated=0,
+    unprofitable=52 (18 `size_quote_net_le_0`), sim_error=0, over_cap=0.
+    Route v2_v2=0 / v2_v3=51 / v3_v3=1. `paper_run.sh` zero `min_profit_*`
+    — **không** gọi là lãi; simulated=0 nên không bia cửa. 18 hàng search
+    CPMM dương bị cổng chain net≤0 chặn. **Cấm Go B1.** Không contract,
+    không live, không replay revm (simulated=0).
+
+-10. Cụm liền trước: `planB-B8f-audit-then-fix-sim` (BAOCAO59, 2026-09-18)
     — audit 2 case B8e (token-4 `v2_v3` + Cake `v3_v3` WBNB) rồi sửa **một
     lần** cổng Simulated. Lệch quoter+/revm− = chân bridge USDT→WBNB dùng
     reserve snapshot `multi_venue.json` (710,11 USDT/BNB, block 122246764)
@@ -6154,3 +6163,24 @@ Fixture 2 hash (số audit/B8e): chain/revm net≤0 →
 0 MISSING. Revm vẫn âm — cổng chặn Simulated (test + replay).
 
 **Cấm Go B1.** Cấm gọi là lãi.
+
+---
+
+## `planB-B8g-paper-after-live-bridge` (BAOCAO60, 2026-09-18)
+
+Paper WSL 60 phút sau cổng B8f (hop3 `getAmountsOut` cùng block). Không
+nới list, không contract, không live, không replay revm.
+
+- Máy WSL. Binary `sha256=4fd55f8a82065f256b4396319144c3a1340189cb6bc48de9566b5b20fab0f1a1`.
+  HEAD lúc paper = `f8df735121e101dbff52a248edc0439846ac4f1c`.
+- Boot: `chain_id=56 dry_run=true allow_live=false bot_armed=false`.
+  `pairs_arb.txt` 28/28. Port 8798. jsonl start_line=418121.
+- `paper_run.sh` zero `min_profit_*` — Simulated (nếu có) ≠ lãi.
+- `sim.arb` n=52 simulated=0 unprofitable=52 sim_error=0
+  `size_quote_net_le_0`=18 below_min=202 decode_fail=11769 not_in_list=12371.
+- Route: v2_v2=0 v2_v3=51 v3_v3=1. over_cap=0. tx.build=0.
+- simulated=0: không hàng `net_quoter_now`. 18 `unprofitable` reason
+  `size_quote_net_le_0` = search CPMM snapshot dương, quote chain ≤0
+  (cùng kiểu token-4 / 币安人生 / 我踏马来了 B8d). Cổng sống.
+
+**Cấm Go B1.** Cấm “đã có lãi”.

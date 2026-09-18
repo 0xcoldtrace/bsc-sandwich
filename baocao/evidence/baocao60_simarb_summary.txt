@@ -1,0 +1,14 @@
+window_lines=63115 start=418121 first_ts=2026-09-18T04:36:31.799168962+00:00 last_ts=2026-09-18T05:43:13.915166928+00:00
+skips_from_jsonl={"below_min": 202, "decode_fail": 11769, "not_in_list": 12371, "not_quote_pair": 1782, "sanity_reject": 4, "unprofitable": 52}
+TABLE sim.arb=52 simulated=0 unprofitable=52 sim_error=0 size_quote_net_le_0=18 below_min=202 decode_fail=11769 not_in_list=12371
+sim.arb_by_decision={"unprofitable": 52}
+sim.arb_reasons={"size_quote_net_le_0": 18}
+route_kind v2_v2=0 v2_v3=51 v3_v3=1 other=0
+route_kind={"v2_v3": 51, "v3_v3": 1}
+borrow_bnb n=52 min=0.000000 p50=0.000000 max=7.754174 BNB
+borrow_usdt n=0 USDT
+over_cap_lines=0  (ky vong 0)
+simulated_rows=0
+simulated_missing_quoter=0
+simulated_quoter_le_0=0
+NOTE: simulated=0 — khong bia cua

@@ -376,4 +376,5 @@ chép, mà là giới hạn lịch sử git thật của repo).
 | B8d `planB-B8d-paper-after-quoter-gate` | 57 | Paper WSL 60' sau cổng B8c. `sim.arb` n=82 simulated=14 (14/14 quoter net > 0) unprofitable=68 sim_error=0. Không gọi paper zero-min là lãi. **Cấm Go B1.** |
 | B8e `planB-B8e-revm-14-after-gate` | 58 | Replay 14 simulated B8d vs revm archive. 14/14 có số, 0 revert, 0 MISSING. Cake revm −0.179687 vs quoter +0.316064 (lệch −156.85%). Unique v2_v3 3/3 revm − và \|lệch\|>20%. **FAIL số**. Không khớp giấy+quoter. **Cấm Go B1.** |
 | B8f `planB-B8f-audit-then-fix-sim` | 59 | Audit 2 case: lệch = bridge snapshot USDT/WBNB. Cổng: `getAmountsOut` cùng block; 2 hash replay quoter=revm âm, `GATE_NO_SIM`. Cổng B8c giữ. **Cấm Go B1.** |
+| B8g `planB-B8g-paper-after-live-bridge` | 60 | Paper WSL 60' sau cổng B8f. `sim.arb` n=52 simulated=0 unprofitable=52 (18 `size_quote_net_le_0`) sim_error=0. Không bia cửa. Không gọi paper zero-min là lãi. **Cấm Go B1.** |
 | B4 `venue-infinity-v3` (sim Infinity) | — | chờ Go B5; decoder PoolKey/hooks Infinity. |
