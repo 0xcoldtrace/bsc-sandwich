@@ -18,7 +18,7 @@ Test `--offline` + fixture 2 hash. Replay đúng 2 hash. Ô 9 không ĐẠT.
 
 ## 3. FILE ĐỔI
 
-Commit nội dung: HASH_NOI_DUNG (điền commit phụ).
+Commit nội dung: `69185915bcd6e89fa3fb1f90ec8914bc347db534`.
 
 | File | Trạng thái | Nội dung |
 |---|---|---|
@@ -328,4 +328,4 @@ Cổng B8c (`ok=false`) giữ. Không paper 60' cụm này. Không tuyên bố m
 route — cổng trước Simulated mới quote chain; có thể còn log
 `unprofitable` `size_quote_net_le_0`.
 
-Commit: HASH_NOI_DUNG
+Commit: 69185915bcd6e89fa3fb1f90ec8914bc347db534
