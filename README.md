@@ -1,17 +1,24 @@
 # BSC backrun-arb — Hướng dẫn vận hành
 
-Repo vẫn tên `bsc-sandwich` (crate `bsc_sandwich`). **Chiến lược đang chạy
-không phải sandwich.** Chủ chốt 2026-09-16: **Kế hoạch B — backrun-arb** bằng
-flash loan 0 phí, đứng **sau** swap lớn, cân giá giữa ≥ 2 pool của cùng
-token. Đường sandwich cũ giữ code, tắt bằng `strategy = "backrun"` trong
-`config.toml`.
+Repo vẫn tên `bsc-sandwich` (crate `bsc_sandwich`). Cờ đang bật:
+`strategy = "backrun"` trong `config.toml`. Code sandwich còn trong repo,
+tắt bằng cờ đó — không xoá đường cũ.
+
+Luật phiên hiện tại: `CLAUDE.md`. `AGENTS.md` chỉ import `CLAUDE.md` (đúng
+một dòng `@CLAUDE.md`). `AGENTS.legacy.md` là bản cũ, **không** điều hành.
+
+Bot theo dõi swap trên BSC (chain `56`). Nhánh arb 2 venue đang dùng
+`pairs_arb.txt`: **28** token `both_ok` đã vet `2026-09-17` — đó là **list
+hẹp**, không phải toàn thị trường. Pancake V2: **một cặp = một pool**. Cùng
+token có thể có `TOKEN/WBNB` và `TOKEN/USDT` (hai cặp), không phải “một
+token hai pool V2”.
 
 Tài liệu này viết cho người **không cần biết Rust**. Mỗi bước là lệnh
 copy-dán được, kèm "kỳ vọng thấy gì". Không sửa `.env` / `config.toml` /
 `pairs_arb.txt` chỉ bằng cách đọc README — luôn tự tay sửa file rồi đối chiếu
 lại với phần tương ứng ở đây.
 
-Chi tiết kỹ thuật / luật phiên: `AGENTS.md`. Vận hành paper + VPS dài:
+Chi tiết kỹ thuật / luật phiên: `CLAUDE.md`. Vận hành paper + VPS dài:
 `docs/RUN.md`. Trạng thái cụm: `docs/STATE.md`, `docs/TASKS.md`.
 
 ## Mục lục
@@ -35,25 +42,28 @@ Chi tiết kỹ thuật / luật phiên: `AGENTS.md`. Vận hành paper + VPS d�
 
 ## 1. Bot làm gì (hiện tại)
 
-Trên BSC (chain `56`), bot theo dõi mempool, tìm **swap lớn** trên token có
-**≥ 2 venue** (Pancake V2 + Pancake V3 và/hoặc Uniswap V3). Sau đó **mô
-phỏng** một giao dịch nguyên tử:
+Trên BSC (chain `56`), bot theo dõi mempool, tìm swap trên list đang đọc.
+Nhánh arb 2 venue (đang bật vì `strategy="backrun"`) **mô phỏng** một giao
+dịch nguyên tử trên token có venue thứ hai trong `state/multi_venue.json`
+(Pancake V2 + Pancake V3 và/hoặc Uniswap V3 — **không** phải hai pool V2
+cùng một cặp):
 
 1. Vay flash (ưu tiên Pancake Infinity Vault, phí 0).
-2. Mua pool rẻ → bán pool đắt (có chân USDT↔WBNB nếu khác quote).
+2. Mua venue rẻ → bán venue đắt (có chân USDT↔WBNB nếu khác quote).
 3. Trả nợ trong cùng tx, giữ phần chênh.
 
 Không đứng trước victim, không cần `victim_ok`, không cần vốn xoay. Không lãi
 → tx sẽ revert (khi đã có contract). Hiện **chỉ mô phỏng** — chưa gửi bundle
 thật.
 
-**Không làm (đã loại bằng số, không phải “chưa viết”):** sandwich victim
-người-thật ≈ 0 lãi (slippage 1–5 % ép `front_in`); phần lớn lãi mô phỏng cũ
-là kẹp ví burner của cụm đối thủ. Code sandwich vẫn trong repo, **tắt**.
+Đường sandwich cũ giữ code, **tắt** bằng `strategy = "backrun"`. Kết luận
+sandwich người-thật ≈ 0 lãi là mẫu đo cũ, không phải lệnh đổi dự án.
 
-**Nguồn candidate đang bật:** `pairs_arb.txt` (List A, token `both_ok` đã
-vet tay). `pairs.txt` chỉ dùng lại nếu đổi `strategy = "sandwich"`. Mode 1
-(`victims.txt`) và mode 3 (quét mọi pool) **tắt** bằng cờ.
+**Nguồn candidate đang bật:** `pairs_arb.txt` (List A, 28 token `both_ok` đã
+vet `2026-09-17`). Đó là **list hẹp**, không phải bản đồ BSC. `pairs.txt`
+**không dùng** khi `strategy="backrun"` (chỉ đọc lại nếu đổi
+`strategy="sandwich"`). `victims.txt` tắt (`wallet_scan_enabled=false`).
+Mode 3 tắt (`pair_scan_universal=false`).
 
 **Mặc định an toàn:** `dry_run=true`, `allow_live=false`, `bot_armed=false`,
 `live_mode="off"`. Bot không gửi tx. `live_mode="shadow"` **có thể ký thật**
@@ -66,24 +76,27 @@ gửi giao dịch.
 
 ## 2. Đã làm / chưa làm
 
-Tính đến `BAOCAO51` (`planB-B5-simarb-v3-measure`, 2026-09-17):
+Sự thật trong repo (không phải kết quả paper mới của commit tài liệu này):
 
 | Có | Chưa |
 |---|---|
-| Decoder router Pancake đã pin + Uniswap V3 SwapRouter02 (cổng backrun) | Contract `ArbExecutor` (B1) — **No-Go**, không viết |
-| `sim_arb` route V2↔V3 / V3↔V3 (PCS + Uniswap) | Gửi bundle thật / `sendRaw` (`7.3`) |
-| 4 nguồn flash + `/api/flash` | Live nhỏ (B3) |
-| List A: 28 token `both_ok` trong `pairs_arb.txt` | Kẹp cứng `arb_max_borrow_*` trên mọi chân V3 mixed (paper đã thấy borrow 40–46 BNB trong khi trần 20) |
-| Paper dry-run, dashboard, vet nền revm | Cửa sổ live ≥ 6 h đủ điều kiện Go/No-Go |
-| Shadow: ký thật, không gửi | Infinity CL làm venue arb (flash Vault thì đã có) |
+| Decoder router Pancake đã pin + Uniswap V3 SwapRouter02 (cổng backrun) | Contract `ArbExecutor` — **chưa viết** |
+| `sim_arb` route V2↔V3 / V3↔V3 (PCS + Uniswap) | Gửi bundle thật / `sendRaw` |
+| 4 nguồn flash + `/api/flash` | Live / `bot_armed` |
+| Paper dry-run, dashboard, vet nền revm | Infinity CL làm venue arb (flash Vault thì đã có) |
+| Shadow: ký thật, không gửi | |
+| List A: 28 token `both_ok` trong `pairs_arb.txt` (list hẹp) | |
 
-**Go/No-Go B1 (ngưỡng: ≥ 30 cơ hội/ngày và p50 ≥ 5 USDT sau bribe, đo ≥ 6 h
-thật): No-Go.** Số replay/log không đủ tin để viết contract. Chi tiết:
-`baocao/BAOCAO51.md` ô 10.
+`BAOCAO51` No-Go B1 là **số mẫu cũ** (ngưỡng khi đó: ≥ 30 cơ hội/ngày và
+p50 ≥ 5 USDT sau bribe, đo ≥ 6 h). Thiếu mẫu **không** có nghĩa hết cơ hội
+hay đổi dự án. Chi tiết số đó: `baocao/BAOCAO51.md` ô 10. Cụm sau đó nằm
+trong `docs/STATE.md` / `baocao/` — README không bịa số paper mới.
 
 **Cảnh báo số liệu:** dòng `sim.arb` `simulated` có `borrow` lớn hơn
 `arb_max_borrow_bnb` / `arb_max_borrow_usdt` **không dùng để kết luận lãi**.
-`sanity_reject` hiện không bắt hết các trường hợp đó.
+Mẫu BAOCAO51 từng thấy borrow 40–46 BNB khi trần 20; code sau đó kẹp search
+theo `arb_max_borrow_*` (xem `docs/STATE.md`). Không dùng hàng oversized
+cũ làm lãi.
 
 ---
 
@@ -217,7 +230,7 @@ cargo test config::tests --offline
 
 | File | Khi nào bot đọc | Nội dung hiện tại |
 |---|---|---|
-| `pairs_arb.txt` | `strategy="backrun"` (ship) | List A: **28** token `both_ok`, vet `2026-09-17`. |
+| `pairs_arb.txt` | `strategy="backrun"` (ship) | List A: **28** token `both_ok`, vet `2026-09-17`. **List hẹp**, không phải toàn thị trường. |
 | `pairs.txt` | `strategy="sandwich"` | List mode 2 cũ (sandwich). Backrun **không** sim file này. |
 | `baocao/evidence/baocao50_listB_watch.txt` | Không | List B: có V3 nhưng mỏng — **theo dõi, không sim, không kết luận**. |
 
@@ -460,7 +473,7 @@ Lý do `tx.skip`:
 | `below_min` | Swap nhỏ hơn `pairs_min_swap_bnb` |
 | `decode_fail` | Không giải mã được (NFT UR, hàm lạ, router/selector lệch). ~81% `execute()` fail cũ là Seaport/NFT — đúng, không phải swap sót |
 | `not_wbnb_pair` / `not_quote_pair` | Không phải WBNB/USDT hợp lệ |
-| `sell_direction` | Victim bán token — sandwich không làm chiều này; backrun vẫn có thể cân 2 pool sau swap lớn (tuỳ path decode) |
+| `sell_direction` | Victim bán token — sandwich không làm chiều này; backrun vẫn có thể cân venue khác (V2 và V3, hoặc cặp quote khác) sau swap lớn (tuỳ path decode). Không phải hai pool V2 cùng cặp. |
 | `not_pancake_router` | `tx.to` không phải router được cổng nhận. Sandwich: 5 router Pancake. Backrun: 5 Pancake **+** Uniswap V3 SwapRouter02 |
 | `venue_unpinned` | Venue chưa pin đủ để sim |
 | `no_pool` | Factory trả `address(0)` |
@@ -542,7 +555,7 @@ VPS chỉ nhận commit đã paper trên WSL. Không ghi IP VPS vào README / BA
 | `decode_fail` chiếm gần hết `seen` | Đa số mempool không phải swap List A — bình thường | Đáng lo nếu `sim.arb` = 0 suốt lâu **và** `/api/pairs` candidate > 0 |
 | `arb_no_second_venue` mọi tx | Thiếu / cũ `state/multi_venue.json` | Chạy `discover_multivenue`, kiểm `multi_venue_path` |
 | `venue_unpinned` trên V3 | Binary/config cũ chưa nối V3 arb | Cần bản có cụm B5; paper BAOCAO51 đã `venue_unpinned=0` |
-| `sim.arb` simulated nhưng borrow 40–46 BNB | Trần `arb_max_borrow_bnb=20` chưa kẹp hết chân V3 mixed | **Không** dùng dòng đó cho Go/No-Go |
+| `sim.arb` simulated nhưng borrow > trần | Mẫu BAOCAO51: 40–46 BNB khi trần 20; code sau kẹp `arb_max_borrow_*` | **Không** dùng dòng oversized cho Go/No-Go |
 | `sim.evm` rỗng khi paper | Đúng với `strategy=backrun` + `sim_engine=v2` | Đọc `sim.arb` + `/api/flash` |
 | `/api/pairs` `count=0` dù đã vet | Đang đọc nhầm file, hoặc sai `vetted YYYY-MM-DD` | Backrun phải là `pairs_arb.txt`. Xem `pair.unvetted` |
 | `sim_error` / vet `missing_trie_node` | RPC public không giữ state | Điền `BSC_HTTP_SIM` node đủ state |
@@ -578,7 +591,8 @@ Nguồn flash (đọc on-chain mỗi chu kỳ, không giả định số dư):
 
 ---
 
-Xem thêm: `AGENTS.md` (luật), `DEX_REGISTRY.md` (venue + flash đã pin),
-`docs/STATE.md`, `docs/TASKS.md`, `docs/DOC_MAP.md`, `docs/RUN.md`,
-`docs/CONTRACT_DESIGN.md` (thiết kế, chưa code), `baocao/BAOCAO51.md` (cụm
-mới nhất).
+Xem thêm: `CLAUDE.md` (luật phiên), `AGENTS.md` (chỉ `@CLAUDE.md`),
+`AGENTS.legacy.md` (archive, không điều hành), `DEX_REGISTRY.md` (venue +
+flash đã pin), `docs/STATE.md`, `docs/TASKS.md`, `docs/DOC_MAP.md`,
+`docs/RUN.md`, `docs/CONTRACT_DESIGN.md` (thiết kế, chưa code), `baocao/`
+(báo cáo theo cụm; không lấy mẫu hẹp làm “hết cơ hội”).
