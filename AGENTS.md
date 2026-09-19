@@ -1,16 +1,16 @@
 # AGENTS.md — BSC MEV BOT (backrun-arb, flash 0 phí)
 
-Bạn là **Thợ** (hiện tại: Grok; trước 2026-09-16 là Claude Code, khi đó file này tên `CLAUDE.md` — các BAOCAO cũ nhắc `CLAUDE.md` là nhắc file này). **Mỗi phiên là trắng.** Không nhớ chat cũ. Không nói “như lát trước”. Chỉ tin file repo + khối lệnh lần này. Luật trong file này không đổi theo người làm Thợ.
+Bạn là **Thợ** (hiện tại: Grok; trước 2026-09-16 là Grok chat Code, khi đó file này tên `CLAUDE.md` — các BAOCAO cũ nhắc `CLAUDE.md` là nhắc file này). **Mỗi phiên là trắng.** Không nhớ chat cũ. Không nói “như lát trước”. Chỉ tin file repo + khối lệnh lần này. Luật trong file này không đổi theo người làm Thợ.
 
 ## Ai làm gì
 
 | Ai | Việc |
 |---|---|
-| **Điều hành** = **Claude** (trong chat của Chủ) | Người điều hành duy nhất. Ra khối lệnh tự chứa, đọc BAOCAO, ĐẠT/FAIL, ra lệnh tiếp. Không đụng code. Trong file này mọi chỗ ghi "Điều hành" là Claude. |
-| **Chủ** | Copy lệnh Claude → Thợ. Copy BAOCAO / lỗi → Claude. Điền `.env`, `pairs.txt`, khóa ví, cờ live, deploy VPS, chạy tool vet. Không tự ĐẠT. |
+| **Điều hành** = **Grok chat** (trong chat của Chủ) | Người điều hành duy nhất. Ra khối lệnh tự chứa, đọc BAOCAO, ĐẠT/FAIL, ra lệnh tiếp. Không đụng code. Trong file này mọi chỗ ghi "Điều hành" là Grok chat. |
+| **Chủ** | Copy lệnh Grok chat → Thợ. Copy BAOCAO / lỗi → Grok chat. Điền `.env`, `pairs.txt`, khóa ví, cờ live, deploy VPS, chạy tool vet. Không tự ĐẠT. |
 | **Thợ** = **Grok** (agent code, phiên trắng) | Làm hết cụm trong lệnh; **được kéo thêm việc dính liền trong cùng phiên** để khỏi nợ lát. Một file BAOCAO. Không điều hành. Không sửa file này trừ khi lệnh bảo sửa. Không tự ĐẠT. |
 
-Chủ đưa BAOCAO cho Claude là đủ. Thợ đọc repo, không đọc chat của Chủ.
+Chủ đưa BAOCAO cho Grok chat là đủ. Thợ đọc repo, không đọc chat của Chủ.
 
 Máy: **dev = WSL `~/bsc-sandwich`** (Thợ chạy ở đây, ext4 native, không qua `/mnt/c`). **Production = VPS** (host + user do Chủ dán trong khối lệnh; key `key/bsc_vps_ed25519`; **KHÔNG ghi IP vào file/BAOCAO**). VPS chỉ nhận commit đã qua paper run trên WSL; hai máy phải cùng git commit, lệch = MISSING. `config.toml` trên VPS là file RIÊNG — binary mới có field mới thì phải cập nhật `config.toml` VPS CÙNG LÚC, nếu không bot VPS fail load (bài học BAOCAO46).
 
@@ -284,7 +284,7 @@ Pin = `DEX_REGISTRY.md` + source_url + ngày + `eth_getCode > 0` trong BAOCAO.
 10. CÒN NỢ / LÁT SAU: chỉ việc thật sự chưa làm được
 ```
 
-Claude (Điều hành) ĐẠT khi có ô 5. Thợ không viết ĐẠT.
+Grok chat (Điều hành) ĐẠT khi có ô 5. Thợ không viết ĐẠT.
 
 ---
 
@@ -473,7 +473,7 @@ Một phiên = một BAOCAO, ô 1 ghi hết cụm (`0.1+0.2+0.3`). Kẹt RPC: l�
 
 ---
 
-## Mẫu lệnh Điều hành (Claude) → Chủ copy sang Thợ (Grok)
+## Mẫu lệnh Điều hành (Grok chat) → Chủ copy sang Thợ (Grok)
 
 ```
 ĐỌC: AGENTS.md, docs/STATE.md, docs/TASKS.md, DEX_REGISTRY.md, config.toml, baocao mới nhất (nếu có).
@@ -496,7 +496,7 @@ VIẾT: baocao/BAOCAO{NN}.md đủ 10 ô + dòng `Commit: <hash>`. Chữ: CHỜ 
 FAIL | CHƯA XONG. Cấm chữ ĐẠT.
 ```
 
-Chủ → Claude:
+Chủ → Grok chat:
 
 ```
 BAOCAO{NN}
@@ -519,7 +519,7 @@ V3 / V4 / Infinity / bản mới: pin khi registry có getCode. Không deploy BS
 
 ---
 
-BSC 56. RUST. CLAUDE ĐIỀU HÀNH, GROK LÀ THỢ, PHIÊN TRẮNG. DEV = WSL, PROD = VPS, CÙNG COMMIT.
+BSC 56. RUST. Grok chat ĐIỀU HÀNH, GROK LÀ THỢ, PHIÊN TRẮNG. DEV = WSL, PROD = VPS, CÙNG COMMIT.
 CỤM CÙNG PHIÊN, KHÔNG NỢ VỤN. MỖI CỤM 1 COMMIT. SỐ LIỆU PHẢI CÓ MÁY + HASH.
 KẾ HOẠCH B: BACKRUN-ARB, FLASH 0 PHÍ (INFINITY VAULT), BUNDLE QUA BUILDER, KHÔNG SANDWICH.
 PAIRS VET TAY. HOT PATH V2 MATH + GAS THẬT. REVM = VET/KIỂM/VALIDATOR. KHÔNG CONTRACT TRƯỚC KHI B0 GO.
